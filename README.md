@@ -4,8 +4,9 @@ Open-source disk imaging and recovery for Windows 10/11 and Linux:
 full system images with incrementals, bare-metal restore, boot-from-backup as
 a VM, file-level restore, cloning, and ransomware-resistant storage.
 
-**Status:** Phase 1 (format, Windows VSS imaging, verify, restore) plus the
-management server and web UI. What works today:
+**Status:** Phase 1 (format, Windows VSS imaging, verify, restore), the
+management server and web UI, and Phase 3 (boot from backup). What works
+today:
 
 * **Web app** (`fenrir-server`): a dashboard for every machine, backup plans
   with schedules, repositories, activity and audit log, light and dark
@@ -27,13 +28,17 @@ management server and web UI. What works today:
   encryption puts the repository on hold so no clean image is aged out.
 * **Restore from the UI**: as a VHDX (mount it to copy files, or attach it
   to a VM), as a new Hyper-V VM on the host, or onto a disk.
+* **Boot from backup**: start any image as a VM on a Linux host with QEMU,
+  straight from the repository, on an isolated network, without restoring
+  it first. **Boot verification** proves backups boot (guest answers on
+  SSH/RDP/WinRM or through the guest agent; screenshot kept as evidence),
+  on demand or weekly per repository. Hyper-V hosts can run the same check.
 * **Alerts** by email, Slack, Teams or webhook; **agents update themselves**
   when the server is upgraded.
 * Deduplicated, signed, verifiable images (format: [docs/FORMAT.md](docs/FORMAT.md)),
   and a CLI (`fenrir`) for scripting.
 
-Not yet: recovery media and bare-metal restore (Phase 2), boot-as-VM and
-automatic boot verification (3), S3 and Object Lock (4),
+Not yet: recovery media and bare-metal restore (Phase 2), S3 and Object Lock (4),
 dissimilar-hardware restore and cloning (5), live Linux snapshots (6).
 
 Before relying on it, work through [docs/DEPLOYMENT-TEST-PLAN.md](docs/DEPLOYMENT-TEST-PLAN.md).
@@ -79,14 +84,16 @@ cd ui && npm ci && npm run build
 | `crates/protocol` | Server–agent protocol and secret sealing |
 | `crates/vdisk` | VHDX reader (from the MS-VHDX specification) |
 | `ui` | Web UI (React + TypeScript) |
-| `crates/nbd-server`, `recovery-env` | Later phases |
+| `crates/nbd-server` | Read-only NBD server exporting images from the repository |
+| `crates/vmboot` | Boot images under QEMU/KVM and decide whether they booted |
+| `recovery-env` | Later phases |
 | `docs/design` | One design note per phase |
 | `fuzz` | Fuzz targets |
 
 ## Documentation
 
 * [Deploying the server](docs/DEPLOY.md) · [Format](docs/FORMAT.md) · [CLI](docs/CLI.md) · [Testing](docs/TESTING.md)
-* [Phase 1 design](docs/design/phase-1.md) · [Management server design](docs/design/management-server.md)
+* [Phase 1 design](docs/design/phase-1.md) · [Management server design](docs/design/management-server.md) · [Phase 3 design](docs/design/phase-3.md)
 * [Security policy](SECURITY.md) · [NCSC Code of Practice mapping](docs/SECURITY-CODE-OF-PRACTICE.md)
 * [Third-party components](THIRD_PARTY.md)
 

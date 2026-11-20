@@ -7,7 +7,8 @@ do, what you should see, and what to send back if it does not happen.
 **What has and has not been tested before this plan:** everything on Linux
 has been run end to end (server in Docker, agent enrolment through the
 generated installer, backups, retention, space reclamation, restore to
-VHDX checked with qemu-img, ransomware hold, alerts). **The Windows
+VHDX checked with qemu-img, ransomware hold, alerts, and booting a
+backup as a VM from the UI on a Linux host with QEMU). **The Windows
 service, VSS system backups, Hyper-V VM backup and restore, and the macOS
 agent have never run on real hardware.** Sections 3 to 5 are where
 problems are most likely; please report everything you see there.
@@ -134,6 +135,32 @@ When something fails, collect:
        **Expect:** the images are listed without the passphrase.
 4. [ ] Verify → Full on the repository once. **Expect:** no damaged data.
 
+## 6a. Boot verification
+
+Needs a Linux machine with QEMU (see DEPLOY.md, "Boot verification"); with
+`/dev/kvm` if possible.
+
+1. [ ] Machines → the Linux host shows it can boot VMs: its images get a
+       **Test boot** button, and the Test boot dialog lists it as
+       "QEMU/KVM".
+2. [ ] Test boot the newest image of a Windows machine. **Expect:**
+       "Boots" within ~2 minutes with KVM (Windows answers on RDP), and a
+       screenshot of the login screen. If it says "Check screenshot", send
+       the screenshot.
+3. [ ] Test boot with "Keep it running". **Expect:** the host's Overview
+       tab lists the VM with ports; with the shown `ssh -L ...` command,
+       a VNC viewer on `localhost:<vnc port>` shows the VM's screen and an
+       RDP client on `localhost:<rdp port>` reaches the Windows login.
+       The production machine is unaffected (the copy has no network).
+       Press **Stop**; the VM disappears within a minute.
+4. [ ] Repositories → Boot verification → on the host, weekly.
+       **Expect:** within a minute a boot check is queued for each
+       machine's newest image, one after another.
+5. [ ] Hyper-V host (if available): Test boot an image on it. **Expect:**
+       progress while the VHDX is written, then "Boots" (heartbeat) and a
+       screenshot; afterwards no `fenrir-check-*` VM is left in Hyper-V
+       Manager and the scratch folder is empty.
+
 ## 7. Failure handling
 
 1. [ ] Unplug a machine's network during a backup. **Expect:** the job
@@ -153,7 +180,6 @@ When something fails, collect:
 
 ## Not covered yet (planned)
 
-Bare-metal restore from boot media; booting a backup as a VM for
-automatic verification; S3 / Object Lock storage; live snapshots of a
+Bare-metal restore from boot media; S3 / Object Lock storage; live snapshots of a
 running Linux system disk; file-by-file restore without mounting a VHDX;
 macOS system backups.

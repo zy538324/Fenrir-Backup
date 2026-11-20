@@ -356,6 +356,7 @@ Versions are pinned in `ui/package-lock.json`.
 |---|---|---|
 | tempfile | MIT OR Apache-2.0 | Temporary directories in tests |
 | qemu-img (system tool, optional) | GPL-2.0 | Independent VHDX interoperability checks in tests; never linked or shipped |
+| CirrOS 0.6.2 disk image (downloaded in CI) | GPL-2.0 (kernel, BusyBox) and others | Bootable test guest for boot-from-backup tests; never shipped |
 | tower, http-body-util | MIT | In-process server API tests |
 | libfuzzer-sys | (MIT OR Apache-2.0) AND NCSA | Fuzzing harness (`fuzz/`) |
 | playwright (pre-installed) | Apache-2.0 | UI end-to-end checks during development |
@@ -369,4 +370,13 @@ Versions are pinned in `ui/package-lock.json`.
   Microsoft's published Open Specification [MS-VHDX]. No Microsoft code is
   redistributed.
 * Linux: kernel ioctls (`BLKSSZGET`, `BLKPBSZGET`), `/proc`, `/sys`.
+* Boot from backup: the agent starts the host's own `qemu-system-x86_64` and
+  `qemu-img` (GPL-2.0) and OVMF firmware (BSD-2-Clause-Patent) as separate
+  programs, installed by the administrator from the distribution; nothing
+  from them is linked into or shipped with Fenrir-Backup. They are driven
+  through their documented command-line options, QMP (the QEMU Machine
+  Protocol) and the QEMU guest agent protocol. The NBD server implements the
+  NBD project's published protocol description. The Hyper-V boot check uses
+  the documented `Msvm_VirtualSystemManagementService.GetVirtualSystemThumbnailImage`
+  WMI method.
 * macOS: `ioreg`, `sw_vers`, launchd.

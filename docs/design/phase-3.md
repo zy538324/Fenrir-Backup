@@ -1,6 +1,7 @@
 # Phase 3 design note: boot from backup, automatic boot verification
 
-Status: in progress. Spec §5: run any system image as a VM without
+Status: implemented (KVM/QEMU path tested end to end; Hyper-V path
+compile-checked, not yet run on a Hyper-V host). Spec §5: run any system image as a VM without
 restoring it first, check that it boots, record the result, and schedule
 that check as automatic backup verification.
 
@@ -46,10 +47,16 @@ without):
 
 | Signal | Strength |
 |---|---|
-| QEMU guest agent answers `guest-ping` | **verified** |
-| A guest TCP port (22, 3389, 445, 80, 5985) accepts and holds a connection through the NAT forward | **verified** |
+| QEMU guest agent answers `guest-sync` | **verified** |
+| A guest service answers through a loopback NAT forward at the application level: an SSH banner (22), an RDP X.224 Connection Confirm (3389), or an HTTP status line (WinRM, 5985) | **verified** |
 | The screen (QMP `screendump`) is unchanged for 30 s, not blank, after at least 45 s | **screen**: booted to a stable screen; the screenshot needs a human glance (a firmware error or a blue screen is also stable) |
-| QEMU reports `guest-panicked`, `internal-error` or `shutdown`, or the screen stays blank | **failed** |
+| QEMU reports `guest-panicked`, `internal-error` or `shutdown`; the firmware log or serial console shows "No bootable device", "BdsDxe: No bootable option" or the UEFI shell; or the screen stays blank | **failed** |
+
+A connection that is merely accepted proves nothing: QEMU's user-mode NAT
+accepts and holds connections to forwarded ports while the guest is still
+in its firmware. Only an application-level reply counts. The screen rule
+also ignores a screen identical to the one seen in the first seconds (the
+firmware splash).
 
 Every check stores a PNG screenshot, so the UI shows what the VM looked
 like. Results are recorded on the server per image.
@@ -96,4 +103,9 @@ restore.)
   and the backup unchanged afterwards (full verify). A non-bootable image
   must not be reported as verified.
 * Server: results stored and shown, scheduler queues checks per interval.
+* End to end (manual, recorded in `docs/DEPLOYMENT-TEST-PLAN.md` §6a):
+  server + agent, repository created in the UI, CirrOS disk backed up,
+  "Test boot" with "keep running" from the UI: verified by SSH in about
+  70 s under software emulation; screenshot shown; SSH reachable on the
+  loopback forward; prune refused while the VM runs; Stop powers it off.
 * Hyper-V path: compile-checked; parsing unit-tested; needs a Hyper-V host.

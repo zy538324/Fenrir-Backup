@@ -156,6 +156,33 @@ nothing is deleted or reclaimed until an administrator reviews it and
 types `release`. Backups continue during a hold. You can also place a
 hold by hand.
 
+## Boot verification (booting backups as VMs)
+
+A **boot host** starts images as virtual machines to prove they boot. Any
+enrolled Linux machine becomes one when QEMU is installed (the agent
+checks at start-up):
+
+```bash
+sudo apt-get install -y qemu-system-x86 qemu-utils ovmf     # Debian/Ubuntu
+sudo dnf install -y qemu-kvm qemu-img edk2-ovmf             # Fedora/RHEL
+```
+
+With `/dev/kvm` available a boot takes about a minute; without it QEMU
+emulates the CPU and Windows images can take 10–20 minutes. The VM boots
+straight from the repository (nothing is copied), writes go to a
+temporary overlay that is deleted afterwards, and its network is isolated:
+it cannot reach your LAN or the internet, so a booted copy never clashes
+with the real machine. Hyper-V hosts can run boot checks too; they copy
+the image to a scratch folder under `C:\ProgramData\Fenrir\agent\boot-checks`
+first, so they need free space for the whole image.
+
+Give the boot host access to the repository, then either click **Test
+boot** next to an image, or turn on **Boot verification** for the
+repository (Repositories page) to test the newest image of every machine
+weekly. Failures raise an alert. "Keep it running" leaves the VM up for up
+to 8 hours with VNC, RDP and SSH on the host's loopback interface only;
+reach them with an SSH tunnel to the host (the UI shows the command).
+
 ## Keys and what the server can see
 
 Repository passphrases are encrypted in the administrator's browser for
