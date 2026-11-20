@@ -114,6 +114,12 @@ pub struct Inventory {
     pub vms: Vec<VmSummary>,
     #[serde(default)]
     pub notes: Vec<String>,
+    /// Rust target triple the agent was built for (auto-update).
+    #[serde(default)]
+    pub agent_target: String,
+    /// SHA-256 of the running agent executable (auto-update).
+    #[serde(default)]
+    pub agent_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +137,65 @@ pub struct HeartbeatResponse {
     /// Jobs the administrator cancelled while they were running.
     #[serde(default)]
     pub cancel: Vec<Uuid>,
+    /// A newer agent build the server wants this agent to run.
+    #[serde(default)]
+    pub update: Option<AgentUpdate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentUpdate {
+    /// Server path to download, e.g. "/agent/x86_64-pc-windows-msvc/fenrir-agent.exe".
+    pub path: String,
+    pub sha256: String,
+}
+
+/// Grandfather-father-son retention; zero turns a rule off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retention {
+    #[serde(default)]
+    pub keep_last: u32,
+    #[serde(default)]
+    pub keep_daily: u32,
+    #[serde(default)]
+    pub keep_weekly: u32,
+    #[serde(default)]
+    pub keep_monthly: u32,
+    #[serde(default)]
+    pub keep_yearly: u32,
+}
+
+impl Retention {
+    pub fn keeps_everything(&self) -> bool {
+        self.keep_last == 0
+            && self.keep_daily == 0
+            && self.keep_weekly == 0
+            && self.keep_monthly == 0
+            && self.keep_yearly == 0
+    }
+}
+
+/// Where a restore writes to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RestoreTarget {
+    /// One dynamic VHDX per disk in `directory` on the agent's machine.
+    Vhdx { directory: String },
+    /// Hyper-V hosts: VHDX files plus a new VM with the original settings.
+    HypervVm {
+        name: String,
+        directory: String,
+        #[serde(default)]
+        switch: Option<String>,
+        #[serde(default)]
+        start: bool,
+    },
+    /// Raw write of one image disk to a device or file. `confirm` must
+    /// equal `device`: the administrator typed it.
+    Disk {
+        device: String,
+        disk: u32,
+        confirm: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -178,6 +243,27 @@ pub enum JobKind {
     },
     /// Report the repository's images to the server.
     ListImages,
+    /// Delete images the policy no longer keeps (manifests only).
+    ApplyRetention {
+        /// Machine IDs to apply it to; empty = all in the repository.
+        #[serde(default)]
+        machine_ids: Vec<String>,
+        retention: Retention,
+        #[serde(default)]
+        dry_run: bool,
+    },
+    /// Delete chunks no image references.
+    Prune {
+        #[serde(default)]
+        dry_run: bool,
+    },
+    Restore {
+        image_id: Uuid,
+        /// Image disks to restore; empty = all (ignored for `disk` targets).
+        #[serde(default)]
+        disks: Vec<u32>,
+        target: RestoreTarget,
+    },
 }
 
 impl JobKind {
@@ -189,6 +275,9 @@ impl JobKind {
             JobKind::BackupHyperv { .. } => "Hyper-V backup",
             JobKind::Verify { .. } => "Verify",
             JobKind::ListImages => "Refresh images",
+            JobKind::ApplyRetention { .. } => "Apply retention",
+            JobKind::Prune { .. } => "Reclaim space",
+            JobKind::Restore { .. } => "Restore",
         }
     }
 }
@@ -298,6 +387,9 @@ pub struct JobUpdate {
     /// Repository UUID (after InitRepository).
     #[serde(default)]
     pub repo_uuid: Option<Uuid>,
+    /// Images deleted by retention.
+    #[serde(default)]
+    pub removed_images: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -316,6 +408,13 @@ pub struct ImageReport {
     pub label: Option<String>,
     #[serde(default)]
     pub vm_name: Option<String>,
+    /// Change statistics of the backup that created it (anomaly checks).
+    #[serde(default)]
+    pub chunks_total: u64,
+    #[serde(default)]
+    pub chunks_new: u64,
+    #[serde(default)]
+    pub bytes_new_raw: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

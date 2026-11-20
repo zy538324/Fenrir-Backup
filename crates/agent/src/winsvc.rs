@@ -48,8 +48,27 @@ fn service_main(_args: Vec<OsString>) {
         ServiceState::Running,
         ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
     ));
-    if let Err(e) = crate::run_loop(stop) {
-        crate::log::error(&format!("agent stopped: {e:#}"));
+    match crate::run_loop(stop) {
+        Ok(crate::LoopExit::Restart) => schedule_restart(),
+        Ok(crate::LoopExit::Stopped) => {}
+        Err(e) => crate::log::error(&format!("agent stopped: {e:#}")),
     }
     let _ = h.set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty()));
+}
+
+/// After an update: a detached helper starts the service again a few
+/// seconds after this instance has stopped.
+fn schedule_restart() {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    let r = std::process::Command::new("cmd.exe")
+        .args(["/C", "ping -n 6 127.0.0.1 >NUL & sc.exe start FenrirAgent"])
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .spawn();
+    if let Err(e) = r {
+        crate::log::error(&format!(
+            "could not schedule the restart after updating: {e}"
+        ));
+    }
 }

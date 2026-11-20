@@ -7,6 +7,8 @@ mod hyperv;
 mod inventory;
 mod jobs;
 mod log;
+mod restore;
+mod update;
 #[cfg(windows)]
 mod winsvc;
 
@@ -61,7 +63,12 @@ fn main() {
             pin,
             role,
         } => enroll(&server, &token, &pin, &role),
-        Cmd::Run => run_loop(stop_on_signal()),
+        Cmd::Run => match run_loop(stop_on_signal()) {
+            // systemd (Restart=always) and launchd (KeepAlive) start the new build.
+            Ok(LoopExit::Restart) => std::process::exit(75),
+            Ok(LoopExit::Stopped) => Ok(()),
+            Err(e) => Err(e),
+        },
         Cmd::Service => service(),
         Cmd::Status => status(),
     };
@@ -162,7 +169,15 @@ struct Running {
 
 /// Main loop: heartbeat, take at most one job, keep heartbeating while it
 /// runs, honour cancellations.
-pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
+/// Why the main loop ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LoopExit {
+    Stopped,
+    /// A new agent build was installed; restart to run it.
+    Restart,
+}
+
+pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
     let dir = config::state_dir();
     log::init(&dir);
     let cfg = AgentConfig::load(&dir)?;
@@ -176,6 +191,8 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
     if cfg.role == "hyperv" && cfg!(windows) {
         jobs::cleanup_leftover_checkpoints(&dir);
     }
+    update::cleanup_old();
+    let mut failed_update: Option<(String, Instant)> = None;
 
     let mut backoff = 5u64;
     let mut running: Option<Running> = None;
@@ -256,6 +273,29 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
                         running = Some(Running { id, ctl, handle });
                     }
                 }
+                // Update only between jobs, and do not retry a failing
+                // build more than hourly.
+                if let (None, Some(u)) = (&running, &hb.update) {
+                    let recently_failed = failed_update.as_ref().is_some_and(|(sha, t)| {
+                        sha == &u.sha256 && t.elapsed() < Duration::from_secs(3600)
+                    });
+                    if !u.sha256.eq_ignore_ascii_case(&update::self_sha256()) && !recently_failed {
+                        log::info(&format!(
+                            "updating agent to build {}",
+                            &u.sha256[..12.min(u.sha256.len())]
+                        ));
+                        match update::apply(&client, u) {
+                            Ok(()) => {
+                                log::info("agent updated; restarting");
+                                return Ok(LoopExit::Restart);
+                            }
+                            Err(e) => {
+                                log::warn(&format!("agent update failed: {e:#}"));
+                                failed_update = Some((u.sha256.clone(), Instant::now()));
+                            }
+                        }
+                    }
+                }
                 sleep_unless(&stop, poll);
             }
             Err(e) => {
@@ -275,7 +315,7 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<()> {
         let _ = r.handle.join();
     }
     log::info("agent stopped");
-    Ok(())
+    Ok(LoopExit::Stopped)
 }
 
 fn sleep_unless(stop: &AtomicBool, secs: u64) {

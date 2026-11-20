@@ -88,14 +88,19 @@ pub fn os() -> OsSummary {
 }
 
 pub fn capabilities(role: &str) -> Vec<String> {
-    let mut c = vec!["verify".to_string()];
+    let mut c: Vec<String> = ["verify", "maintenance", "restore_vhdx"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     if cfg!(windows) {
         c.push("backup_system".into());
         if role == "hyperv" {
             c.push("backup_hyperv".into());
+            c.push("restore_hyperv".into());
         }
     } else {
         c.push("backup_disks".into());
+        c.push("restore_disk".into());
     }
     c
 }
@@ -175,5 +180,7 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         disks: disks(),
         vms,
         notes,
+        agent_target: crate::update::TARGET.into(),
+        agent_sha256: crate::update::self_sha256(),
     }
 }

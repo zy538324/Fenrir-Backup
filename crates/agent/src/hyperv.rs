@@ -285,6 +285,103 @@ pub fn parse_vm_list(json: &str) -> anyhow::Result<Vec<protocol::VmSummary>> {
         .collect())
 }
 
+/// Parameters for creating a VM from restored disks. Passed to PowerShell
+/// as base64-encoded JSON, so no value is ever parsed as script.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NewVm {
+    pub name: String,
+    pub path: String,
+    pub generation: u32,
+    pub cpu_count: u32,
+    pub memory_mb: u64,
+    pub secure_boot: Option<bool>,
+    pub disks: Vec<NewVmDisk>,
+    pub switch: Option<String>,
+    pub adapters: u32,
+    pub start: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NewVmDisk {
+    pub path: String,
+    /// "SCSI 0:1", "IDE 0:0" or empty (next free slot).
+    pub controller: String,
+}
+
+const PS_NEW_VM: &str = r#"
+Import-Module Hyper-V
+$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SPEC__')) | ConvertFrom-Json
+if (Get-VM -Name $p.name -ErrorAction SilentlyContinue) { throw "A VM named '$($p.name)' already exists" }
+$warn = @()
+$vm = New-VM -Name $p.name -Generation $p.generation -MemoryStartupBytes ([int64]$p.memory_mb * 1MB) -NoVHD -Path $p.path
+Set-VMProcessor -VM $vm -Count $p.cpu_count
+$nextIde = 0; $nextScsi = 0
+foreach ($d in $p.disks) {
+  $type = $null; $num = 0; $loc = 0
+  if ($d.controller -match '^(SCSI|IDE) (\d+):(\d+)$') { $type = $Matches[1]; $num = [int]$Matches[2]; $loc = [int]$Matches[3] }
+  if ($type -eq 'IDE' -and $p.generation -eq 2) { $type = $null }
+  if (-not $type) {
+    if ($p.generation -eq 1 -and $nextIde -lt 4) { $type = 'IDE'; $num = [math]::Floor($nextIde / 2); $loc = $nextIde % 2; $nextIde++ }
+    else { $type = 'SCSI'; $num = 0; $loc = $nextScsi; $nextScsi++ }
+  }
+  if ($type -eq 'SCSI') {
+    while (@(Get-VMScsiController -VM $vm).Count -le $num) { Add-VMScsiController -VM $vm }
+  }
+  Add-VMHardDiskDrive -VM $vm -ControllerType $type -ControllerNumber $num -ControllerLocation $loc -Path $d.path
+}
+if ($p.generation -eq 2) {
+  Set-VMFirmware -VM $vm -FirstBootDevice (Get-VMHardDiskDrive -VM $vm | Select-Object -First 1)
+  if ($p.secure_boot -eq $false) { Set-VMFirmware -VM $vm -EnableSecureBoot Off }
+}
+for ($i = @(Get-VMNetworkAdapter -VM $vm).Count; $i -lt $p.adapters; $i++) { Add-VMNetworkAdapter -VM $vm }
+if ($p.switch) {
+  if (Get-VMSwitch -Name $p.switch -ErrorAction SilentlyContinue) { Get-VMNetworkAdapter -VM $vm | Connect-VMNetworkAdapter -SwitchName $p.switch }
+  else { $warn += "Virtual switch '$($p.switch)' does not exist on this host; network adapters are disconnected." }
+}
+if ($p.start) { Start-VM -VM $vm }
+[pscustomobject]@{ vm_id = $vm.Id.ToString(); warnings = $warn } | ConvertTo-Json -Compress
+"#;
+
+const PS_VM_EXISTS: &str = r#"
+Import-Module Hyper-V
+$n = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__NAME__'))
+if (Get-VM -Name $n -ErrorAction SilentlyContinue) { 'yes' } else { 'no' }
+"#;
+
+fn b64(s: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
+}
+
+pub fn check_vm_name(name: &str) -> anyhow::Result<()> {
+    let n = name.trim();
+    if n.is_empty() || n.chars().count() > 100 || n.chars().any(|c| c.is_control()) || n != name {
+        bail!("VM names must be 1 to 100 printable characters without leading or trailing spaces");
+    }
+    Ok(())
+}
+
+pub fn new_vm_script(spec: &NewVm) -> anyhow::Result<String> {
+    check_vm_name(&spec.name)?;
+    if spec.generation != 1 && spec.generation != 2 {
+        bail!("generation must be 1 or 2");
+    }
+    Ok(format!(
+        "{PS_PRELUDE}{}",
+        PS_NEW_VM.replace("__SPEC__", &b64(&serde_json::to_string(spec)?))
+    ))
+}
+
+pub fn vm_exists(name: &str) -> anyhow::Result<bool> {
+    check_vm_name(name)?;
+    Ok(run_ps(&format!(
+        "{PS_PRELUDE}{}",
+        PS_VM_EXISTS.replace("__NAME__", &b64(name))
+    ))?
+    .trim()
+        == "yes")
+}
+
 /// Run a script with Windows PowerShell; returns stdout.
 pub fn run_ps(script: &str) -> anyhow::Result<String> {
     #[cfg(windows)]
@@ -365,6 +462,50 @@ mod tests {
         assert_eq!(c.consistency, Consistency::Crash);
         assert!(c.warning.unwrap().contains("VSS in guest failed"));
         assert_eq!(c.disks.len(), 2);
+    }
+
+    #[test]
+    fn new_vm_spec_is_embedded_as_data() {
+        let spec = NewVm {
+            name: "evil'; Remove-Item C:\\ -Recurse; '".into(),
+            path: "D:\\Restores".into(),
+            generation: 2,
+            cpu_count: 4,
+            memory_mb: 8192,
+            secure_boot: Some(true),
+            disks: vec![NewVmDisk {
+                path: "D:\\Restores\\a.vhdx".into(),
+                controller: "SCSI 0:0".into(),
+            }],
+            switch: Some("LAN".into()),
+            adapters: 1,
+            start: false,
+        };
+        let s = new_vm_script(&spec).unwrap();
+        assert!(
+            !s.contains("Remove-Item"),
+            "names never appear as script text"
+        );
+        let b = s
+            .split("FromBase64String('")
+            .nth(1)
+            .unwrap()
+            .split('\'')
+            .next()
+            .unwrap();
+        use base64::Engine;
+        let json: serde_json::Value =
+            serde_json::from_slice(&base64::engine::general_purpose::STANDARD.decode(b).unwrap())
+                .unwrap();
+        assert_eq!(json["generation"], 2);
+        assert_eq!(json["disks"][0]["controller"], "SCSI 0:0");
+        assert!(check_vm_name(" padded").is_err());
+        assert!(check_vm_name("ok name (restored)").is_ok());
+        assert!(new_vm_script(&NewVm {
+            generation: 3,
+            ..spec
+        })
+        .is_err());
     }
 
     #[test]

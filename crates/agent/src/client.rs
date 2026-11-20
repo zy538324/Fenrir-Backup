@@ -129,6 +129,33 @@ impl Client {
     }
 }
 
+impl Client {
+    /// GET a binary body, refusing more than `limit` bytes.
+    pub fn get_bytes(&self, path: &str, limit: u64) -> anyhow::Result<Vec<u8>> {
+        let mut req = self.agent.get(&format!("{}{path}", self.base));
+        if let Some(t) = &self.token {
+            req = req.set("Authorization", &format!("Bearer {t}"));
+        }
+        let r = match req.call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r)) => {
+                let msg = r.into_string().unwrap_or_default();
+                bail!(ServerRefused { code, message: msg })
+            }
+            Err(e) => return Err(anyhow!("cannot reach {}: {e}", self.base)),
+        };
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(r.into_reader(), limit + 1),
+            &mut buf,
+        )?;
+        if buf.len() as u64 > limit {
+            bail!("download larger than {limit} bytes");
+        }
+        Ok(buf)
+    }
+}
+
 /// The server answered with an error status (as opposed to being unreachable).
 #[derive(Debug)]
 pub struct ServerRefused {

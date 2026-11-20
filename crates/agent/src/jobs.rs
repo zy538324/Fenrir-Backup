@@ -87,6 +87,7 @@ fn running(progress: Option<JobProgress>) -> JobUpdate {
         warnings: vec![],
         images: None,
         repo_uuid: None,
+        removed_images: vec![],
     }
 }
 
@@ -99,6 +100,7 @@ fn done(state: JobState) -> JobUpdate {
         warnings: vec![],
         images: None,
         repo_uuid: None,
+        removed_images: vec![],
     }
 }
 
@@ -120,6 +122,9 @@ pub fn report_of(m: &ManifestBody) -> ImageReport {
         disks: m.disks.iter().map(|d| d.size).collect(),
         label: m.label.clone(),
         vm_name: m.vm.as_ref().map(|v| v.name.clone()),
+        chunks_total: m.stats.chunks_total,
+        chunks_new: m.stats.chunks_new,
+        bytes_new_raw: m.stats.bytes_new_raw,
     }
 }
 
@@ -294,6 +299,44 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 .collect();
             u.images = Some(ok.iter().map(report_of).collect());
             Ok(u)
+        }
+        JobKind::ApplyRetention {
+            machine_ids,
+            retention,
+            dry_run,
+        } => {
+            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            rep.progress("retention", 0, 1, "reading images");
+            let p = engine::retention::RetentionPolicy {
+                keep_last: retention.keep_last,
+                keep_daily: retention.keep_daily,
+                keep_weekly: retention.keep_weekly,
+                keep_monthly: retention.keep_monthly,
+                keep_yearly: retention.keep_yearly,
+            };
+            let r = engine::retention::forget(&repo, machine_ids, &p, *dry_run)?;
+            let mut u = done(JobState::Succeeded);
+            if !dry_run {
+                u.removed_images = r.removed.clone();
+            }
+            u.result = Some(json!({ "kept": r.kept, "removed": r.removed, "dry_run": r.dry_run }));
+            Ok(u)
+        }
+        JobKind::Prune { dry_run } => {
+            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            rep.progress("pruning", 0, 1, "finding unreferenced data");
+            let r = engine::retention::prune(&repo, *dry_run, &ctx.ctl)?;
+            let mut u = done(JobState::Succeeded);
+            u.result = Some(serde_json::to_value(&r)?);
+            Ok(u)
+        }
+        JobKind::Restore {
+            image_id,
+            disks,
+            target,
+        } => {
+            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            crate::restore::run(ctx, &repo, *image_id, disks, target, rep)
         }
     }
 }
