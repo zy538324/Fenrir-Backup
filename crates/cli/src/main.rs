@@ -658,6 +658,7 @@ fn backup_disk(
         drivers: vec![],
         label: common.label.clone(),
         warnings: std::mem::take(&mut warnings),
+        vm: None,
     };
     let sources: Vec<&dyn engine::DiskSource> = opened
         .iter()

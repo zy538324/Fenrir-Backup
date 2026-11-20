@@ -120,6 +120,7 @@ fn meta() -> ImageMeta {
         drivers: vec![],
         label: None,
         warnings: vec![],
+        vm: None,
     }
 }
 

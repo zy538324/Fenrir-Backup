@@ -24,6 +24,23 @@ pub fn plan_disk(
     size: u64,
     table: &PartitionTable,
     plan: &CapturePlan,
+) -> std::io::Result<DiskLayout> {
+    let mut layout = plan_disk_unfiltered(src, size, table, plan);
+    if let Some(alloc) = src.allocated_extents()? {
+        let alloc = extent::normalize(alloc);
+        layout.used = extent::intersect(&layout.used, &alloc);
+        for r in &mut layout.partitions {
+            r.captured_bytes = extent::total_len(&extent::clip(&layout.used, r.entry.extent()));
+        }
+    }
+    Ok(layout)
+}
+
+fn plan_disk_unfiltered(
+    src: &dyn DiskSource,
+    size: u64,
+    table: &PartitionTable,
+    plan: &CapturePlan,
 ) -> DiskLayout {
     let whole = Extent(0, size);
     let mut used = table.raw_extents();

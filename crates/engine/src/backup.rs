@@ -31,6 +31,8 @@ pub struct ImageMeta {
     pub drivers: Vec<DriverInfo>,
     pub label: Option<String>,
     pub warnings: Vec<String>,
+    /// Set when imaging a VM from its host.
+    pub vm: Option<core_format::manifest::VmInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +194,7 @@ pub fn backup(
         excluded,
         warnings: warnings.clone(),
         stats: stats.clone(),
+        vm: meta.vm,
     };
     if ctl.is_cancelled() {
         return Err(EngineError::Cancelled);
@@ -228,7 +231,7 @@ fn plan_one(src: &dyn DiskSource, di: usize) -> Result<PlannedDisk> {
     };
     let table = partition::read_table(&SourceReader(src), info.size, ss)?;
     let plan = src.capture_plan(&table)?;
-    let layout = plan_disk(src, info.size, &table, &plan);
+    let layout = plan_disk(src, info.size, &table, &plan)?;
     Ok(PlannedDisk {
         info,
         sector_size: ss,

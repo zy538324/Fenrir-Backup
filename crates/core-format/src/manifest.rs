@@ -245,6 +245,52 @@ pub struct ManifestBody {
     pub warnings: Vec<String>,
     #[serde(default)]
     pub stats: ImageStats,
+    /// Present when the image is of a virtual machine backed up from its
+    /// host. Optional in format version 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm: Option<VmInfo>,
+}
+
+/// Hypervisor-level description of a backed-up VM, enough to recreate it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmInfo {
+    /// "hyper-v".
+    pub hypervisor: String,
+    pub host: String,
+    pub vm_id: String,
+    pub name: String,
+    /// Hyper-V generation (1 = BIOS, 2 = UEFI).
+    #[serde(default)]
+    pub generation: u32,
+    #[serde(default)]
+    pub cpu_count: u32,
+    #[serde(default)]
+    pub memory_mb: u64,
+    #[serde(default)]
+    pub secure_boot: Option<bool>,
+    /// One entry per image disk, same order as `disks`.
+    #[serde(default)]
+    pub disks: Vec<VmDisk>,
+    #[serde(default)]
+    pub network_adapters: Vec<VmNetworkAdapter>,
+    #[serde(default)]
+    pub config_version: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmDisk {
+    /// e.g. "SCSI 0:1" or "IDE 0:0".
+    pub controller: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmNetworkAdapter {
+    pub name: String,
+    #[serde(default)]
+    pub switch: String,
+    #[serde(default)]
+    pub mac: String,
 }
 
 impl ManifestBody {
@@ -463,6 +509,7 @@ pub(crate) mod tests {
             excluded: vec![],
             warnings: vec![],
             stats: ImageStats::default(),
+            vm: None,
         }
     }
 

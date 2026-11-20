@@ -54,6 +54,13 @@ pub trait DiskSource: Send + Sync {
     fn capture_plan(&self, _table: &PartitionTable) -> io::Result<CapturePlan> {
         Ok(CapturePlan::default())
     }
+
+    /// Byte ranges that hold data at all (thin/sparse sources such as
+    /// virtual disks). Everything outside reads as zeros and is never read.
+    /// `None` = everything may hold data.
+    fn allocated_extents(&self) -> io::Result<Option<Vec<core_format::extent::Extent>>> {
+        Ok(None)
+    }
 }
 
 /// Adapter so partition parsing can read from a `DiskSource`.

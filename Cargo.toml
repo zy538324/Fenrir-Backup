@@ -8,6 +8,8 @@ members = [
     "crates/nbd-server",
     "crates/agent",
     "crates/cli",
+    "crates/vdisk",
+    "crates/server",
 ]
 
 [workspace.package]
@@ -22,6 +24,7 @@ core-format = { path = "crates/core-format" }
 engine = { path = "crates/engine" }
 snapshot-linux = { path = "crates/snapshot-linux" }
 snapshot-win = { path = "crates/snapshot-win" }
+vdisk = { path = "crates/vdisk" }
 
 anyhow = "1"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }

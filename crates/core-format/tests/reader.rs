@@ -80,6 +80,7 @@ fn reader_exports_sparse_disk() {
         excluded: vec![],
         warnings: vec![],
         stats: ImageStats::default(),
+        vm: None,
     };
     let signer = repo.signer_for_machine("m").unwrap();
     repo.store_manifest(&body, &signer).unwrap();

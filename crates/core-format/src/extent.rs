@@ -74,6 +74,11 @@ pub fn subtract(v: &[Extent], holes: &[Extent]) -> Vec<Extent> {
     out
 }
 
+/// Ranges present in both normalised lists.
+pub fn intersect(a: &[Extent], b: &[Extent]) -> Vec<Extent> {
+    subtract(a, &subtract(a, b))
+}
+
 /// Clip a normalised list to `range`.
 pub fn clip(v: &[Extent], range: Extent) -> Vec<Extent> {
     v.iter().filter_map(|e| e.intersect(&range)).collect()
@@ -108,6 +113,17 @@ mod tests {
             vec![Extent(0, 10), Extent(20, 70), Extent(210, 80)]
         );
         assert_eq!(subtract(&v, &[]), v);
+    }
+
+    #[test]
+    fn intersect_lists() {
+        let a = vec![Extent(0, 100), Extent(200, 100)];
+        let b = vec![Extent(50, 200), Extent(290, 5)];
+        assert_eq!(
+            intersect(&a, &b),
+            vec![Extent(50, 50), Extent(200, 50), Extent(290, 5)]
+        );
+        assert!(intersect(&a, &[]).is_empty());
     }
 
     #[test]

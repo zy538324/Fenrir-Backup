@@ -129,6 +129,22 @@ impl Repository {
         passphrase: &[u8],
         opts: InitOptions,
     ) -> Result<(Repository, RecoveryKey)> {
+        let repo_id = Uuid::new_v4();
+        let recovery = RecoveryKey::generate(repo_id)?;
+        let repo = Self::init_with(backend, passphrase, opts, &recovery)?;
+        Ok((repo, recovery))
+    }
+
+    /// Create a repository whose ID and recovery key were chosen by the
+    /// caller (`recovery.repo_id` becomes the repository ID). Used by the
+    /// management server flow, where the administrator's browser generates
+    /// the recovery key so that it never passes through the server.
+    pub fn init_with(
+        backend: Arc<dyn Backend>,
+        passphrase: &[u8],
+        opts: InitOptions,
+        recovery: &RecoveryKey,
+    ) -> Result<Repository> {
         if backend.exists(CONFIG_KEY)? {
             return Err(Error::InvalidArgument(
                 "a repository already exists here".into(),
@@ -139,7 +155,7 @@ impl Repository {
         let config = RepoConfig {
             format: REPO_FORMAT.into(),
             version: 1,
-            repo_id: Uuid::new_v4(),
+            repo_id: recovery.repo_id,
             created: crate::timefmt::rfc3339_utc(now),
             chunk_size: opts.chunk_size,
             zstd_level: opts.zstd_level,
@@ -149,8 +165,7 @@ impl Repository {
         config.check()?;
         let master = SecretKey::generate()?;
         let pslot = KeySlot::wrap_with_passphrase(&config.repo_id, &master, passphrase, opts.kdf)?;
-        let recovery = RecoveryKey::generate(config.repo_id)?;
-        let rslot = KeySlot::wrap_with_recovery_key(&config.repo_id, &master, &recovery)?;
+        let rslot = KeySlot::wrap_with_recovery_key(&config.repo_id, &master, recovery)?;
         // Key slots first, config last: a directory with config.json is
         // always a complete, openable repository.
         put_new(
@@ -164,14 +179,11 @@ impl Repository {
             &serde_json::to_vec_pretty(&rslot)?,
         )?;
         put_new(&*backend, CONFIG_KEY, &serde_json::to_vec_pretty(&config)?)?;
-        Ok((
-            Repository {
-                backend,
-                config,
-                keys: Arc::new(RepoKeys::from_master(master)),
-            },
-            recovery,
-        ))
+        Ok(Repository {
+            backend,
+            config,
+            keys: Arc::new(RepoKeys::from_master(master)),
+        })
     }
 
     pub fn read_config(backend: &dyn Backend) -> Result<RepoConfig> {
@@ -542,6 +554,17 @@ mod tests {
         assert_eq!(r.chunk_id(b"x"), r3.chunk_id(b"x"));
         // Second init in the same place refused.
         assert!(Repository::init(b, b"pass", fast()).is_err());
+    }
+
+    #[test]
+    fn init_with_caller_recovery_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let b: Arc<dyn Backend> = Arc::new(LocalBackend::create(dir.path().join("r")).unwrap());
+        let rk = RecoveryKey::generate(Uuid::new_v4()).unwrap();
+        let r = Repository::init_with(b.clone(), b"pass", fast(), &rk).unwrap();
+        assert_eq!(r.config().repo_id, rk.repo_id);
+        let r2 = Repository::unlock_with_recovery_key(b, &rk).unwrap();
+        assert_eq!(r.chunk_id(b"x"), r2.chunk_id(b"x"));
     }
 
     #[test]

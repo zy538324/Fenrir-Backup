@@ -337,6 +337,7 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
         drivers: system::boot_start_drivers(),
         label: None,
         warnings,
+        vm: None,
     };
     if meta.machine.machine_id.is_empty() {
         return Err(PrepareError("could not read the machine GUID".into()));
