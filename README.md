@@ -31,7 +31,13 @@ restore, cloning and file-level restore (5), live Linux snapshots (6).
 
 ## Quick start
 
-Download a server bundle from CI (or build it, below), then:
+With Docker:
+
+```bash
+docker compose up -d --build
+```
+
+Or download a server bundle from CI (or build it, below), then:
 
 ```bash
 ./fenrir-server --public-url https://backup.example.lan:8443

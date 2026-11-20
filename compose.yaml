@@ -1,0 +1,22 @@
+# docker compose up -d   then open https://<this-host>:8443
+services:
+  fenrir:
+    build: .
+    image: fenrir-server:local
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    # Set this if machines reach the server by a different name or address
+    # than your browser does (e.g. a DNS name instead of an IP):
+    # environment:
+    #   FENRIR_PUBLIC_URL: https://backup.example.lan:8443
+    volumes:
+      - fenrir-data:/var/lib/fenrir-server
+      # Windows / Hyper-V and macOS agents, from a CI server bundle
+      # (fenrir-server-linux-x64/agents/...). Optional.
+      # - ./agents/x86_64-pc-windows-msvc:/opt/fenrir/agents/x86_64-pc-windows-msvc:ro
+      # - ./agents/aarch64-apple-darwin:/opt/fenrir/agents/aarch64-apple-darwin:ro
+      # - ./agents/x86_64-apple-darwin:/opt/fenrir/agents/x86_64-apple-darwin:ro
+
+volumes:
+  fenrir-data:

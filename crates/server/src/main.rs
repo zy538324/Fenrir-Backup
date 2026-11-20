@@ -133,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
             let handle = axum_server::Handle::new();
             let h2 = handle.clone();
             tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
+                shutdown_signal().await;
                 h2.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
             });
             axum_server::bind_rustls(a.listen, cfg)
@@ -144,11 +144,34 @@ async fn main() -> anyhow::Result<()> {
         None => {
             let l = tokio::net::TcpListener::bind(a.listen).await?;
             axum::serve(l, app)
-                .with_graceful_shutdown(async {
-                    let _ = tokio::signal::ctrl_c().await;
-                })
+                .with_graceful_shutdown(shutdown_signal())
                 .await?;
         }
     }
     Ok(())
+}
+
+/// Ctrl-C, or SIGTERM from systemd / `docker stop`. As PID 1 in a
+/// container the process gets no default SIGTERM action, so it must be
+/// handled explicitly.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = term => {}
+    }
+    tracing::info!("shutting down");
 }

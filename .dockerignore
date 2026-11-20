@@ -1,0 +1,8 @@
+.git
+target
+fuzz/target
+ui/node_modules
+ui/dist
+agents
+data
+*.img

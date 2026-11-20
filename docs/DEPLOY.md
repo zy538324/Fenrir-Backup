@@ -18,6 +18,44 @@ fenrir-server-linux-x64/
   SHA256SUMS
 ```
 
+## Run it with Docker
+
+The image holds the server, the web UI, the `fenrir` CLI and the Linux
+agent for its own CPU architecture (x86-64 or arm64).
+
+```bash
+docker compose up -d --build
+```
+
+or without compose:
+
+```bash
+docker build -t fenrir-server .
+```
+
+```bash
+docker run -d --name fenrir -p 8443:8443 -v fenrir-data:/var/lib/fenrir-server --restart unless-stopped fenrir-server
+```
+
+Then open `https://<docker-host>:8443`. Machines enrol against the address
+your browser used; if they reach the server by another name, set
+`FENRIR_PUBLIC_URL` (see `compose.yaml`). Server options can also be passed
+as arguments after the image name, e.g. `fenrir-server --poll-seconds 30`.
+
+* **Data:** the database and generated certificate are in the
+  `fenrir-data` volume. Back it up; keep it when upgrading, because the
+  agents pin the certificate stored there.
+* **Windows, Hyper-V and macOS agents** are not built inside Docker. Mount
+  them from a CI server bundle, one folder per platform, as shown in
+  `compose.yaml`. The Add machines page marks platforms without a build as
+  unavailable.
+* **Bind mount instead of a volume:** the server runs as UID 10001, so
+  `chown -R 10001:10001` the host folder first.
+* **Upgrades:** `docker compose up -d --build` (or pull the new image and
+  recreate the container). The volume carries over.
+* **Logs:** `docker logs fenrir` (JSON lines). `GET /healthz` is the health
+  check the image already uses.
+
 ## Run it (Linux)
 
 ```bash
