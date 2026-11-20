@@ -216,3 +216,71 @@ fn engine_backs_up_only_allocated_blocks() {
     .unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), expect);
 }
+
+#[test]
+fn restore_image_as_vhdx() {
+    let dir = tempfile::tempdir().unwrap();
+    let (expect, child, _) = chain(dir.path());
+    let src = VhdxSource::open(&child, "vm disk").unwrap();
+    let b: Arc<dyn Backend> = Arc::new(LocalBackend::create(dir.path().join("repo")).unwrap());
+    let (repo, _) = Repository::init(
+        b,
+        b"pw",
+        InitOptions {
+            chunk_size: 1 << 20,
+            kdf: KdfParams::INSECURE_FAST,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let meta = engine::ImageMeta {
+        machine: core_format::manifest::MachineInfo {
+            machine_id: "m".into(),
+            hostname: "vm".into(),
+        },
+        consistency: core_format::manifest::Consistency::Application,
+        os: Default::default(),
+        boot: Default::default(),
+        drivers: vec![],
+        label: None,
+        warnings: vec![],
+        vm: None,
+    };
+    let r = engine::backup(
+        &repo,
+        &[&src as &dyn engine::DiskSource],
+        meta,
+        &Default::default(),
+        &engine::JobControl::new(),
+        &|_| {},
+    )
+    .unwrap();
+    let m = repo.load_manifest(&r.image_id).unwrap();
+    let d = &m.disks[0];
+    let out = dir.path().join("restored.vhdx");
+    let t = vdisk::VhdxTarget::create(
+        &out,
+        d.size,
+        d.logical_sector_size,
+        d.physical_sector_size,
+        m.chunk_size,
+    )
+    .unwrap();
+    engine::restore_disk(
+        &repo,
+        &m,
+        0,
+        &t,
+        &engine::RestoreOptions {
+            workers: 3,
+            zero_fill: false,
+        },
+        &engine::JobControl::new(),
+        &|_, _| {},
+    )
+    .unwrap();
+    t.finish().unwrap();
+    assert_eq!(read_all(&Vhdx::open(&out).unwrap()), expect);
+    // Only the 3 MiB of data is allocated (one 32 MiB block), not the whole disk.
+    assert!(std::fs::metadata(&out).unwrap().len() < 40 * MIB);
+}

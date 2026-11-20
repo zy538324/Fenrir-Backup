@@ -2291,6 +2291,7 @@ version = "0.1.0"
 dependencies = [
  "core-format",
  "engine",
+ "serde_json",
  "tempfile",
  "uuid",
  "vdisk",

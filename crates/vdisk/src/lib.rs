@@ -4,6 +4,7 @@
 
 mod crc32c;
 pub mod vhdx;
+pub mod writer;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod testutil;
@@ -56,5 +57,51 @@ impl DiskSource for VhdxSource {
 
     fn allocated_extents(&self) -> io::Result<Option<Vec<Extent>>> {
         Ok(Some(self.disk.allocated()))
+    }
+}
+
+/// Restore target that writes a dynamic VHDX. Call `finish` afterwards.
+pub struct VhdxTarget {
+    writer: writer::VhdxWriter,
+}
+
+impl VhdxTarget {
+    pub fn create(
+        path: &Path,
+        virtual_size: u64,
+        logical_sector: u32,
+        physical_sector: u32,
+        chunk_size: u32,
+    ) -> io::Result<Self> {
+        let block = writer::DEFAULT_BLOCK_SIZE.max(chunk_size as u64);
+        Ok(VhdxTarget {
+            writer: writer::VhdxWriter::create(
+                path,
+                virtual_size,
+                logical_sector,
+                physical_sector,
+                block,
+            )?,
+        })
+    }
+
+    /// Write the block table; the file is a valid VHDX after this.
+    pub fn finish(self) -> io::Result<u64> {
+        self.writer.finish()
+    }
+}
+
+impl engine::WriteTarget for VhdxTarget {
+    fn size(&self) -> u64 {
+        self.writer.virtual_size()
+    }
+    fn write_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
+        self.writer.write_at(offset, data)
+    }
+    fn sync(&self) -> io::Result<()> {
+        Ok(())
+    }
+    fn describe(&self) -> String {
+        self.writer.path().display().to_string()
     }
 }
