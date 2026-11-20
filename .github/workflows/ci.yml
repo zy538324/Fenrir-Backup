@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches-ignore: [agent-builds]
   pull_request:
 
 permissions:
@@ -158,6 +159,48 @@ jobs:
           path: |
             fenrir-server-linux-x64.tar.gz
             fenrir-server-windows-x64.zip
+
+  # Agent builds that cannot be made inside the Docker image (macOS needs a
+  # Mac), published to the `agent-builds`
+  # branch: one commit, replaced on every successful run. Servers fetch it
+  # with scripts/server-sync (same read-only deploy key as the code).
+  publish-agents:
+    needs: [test, build]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/zealous-pascal-c68e5c')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-agents
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: art
+      - name: assemble
+        run: |
+          set -eu
+          mkdir -p pub
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            mkdir -p "pub/$t"
+            cp art/bin-$t/fenrir-agent* "pub/$t/"
+            chmod +x "pub/$t/"*
+          done
+          printf 'Agent builds from %s@%s (CI run %s). Generated; do not edit.\n' \
+            "$GITHUB_REF_NAME" "$GITHUB_SHA" "$GITHUB_RUN_ID" > pub/README.txt
+          (cd pub && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          cat pub/SHA256SUMS
+      - name: push to agent-builds
+        working-directory: pub
+        run: |
+          set -eu
+          git init -q -b agent-builds
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Agent builds from ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" agent-builds
 
   # Builds the server image from the Dockerfile (not published).
   docker:

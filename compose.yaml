@@ -12,10 +12,11 @@ services:
     #   FENRIR_PUBLIC_URL: https://backup.example.lan:8443
     volumes:
       - fenrir-data:/var/lib/fenrir-server
-      # macOS agents from a CI server bundle (fenrir-server-linux-x64/agents/...).
-      # Optional. The Windows / Hyper-V agent is already built into the image.
-      # - ./agents/aarch64-apple-darwin:/opt/fenrir/agents/aarch64-apple-darwin:ro
-      # - ./agents/x86_64-apple-darwin:/opt/fenrir/agents/x86_64-apple-darwin:ro
+      # macOS agents (built by CI on a Mac). scripts/server-sync fills
+      # ./agents/ from the agent-builds branch; empty folders just mean "not
+      # available yet". The Windows / Hyper-V agent is built into the image.
+      - ./agents/aarch64-apple-darwin:/opt/fenrir/agents/aarch64-apple-darwin:ro
+      - ./agents/x86_64-apple-darwin:/opt/fenrir/agents/x86_64-apple-darwin:ro
 
 volumes:
   fenrir-data:

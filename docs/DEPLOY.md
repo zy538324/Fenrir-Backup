@@ -46,11 +46,11 @@ as arguments after the image name, e.g. `fenrir-server --poll-seconds 30`.
 * **Data:** the database and generated certificate are in the
   `fenrir-data` volume. Back it up; keep it when upgrading, because the
   agents pin the certificate stored there.
-* **macOS agents** are not built inside Docker (they need a Mac). Mount
-  them from a CI server bundle, one folder per platform, as shown in
-  `compose.yaml`; a mounted MSVC-built Windows agent from CI replaces the
-  MinGW one. The Add machines page marks platforms without a build as
-  unavailable.
+* **macOS agents** are not built inside Docker (they need a Mac). The
+  server sync fetches them from CI (see "Keep it updated from GitHub");
+  without it, copy `fenrir-agent` from a CI server bundle into
+  `./agents/aarch64-apple-darwin/` and `./agents/x86_64-apple-darwin/`.
+  The Add machines page marks platforms without a build as unavailable.
 * **Bind mount instead of a volume:** the server runs as UID 10001, so
   `chown -R 10001:10001` the host folder first.
 * **Upgrades:** `docker compose up -d --build` (or pull the new image and
@@ -73,6 +73,16 @@ sudo git clone --branch <branch> https://github.com/zy538324/Fenrir-Backup /opt/
 ```bash
 sudo sh /opt/fenrir-backup/scripts/server-sync/install.sh
 ```
+
+The same timer installs the **macOS agents**. They can only be built on a
+Mac, so CI builds them on GitHub's macOS runners and publishes them to the
+`agent-builds` branch after each successful run of `main` or the
+development branch. The sync fetches that branch with the same read-only
+access, checks every file against its `SHA256SUMS`, and places them in
+`/opt/fenrir-backup/agents/`, which `compose.yaml` mounts into the
+container. No restart is needed. If CI cannot push the branch, set the
+repository's Settings → Actions → General → Workflow permissions to "Read
+and write".
 
 Put local settings (e.g. `FENRIR_PUBLIC_URL`) in
 `/opt/fenrir-backup/compose.override.yaml`, not in `compose.yaml`: the
