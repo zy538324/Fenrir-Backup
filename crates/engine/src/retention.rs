@@ -81,50 +81,31 @@ pub fn select(images: &[Candidate], p: &RetentionPolicy) -> Vec<Decision> {
             }
         } else {
             reasons[0].push("newest");
-            let day = |t: i64| t.div_euclid(86_400);
-            let rules: [(&'static str, u32, Box<dyn Fn(i64) -> i64>); 5] = [
-                ("last", p.keep_last, Box::new(|t| t)),
-                ("daily", p.keep_daily, Box::new(move |t| day(t))),
-                (
-                    "weekly",
-                    p.keep_weekly,
-                    Box::new(move |t| {
-                        let (y, w) = iso_week(day(t));
-                        y * 100 + w as i64
-                    }),
-                ),
-                (
-                    "monthly",
-                    p.keep_monthly,
-                    Box::new(move |t| {
-                        let (y, m, _) = civil_from_days(day(t));
-                        y * 100 + m as i64
-                    }),
-                ),
-                (
-                    "yearly",
-                    p.keep_yearly,
-                    Box::new(move |t| civil_from_days(day(t)).0),
-                ),
+            let rules = [
+                ("last", p.keep_last),
+                ("daily", p.keep_daily),
+                ("weekly", p.keep_weekly),
+                ("monthly", p.keep_monthly),
+                ("yearly", p.keep_yearly),
             ];
-            for (name, n, key) in rules.iter() {
-                if *n == 0 {
+            for (name, n) in rules {
+                if n == 0 {
                     continue;
                 }
                 let mut last_key = None;
                 let mut kept = 0;
                 for (i, c) in list.iter().enumerate() {
                     // keep_last counts images, not periods.
-                    let k = if *name == "last" {
+                    let k = if name == "last" {
                         i as i64
                     } else {
-                        key(c.created_unix)
+                        period(name, c.created_unix)
                     };
                     if last_key != Some(k) {
                         reasons[i].push(name);
                         last_key = Some(k);
                         kept += 1;
-                        if kept == *n {
+                        if kept == n {
                             break;
                         }
                     }
@@ -142,6 +123,24 @@ pub fn select(images: &[Candidate], p: &RetentionPolicy) -> Vec<Decision> {
         }
     }
     out
+}
+
+/// Period an image falls in for a rule (UTC).
+fn period(rule: &str, t: i64) -> i64 {
+    let day = t.div_euclid(86_400);
+    match rule {
+        "daily" => day,
+        "weekly" => {
+            let (y, w) = iso_week(day);
+            y * 100 + w as i64
+        }
+        "monthly" => {
+            let (y, m, _) = civil_from_days(day);
+            y * 100 + m as i64
+        }
+        "yearly" => civil_from_days(day).0,
+        _ => t,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
