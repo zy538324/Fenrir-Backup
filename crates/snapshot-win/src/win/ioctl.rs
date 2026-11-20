@@ -13,7 +13,7 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::Ioctl::{
     FSCTL_GET_NTFS_VOLUME_DATA, FSCTL_GET_RETRIEVAL_POINTERS, FSCTL_GET_VOLUME_BITMAP,
-    IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_STORAGE_QUERY_PROPERTY,
+    IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_DISK_GET_LENGTH_INFO, IOCTL_STORAGE_QUERY_PROPERTY,
 };
 use windows::Win32::System::IO::DeviceIoControl;
 
@@ -83,6 +83,18 @@ pub fn disk_geometry(f: &File) -> io::Result<(u64, u32)> {
     let bps = u32::from_le_bytes(out[20..24].try_into().unwrap());
     let size = i64::from_le_bytes(out[24..32].try_into().unwrap()) as u64;
     Ok((size, bps))
+}
+
+/// Readable length of a disk or volume device (GET_LENGTH_INFORMATION).
+/// A snapshot (or any NTFS) volume is shorter than its partition: the
+/// NTFS backup boot sector in the partition's last sector lies outside it.
+pub fn device_length(f: &File) -> io::Result<u64> {
+    let mut out = [0u8; 8];
+    let (n, _) = ioctl(f, IOCTL_DISK_GET_LENGTH_INFO, &[], &mut out)?;
+    if n < 8 {
+        return Err(io::Error::other("short GET_LENGTH_INFORMATION"));
+    }
+    Ok(i64::from_le_bytes(out).max(0) as u64)
 }
 
 fn storage_query(f: &File, property_id: u32) -> io::Result<Vec<u8>> {

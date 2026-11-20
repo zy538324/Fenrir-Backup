@@ -16,6 +16,11 @@ pub struct Overlay {
     /// Absolute disk offset where the partition starts.
     pub start: u64,
     pub len: u64,
+    /// Bytes the snapshot device holds (at most `len`). A volume is often
+    /// shorter than its partition (NTFS keeps its backup boot sector in the
+    /// partition's last sector, outside the volume); the rest of the
+    /// partition is read from the raw disk.
+    pub device_len: u64,
     /// Snapshot device; offset 0 = partition start.
     pub device: SharedReader,
 }
@@ -66,9 +71,13 @@ impl DiskSource for CompositeDisk {
             let cur = self
                 .overlays
                 .iter()
-                .find(|o| pos >= o.start && pos < o.start + o.len);
+                .find(|o| pos >= o.start && pos < o.start + o.device_len.min(o.len));
             let (stop, dev, dev_off): (u64, &SharedReader, u64) = match cur {
-                Some(o) => ((o.start + o.len).min(end), &o.device, pos - o.start),
+                Some(o) => (
+                    (o.start + o.device_len.min(o.len)).min(end),
+                    &o.device,
+                    pos - o.start,
+                ),
                 None => {
                     let next = self
                         .overlays
@@ -111,11 +120,13 @@ mod tests {
                 Overlay {
                     start: 60,
                     len: 10,
+                    device_len: 10,
                     device: snap_b,
                 },
                 Overlay {
                     start: 10,
                     len: 20,
+                    device_len: 20,
                     device: snap_a,
                 },
             ],
@@ -140,6 +151,7 @@ mod tests {
         let o = |s| Overlay {
             start: s,
             len: 5,
+            device_len: 5,
             device: r.clone(),
         };
         assert!(CompositeDisk::new(
@@ -149,5 +161,38 @@ mod tests {
             CapturePlan::default()
         )
         .is_err());
+    }
+
+    #[test]
+    fn partition_tail_beyond_the_snapshot_volume_comes_from_the_disk() {
+        // Partition 10..30, but the snapshot volume is 15 bytes long (NTFS:
+        // the backup boot sector lies after the volume). The snapshot
+        // device itself ends there: reading past it would fail.
+        let raw: SharedReader = Arc::new(vec![b'r'; 40]);
+        let snap: SharedReader = Arc::new(vec![b's'; 15]);
+        let d = CompositeDisk::new(
+            DiskInfo {
+                size: 40,
+                ..Default::default()
+            },
+            raw,
+            vec![Overlay {
+                start: 10,
+                len: 20,
+                device_len: 15,
+                device: snap,
+            }],
+            CapturePlan::default(),
+        )
+        .unwrap();
+        let mut buf = vec![0u8; 40];
+        d.read_at(0, &mut buf).unwrap();
+        assert_eq!(&buf[..10], &[b'r'; 10]);
+        assert_eq!(&buf[10..25], &[b's'; 15]);
+        assert_eq!(&buf[25..], &[b'r'; 15], "partition tail from the disk");
+        // The probe that failed on Windows: the last bytes of the partition.
+        let mut tail = [0u8; 4];
+        d.read_at(26, &mut tail).unwrap();
+        assert_eq!(tail, [b'r'; 4]);
     }
 }

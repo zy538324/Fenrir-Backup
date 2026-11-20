@@ -273,6 +273,11 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
             }
             if let Some(s) = snap {
                 let dev = ioctl::open_read(&s.device)?;
+                // Bytes the snapshot device can serve; past that (the NTFS
+                // backup boot sector) reads go to the live disk.
+                let device_len = ioctl::device_length(&dev)
+                    .map(|l| l.min(p.length))
+                    .unwrap_or(p.length);
                 pp.capture = CaptureMethod::SnapshotFull;
                 if let Some(cluster) = ioctl::ntfs_cluster_size(&dev) {
                     pp.filesystem = Some(FsType::Ntfs);
@@ -304,6 +309,7 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
                 overlays.push(Overlay {
                     start: p.start,
                     len: p.length,
+                    device_len,
                     device: Arc::new(FileReader(dev)),
                 });
             }
