@@ -90,7 +90,19 @@ impl DiskSource for CompositeDisk {
                 }
             };
             let n = (stop - pos) as usize;
-            dev.read_at(dev_off, &mut buf[done..done + n])?;
+            dev.read_at(dev_off, &mut buf[done..done + n]).map_err(|e| {
+                let what = match cur {
+                    Some(o) => format!(
+                        "snapshot of the partition at {} (partition {} bytes, snapshot device {} bytes)",
+                        o.start, o.len, o.device_len
+                    ),
+                    None => format!("raw disk ({} bytes)", self.info.size),
+                };
+                io::Error::new(
+                    e.kind(),
+                    format!("{e}: reading {n} bytes at {dev_off} of the {what}"),
+                )
+            })?;
             pos = stop;
         }
         Ok(())

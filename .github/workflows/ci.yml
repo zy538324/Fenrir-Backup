@@ -86,6 +86,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release -p cli --locked
+      - name: disk layout (diagnostics)
+        shell: pwsh
+        run: |
+          Get-Disk | Format-Table Number, FriendlyName, Size, LogicalSectorSize, PartitionStyle -AutoSize
+          Get-Partition | Format-Table DiskNumber, PartitionNumber, DriveLetter, Offset, Size, Type -AutoSize
+          Get-Volume | Format-Table DriveLetter, FileSystem, Size, SizeRemaining -AutoSize
       - name: backup system --dry-run (VSS)
         shell: pwsh
         run: |
