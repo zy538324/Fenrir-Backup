@@ -144,10 +144,12 @@ pub fn update_offer(st: &Shared, inv: &protocol::Inventory) -> Option<protocol::
         return None;
     }
     // Linux builds are shipped static (musl); an agent built against glibc
-    // for the same CPU is moved onto the static build.
+    // for the same CPU is moved onto the static build. The Windows slot
+    // holds either an MSVC build (CI) or a MinGW build (Docker image).
     let want = inv
         .agent_target
-        .replace("-unknown-linux-gnu", "-unknown-linux-musl");
+        .replace("-unknown-linux-gnu", "-unknown-linux-musl")
+        .replace("-pc-windows-gnu", "-pc-windows-msvc");
     let t = PLATFORMS
         .iter()
         .flat_map(|p| p.targets.iter())

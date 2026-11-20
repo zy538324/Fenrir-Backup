@@ -984,6 +984,20 @@ async fn maintenance_restore_settings_and_updates() {
         v["update"]["path"],
         "/agent/x86_64-unknown-linux-musl/fenrir-agent"
     );
+    // A MinGW Windows build uses the Windows slot.
+    let mut mingw = inv.clone();
+    mingw.agent_target = "x86_64-pc-windows-gnu".into();
+    let (_, v) = t
+        .agent(
+            "/api/agent/heartbeat",
+            &token,
+            json!({ "inventory": mingw }),
+        )
+        .await;
+    assert_eq!(
+        v["update"]["path"],
+        "/agent/x86_64-pc-windows-msvc/fenrir-agent.exe"
+    );
     inv.agent_sha256 = up.sha256.clone();
     let (_, v) = t
         .agent(

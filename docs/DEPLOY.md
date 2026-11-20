@@ -20,8 +20,9 @@ fenrir-server-linux-x64/
 
 ## Run it with Docker
 
-The image holds the server, the web UI, the `fenrir` CLI and the Linux
-agent for its own CPU architecture (x86-64 or arm64).
+The image holds the server, the web UI, the `fenrir` CLI, the Linux agent
+for its own CPU architecture (x86-64 or arm64) and the Windows agent (used
+for Windows machines and Hyper-V hosts; cross-compiled with MinGW).
 
 ```bash
 docker compose up -d --build
@@ -45,9 +46,10 @@ as arguments after the image name, e.g. `fenrir-server --poll-seconds 30`.
 * **Data:** the database and generated certificate are in the
   `fenrir-data` volume. Back it up; keep it when upgrading, because the
   agents pin the certificate stored there.
-* **Windows, Hyper-V and macOS agents** are not built inside Docker. Mount
+* **macOS agents** are not built inside Docker (they need a Mac). Mount
   them from a CI server bundle, one folder per platform, as shown in
-  `compose.yaml`. The Add machines page marks platforms without a build as
+  `compose.yaml`; a mounted MSVC-built Windows agent from CI replaces the
+  MinGW one. The Add machines page marks platforms without a build as
   unavailable.
 * **Bind mount instead of a volume:** the server runs as UID 10001, so
   `chown -R 10001:10001` the host folder first.

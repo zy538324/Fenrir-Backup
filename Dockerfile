@@ -5,9 +5,10 @@
 #   docker build -t fenrir-server .
 #   docker run -d -p 8443:8443 -v fenrir-data:/var/lib/fenrir-server fenrir-server
 #
-# The image contains the server, the web UI, the `fenrir` CLI and a Linux
-# agent for the image's own CPU architecture. Windows and macOS agents are
-# built on those systems (CI does this) and mounted in; see docs/DEPLOY.md.
+# The image contains the server, the web UI, the `fenrir` CLI, the Linux
+# agent for the image's own CPU architecture and the Windows agent
+# (cross-compiled with MinGW; also used for Hyper-V hosts). macOS
+# agents are built on a Mac (CI does this) and mounted in; see docs/DEPLOY.md.
 
 # ---- web UI ----
 FROM node:22-alpine AS ui
@@ -34,6 +35,23 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/fenrir-server target/release/fenrir /out/ \
  && cp target/release/fenrir-agent /out/agents/$triple/
 
+# ---- Windows agent (also used on Hyper-V hosts), cross-compiled with MinGW ----
+FROM ubuntu:24.04 AS windows
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates gcc gcc-mingw-w64-x86-64 libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+COPY --from=rust:1.97-bookworm /usr/local/rustup /usr/local/rustup
+COPY --from=rust:1.97-bookworm /usr/local/cargo /usr/local/cargo
+RUN rustup target add x86_64-pc-windows-gnu
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p agent --target x86_64-pc-windows-gnu \
+ && mkdir -p /out/agents/x86_64-pc-windows-msvc \
+ && cp target/x86_64-pc-windows-gnu/release/fenrir-agent.exe /out/agents/x86_64-pc-windows-msvc/
+
 # ---- runtime ----
 FROM alpine:3.22
 RUN addgroup -S -g 10001 fenrir \
@@ -42,6 +60,7 @@ RUN addgroup -S -g 10001 fenrir \
  && chown fenrir:fenrir /var/lib/fenrir-server
 COPY --from=build /out/fenrir-server /out/fenrir /opt/fenrir/
 COPY --from=build /out/agents /opt/fenrir/agents
+COPY --from=windows /out/agents /opt/fenrir/agents
 COPY --from=ui /ui/dist /opt/fenrir/ui
 ENV FENRIR_DATA_DIR=/var/lib/fenrir-server \
     FENRIR_UI_DIR=/opt/fenrir/ui \

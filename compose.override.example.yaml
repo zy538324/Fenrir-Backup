@@ -1,0 +1,8 @@
+# Copy to compose.override.yaml for settings that must survive updates
+# (compose.override.yaml is git-ignored; docker compose reads it
+# automatically).
+services:
+  fenrir:
+    environment:
+      # The address machines use to reach this server.
+      FENRIR_PUBLIC_URL: https://backup.example.lan:8443
