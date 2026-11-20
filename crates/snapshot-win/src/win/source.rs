@@ -275,9 +275,15 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
                 let dev = ioctl::open_read(&s.device)?;
                 // Bytes the snapshot device can serve; past that (the NTFS
                 // backup boot sector) reads go to the live disk.
-                let device_len = ioctl::device_length(&dev)
-                    .map(|l| l.min(p.length))
-                    .unwrap_or(p.length);
+                let device_len = [
+                    Some(p.length),
+                    ioctl::device_length(&dev).ok(),
+                    ioctl::ntfs_volume_length(&dev),
+                ]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(p.length);
                 pp.capture = CaptureMethod::SnapshotFull;
                 if let Some(cluster) = ioctl::ntfs_cluster_size(&dev) {
                     pp.filesystem = Some(FsType::Ntfs);

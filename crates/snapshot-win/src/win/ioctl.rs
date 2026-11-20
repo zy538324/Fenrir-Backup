@@ -85,9 +85,9 @@ pub fn disk_geometry(f: &File) -> io::Result<(u64, u32)> {
     Ok((size, bps))
 }
 
-/// Readable length of a disk or volume device (GET_LENGTH_INFORMATION).
-/// A snapshot (or any NTFS) volume is shorter than its partition: the
-/// NTFS backup boot sector in the partition's last sector lies outside it.
+/// Length of a disk or volume device (GET_LENGTH_INFORMATION). On a
+/// shadow-copy device this is the partition's length, which can exceed
+/// what the device serves; see `ntfs_volume_length`.
 pub fn device_length(f: &File) -> io::Result<u64> {
     let mut out = [0u8; 8];
     let (n, _) = ioctl(f, IOCTL_DISK_GET_LENGTH_INFO, &[], &mut out)?;
@@ -142,6 +142,22 @@ pub fn ntfs_cluster_size(f: &File) -> Option<u64> {
     (n >= 48)
         .then(|| u32::from_le_bytes(out[44..48].try_into().unwrap()) as u64)
         .filter(|c| *c > 0)
+}
+
+/// Size of an NTFS volume in bytes (NumberSectors × BytesPerSector from
+/// NTFS_VOLUME_DATA_BUFFER). Smaller than the partition: NTFS keeps its
+/// backup boot sector after the volume. GET_LENGTH_INFORMATION on a
+/// shadow-copy device reports the partition length instead, and reads
+/// past this size fail.
+pub fn ntfs_volume_length(f: &File) -> Option<u64> {
+    let mut out = vec![0u8; 512];
+    let (n, _) = ioctl(f, FSCTL_GET_NTFS_VOLUME_DATA, &[], &mut out).ok()?;
+    if n < 48 {
+        return None;
+    }
+    let sectors = i64::from_le_bytes(out[8..16].try_into().unwrap());
+    let bps = u32::from_le_bytes(out[40..44].try_into().unwrap()) as u64;
+    (sectors > 0 && bps > 0).then(|| sectors as u64 * bps)
 }
 
 /// Used clusters of a volume as absolute disk extents.
