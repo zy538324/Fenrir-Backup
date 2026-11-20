@@ -14,7 +14,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 argon2 = { version = "0.5", features = ["std", "password-hash"] }
 axum = { version = "0.8", features = ["macros"] }
-axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.9", features = ["tls-rustls-no-provider"] }
 base64.workspace = true
 clap.workspace = true
 getrandom.workspace = true
@@ -24,7 +24,7 @@ protocol.workspace = true
 rcgen = "0.13"
 rusqlite = { version = "0.43", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-rustls-pemfile = "2"
+rustls-pki-types = { version = "1.9", features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"

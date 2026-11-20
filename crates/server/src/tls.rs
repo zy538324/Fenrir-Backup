@@ -16,9 +16,11 @@ pub struct LoadedTls {
 }
 
 fn info_for(cert_pem: &[u8], pinned: bool) -> anyhow::Result<TlsInfo> {
-    let der = rustls_pemfile::certs(&mut &cert_pem[..])
+    use rustls_pki_types::pem::PemObject;
+    let der = rustls_pki_types::CertificateDer::pem_slice_iter(cert_pem)
         .next()
-        .ok_or_else(|| anyhow!("no certificate in PEM"))??;
+        .ok_or_else(|| anyhow!("no certificate in PEM"))?
+        .map_err(|e| anyhow!("reading certificate PEM: {e}"))?;
     let (_, cert) = x509_parser::parse_x509_certificate(&der)
         .map_err(|e| anyhow!("parsing certificate: {e}"))?;
     let spki = cert.tbs_certificate.subject_pki.raw;

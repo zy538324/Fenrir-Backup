@@ -18,7 +18,8 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | anyhow | 1.0.104 | MIT OR Apache-2.0 | Error handling in binaries |
 | argon2 | 0.5.3 | MIT OR Apache-2.0 | Passphrase and administrator password hashing (Argon2id) |
 | axum | 0.8.9 | MIT | Server HTTP routing |
-| axum-server | 0.7.3 | MIT | Server TLS listener |
+| axum-server | 0.9.2 | MIT | Server TLS listener |
+| rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 | Reading the server certificate (PEM) |
 | base64 | 0.22.1 | MIT OR Apache-2.0 | Base64 in JSON |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Keyed chunk hashing, subkey derivation (bundles BLAKE3 C/asm, CC0/Apache-2.0) |
 | chacha20poly1305 | 0.10.1 | Apache-2.0 OR MIT | XChaCha20-Poly1305 AEAD |
@@ -35,7 +36,6 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | rpassword | 7.5.5 | Apache-2.0 | Passphrase prompt without echo |
 | rusqlite | 0.43.0 | MIT | Server database |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT | TLS (server and agent) |
-| rustls-pemfile | 2.2.0 | Apache-2.0 OR ISC OR MIT | PEM parsing |
 | serde | 1.0.229 | MIT OR Apache-2.0 | Serialisation |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 | JSON |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | SHA-256 |
@@ -93,7 +93,7 @@ Versions are pinned in `ui/package-lock.json`.
 | axum | 0.8.9 | MIT |
 | axum-core | 0.5.6 | MIT |
 | axum-macros | 0.5.1 | MIT |
-| axum-server | 0.7.3 | MIT |
+| axum-server | 0.9.2 | MIT |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64 | 0.23.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
@@ -130,6 +130,7 @@ Versions are pinned in `ui/package-lock.json`.
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
 | ed25519 | 2.2.3 | Apache-2.0 OR MIT |
 | ed25519-dalek | 2.2.0 | BSD-3-Clause |
+| either | 1.19.0 | MIT OR Apache-2.0 |
 | email-encoding | 0.4.3 | MIT OR Apache-2.0 |
 | email_address | 0.2.10 | MIT OR Apache-2.0 |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT |
@@ -235,7 +236,6 @@ Versions are pinned in `ui/package-lock.json`.
 | rusticata-macros | 4.1.0 | MIT/Apache-2.0 |
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
-| rustls-pemfile | 2.2.0 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 |
 | rustls-webpki | 0.103.17 | ISC |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 |
