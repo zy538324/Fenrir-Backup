@@ -27,9 +27,17 @@ jobs:
       - name: fmt
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all --check
-      - name: qemu-img (VHDX interoperability tests)
+      - name: QEMU, OVMF and a CirrOS image (VHDX interop + boot-from-backup tests)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y qemu-utils
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-utils qemu-system-x86 ovmf
+          sudo chmod 666 /dev/kvm || true
+          curl -fsSL -o /tmp/cirros.img https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img
+          echo "${CIRROS_SHA256}  /tmp/cirros.img" | sha256sum -c
+          qemu-img convert -O raw /tmp/cirros.img /tmp/cirros.raw
+          echo "FENRIR_TEST_BOOT_IMAGE=/tmp/cirros.raw" >> "$GITHUB_ENV"
+        env:
+          CIRROS_SHA256: 07e44a73e54c94d988028515403c1ed762055e01b83a767edf3c2b387f78ce00
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked
       - name: test
