@@ -144,20 +144,14 @@ pub fn ntfs_cluster_size(f: &File) -> Option<u64> {
         .filter(|c| *c > 0)
 }
 
-/// Size of an NTFS volume in bytes (NumberSectors × BytesPerSector from
-/// NTFS_VOLUME_DATA_BUFFER). Smaller than the partition: NTFS keeps its
-/// backup boot sector after the volume. GET_LENGTH_INFORMATION on a
-/// shadow-copy device reports the partition length instead, and reads
-/// past this size fail.
+/// Bytes an NTFS volume device can serve (whole clusters; see
+/// `parse::ntfs_readable_bytes`). Smaller than the partition, while
+/// GET_LENGTH_INFORMATION on a shadow-copy device reports the partition
+/// length; reads past this size fail.
 pub fn ntfs_volume_length(f: &File) -> Option<u64> {
     let mut out = vec![0u8; 512];
     let (n, _) = ioctl(f, FSCTL_GET_NTFS_VOLUME_DATA, &[], &mut out).ok()?;
-    if n < 48 {
-        return None;
-    }
-    let sectors = i64::from_le_bytes(out[8..16].try_into().unwrap());
-    let bps = u32::from_le_bytes(out[40..44].try_into().unwrap()) as u64;
-    (sectors > 0 && bps > 0).then(|| sectors as u64 * bps)
+    parse::ntfs_readable_bytes(&out[..n])
 }
 
 /// Used clusters of a volume as absolute disk extents.

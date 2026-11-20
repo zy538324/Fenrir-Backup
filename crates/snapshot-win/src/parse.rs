@@ -154,6 +154,24 @@ fn hex_encode(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// Readable size of an NTFS volume from an NTFS_VOLUME_DATA_BUFFER:
+/// TotalClusters × BytesPerCluster. A volume device serves whole clusters
+/// only; the sectors after the last cluster (and the backup boot sector)
+/// are outside it even though NumberSectors counts some of them.
+pub fn ntfs_readable_bytes(buf: &[u8]) -> Option<u64> {
+    if buf.len() < 48 {
+        return None;
+    }
+    let sectors = i64::from_le_bytes(buf[8..16].try_into().ok()?);
+    let clusters = i64::from_le_bytes(buf[16..24].try_into().ok()?);
+    let bps = u32::from_le_bytes(buf[40..44].try_into().ok()?) as u64;
+    let bpc = u32::from_le_bytes(buf[44..48].try_into().ok()?) as u64;
+    if sectors <= 0 || clusters <= 0 || bps == 0 || bpc == 0 {
+        return None;
+    }
+    Some((clusters as u64 * bpc).min(sectors as u64 * bps))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +255,21 @@ mod tests {
         assert_eq!(descriptor_string(&b, 40), "Samsung");
         assert_eq!(descriptor_string(&b, 0), "");
         assert_eq!(descriptor_string(&b, 1000), "");
+    }
+
+    #[test]
+    fn ntfs_readable_size_is_whole_clusters() {
+        // Numbers from the Windows CI runner's C: drive: partition
+        // 160939621888 bytes, NumberSectors = partition - 1 sector, 4 KiB
+        // clusters; Windows reports the volume as 160939618304 bytes.
+        let mut b = vec![0u8; 96];
+        b[8..16].copy_from_slice(&(160939621376i64 / 512).to_le_bytes());
+        b[16..24].copy_from_slice(&(160939618304i64 / 4096).to_le_bytes());
+        b[40..44].copy_from_slice(&512u32.to_le_bytes());
+        b[44..48].copy_from_slice(&4096u32.to_le_bytes());
+        assert_eq!(ntfs_readable_bytes(&b), Some(160939618304));
+        assert_eq!(ntfs_readable_bytes(&b[..40]), None);
+        b[44..48].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(ntfs_readable_bytes(&b), None);
     }
 }
