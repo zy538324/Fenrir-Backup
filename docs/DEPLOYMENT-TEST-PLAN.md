@@ -8,10 +8,14 @@ do, what you should see, and what to send back if it does not happen.
 has been run end to end (server in Docker, agent enrolment through the
 generated installer, backups, retention, space reclamation, restore to
 VHDX checked with qemu-img, ransomware hold, alerts, and booting a
-backup as a VM from the UI on a Linux host with QEMU). **The Windows
-service, VSS system backups, Hyper-V VM backup and restore, and the macOS
-agent have never run on real hardware.** Sections 3 to 5 are where
-problems are most likely; please report everything you see there.
+backup as a VM from the UI on a Linux host with QEMU). On Windows, CI
+plans a VSS system backup on a real Windows Server VM on every change
+(snapshot set, NTFS used-cluster map, reads through each snapshot): this
+found and fixed a bug where reads at the very end of C: ran past the
+snapshot volume. **A complete Windows system backup and restore, the
+Windows service, Hyper-V VM backup and restore, and the macOS agent have
+not yet run on real machines.** Sections 3 to 5 are where problems are
+most likely; please report everything you see there.
 
 When something fails, collect:
 
