@@ -68,8 +68,7 @@ impl FileTarget {
         }
         #[cfg(windows)]
         {
-            let s = path.to_string_lossy().to_ascii_lowercase();
-            if s.starts_with(r"\\.\") || s.starts_with(r"\\?\") {
+            if is_windows_device_path(&path.to_string_lossy()) {
                 return Err(EngineError::Safety(
                     "restoring to a physical disk from a running Windows is not supported; boot the recovery environment".into(),
                 ));
@@ -137,6 +136,22 @@ impl FileTarget {
     }
 }
 
+/// True for Windows paths naming a device or volume rather than a file:
+/// `\\.\PhysicalDrive0`, `\\.\C:`, `\\?\Volume{..}`, `\\?\GLOBALROOT\..`.
+/// Long file paths (`\\?\C:\dir\file`, `\\?\UNC\server\share\file`) are files.
+pub fn is_windows_device_path(p: &str) -> bool {
+    let s = p.replace('/', "\\").to_ascii_lowercase();
+    if s.starts_with(r"\\.\") {
+        return true;
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        let b = rest.as_bytes();
+        let drive_file = b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
+        return !(drive_file || rest.starts_with(r"unc\"));
+    }
+    false
+}
+
 #[cfg(unix)]
 fn is_block_device(m: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::FileTypeExt;
@@ -175,6 +190,24 @@ impl WriteTarget for FileTarget {
     }
     fn describe(&self) -> String {
         self.path.display().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_windows_device_path as dev;
+
+    #[test]
+    fn windows_device_paths() {
+        assert!(dev(r"\\.\PhysicalDrive0"));
+        assert!(dev(r"\\.\C:"));
+        assert!(dev(r"\\?\Volume{0b5f}\"));
+        assert!(dev(r"\\?\GLOBALROOT\Device\HarddiskVolume3"));
+        assert!(dev(r"\\?\C:"));
+        assert!(!dev(r"\\?\C:\restore\disk.img"));
+        assert!(!dev(r"\\?\UNC\nas\share\disk.img"));
+        assert!(!dev(r"D:\disk.img"));
+        assert!(!dev("/tmp/disk.img"));
     }
 }
 

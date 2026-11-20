@@ -211,6 +211,11 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
             }
         }
     }
+    if to_snapshot.is_empty() {
+        return Err(PrepareError(
+            "no volume on the selected disks can be snapshotted by VSS".into(),
+        ));
+    }
     let set = SnapshotSet::create(
         &to_snapshot,
         if opts.full_backup_type {
