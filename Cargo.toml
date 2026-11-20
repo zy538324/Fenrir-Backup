@@ -10,6 +10,7 @@ members = [
     "crates/cli",
     "crates/vdisk",
     "crates/server",
+    "crates/protocol",
 ]
 
 [workspace.package]
@@ -25,6 +26,7 @@ engine = { path = "crates/engine" }
 snapshot-linux = { path = "crates/snapshot-linux" }
 snapshot-win = { path = "crates/snapshot-win" }
 vdisk = { path = "crates/vdisk" }
+protocol = { path = "crates/protocol" }
 
 anyhow = "1"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }

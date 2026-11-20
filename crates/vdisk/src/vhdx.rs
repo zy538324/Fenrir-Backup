@@ -143,10 +143,12 @@ fn parse_file(path: &Path) -> io::Result<Parsed> {
     for off in [64 * KIB, 128 * KIB] {
         let mut h = vec![0u8; 4096];
         file.read_at(off, &mut h)?;
-        if &h[0..4] == b"head" && checksum_ok(&h, 4) && u16le(&h, 66) == 1 {
-            if best.as_ref().is_none_or(|b| u64le(&h, 8) > u64le(b, 8)) {
-                best = Some(h);
-            }
+        if &h[0..4] == b"head"
+            && checksum_ok(&h, 4)
+            && u16le(&h, 66) == 1
+            && best.as_ref().is_none_or(|b| u64le(&h, 8) > u64le(b, 8))
+        {
+            best = Some(h);
         }
     }
     let h = best.ok_or_else(|| bad(format!("{}: no valid VHDX header", path.display())))?;

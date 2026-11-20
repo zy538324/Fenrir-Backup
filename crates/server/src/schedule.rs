@@ -1,0 +1,259 @@
+//! Backup plan schedules and the background task that turns them into jobs.
+
+use rusqlite::params;
+use serde::{Deserialize, Serialize};
+
+use crate::{now, Shared};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Schedule {
+    /// Every `hours` hours.
+    Interval { hours: u32 },
+    /// At `time` ("HH:MM") local time on the given weekdays (0 = Monday;
+    /// empty = every day). `utc_offset_minutes` is the administrator's
+    /// offset when the plan was saved (e.g. 60 for UTC+1).
+    Daily {
+        time: String,
+        #[serde(default)]
+        days: Vec<u8>,
+        #[serde(default)]
+        utc_offset_minutes: i32,
+    },
+    /// Only when started by hand.
+    Manual,
+}
+
+impl Schedule {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Schedule::Interval { hours } if (1..=24 * 31).contains(hours) => Ok(()),
+            Schedule::Interval { .. } => Err("interval must be 1 hour to 31 days".into()),
+            Schedule::Daily {
+                time,
+                days,
+                utc_offset_minutes,
+            } => {
+                parse_hm(time).ok_or("time must be HH:MM")?;
+                if days.iter().any(|d| *d > 6) {
+                    return Err("days are 0 (Monday) to 6 (Sunday)".into());
+                }
+                if utc_offset_minutes.abs() > 14 * 60 {
+                    return Err("UTC offset out of range".into());
+                }
+                Ok(())
+            }
+            Schedule::Manual => Ok(()),
+        }
+    }
+
+    /// First run time strictly after `after` (Unix seconds).
+    pub fn next_after(&self, after: i64) -> Option<i64> {
+        match self {
+            Schedule::Interval { hours } => Some(after + *hours as i64 * 3600),
+            Schedule::Manual => None,
+            Schedule::Daily {
+                time,
+                days,
+                utc_offset_minutes,
+            } => {
+                let (h, m) = parse_hm(time)?;
+                let off = *utc_offset_minutes as i64 * 60;
+                let local = after + off;
+                let day_start = local.div_euclid(86_400) * 86_400;
+                for d in 0..8 {
+                    let cand_local = day_start + d * 86_400 + h as i64 * 3600 + m as i64 * 60;
+                    if cand_local <= local {
+                        continue;
+                    }
+                    // 1970-01-01 was a Thursday (weekday 3 with Monday = 0).
+                    let weekday = ((cand_local.div_euclid(86_400) + 3).rem_euclid(7)) as u8;
+                    if days.is_empty() || days.contains(&weekday) {
+                        return Some(cand_local - off);
+                    }
+                }
+                None
+            }
+        }
+    }
+}
+
+fn parse_hm(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.split_once(':')?;
+    let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
+    (h < 24 && m < 60).then_some((h, m))
+}
+
+/// Create jobs for plans that are due. A plan never has more than one
+/// unfinished job, so a machine that was offline catches up with a single
+/// run rather than one per missed slot.
+pub fn run_due(state: &Shared) -> rusqlite::Result<usize> {
+    let t = now();
+    let db = state.db();
+    let mut stmt = db.prepare(
+        "SELECT id, agent_id, repository_id, job_json, schedule_json FROM plans
+         WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= ?1",
+    )?;
+    let due: Vec<(String, String, String, String, String)> = stmt
+        .query_map(params![t], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    let mut created = 0;
+    for (plan_id, agent_id, repo_id, job_json, sched_json) in due {
+        let busy: i64 = db.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE plan_id = ?1 AND state IN ('queued','dispatched','running')",
+            params![plan_id],
+            |r| r.get(0),
+        )?;
+        if busy == 0 {
+            db.execute(
+                "INSERT INTO jobs (id, agent_id, repository_id, plan_id, kind_json, state, created, requested_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, 'schedule')",
+                params![uuid::Uuid::new_v4().to_string(), agent_id, repo_id, plan_id, job_json, t],
+            )?;
+            created += 1;
+        }
+        let next = serde_json::from_str::<Schedule>(&sched_json)
+            .ok()
+            .and_then(|s| s.next_after(t));
+        db.execute(
+            "UPDATE plans SET last_run = ?1, next_run = ?2 WHERE id = ?3",
+            params![t, next, plan_id],
+        )?;
+    }
+    Ok(created)
+}
+
+pub async fn scheduler_loop(state: Shared) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(20));
+    loop {
+        tick.tick().await;
+        let s = state.clone();
+        match tokio::task::spawn_blocking(move || run_due(&s)).await {
+            Ok(Ok(n)) if n > 0 => tracing::info!(jobs = n, "scheduled jobs created"),
+            Ok(Err(e)) => tracing::error!(error = %e, "scheduler"),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 2026-11-20 (a Friday) 10:00:00 UTC.
+    const FRI_10UTC: i64 = 1_795_168_800;
+
+    #[test]
+    fn weekday_reference() {
+        assert_eq!(core_time(FRI_10UTC), "2026-11-20T10:00:00Z");
+    }
+
+    fn core_time(t: i64) -> String {
+        // Local helper to keep the test readable without a date crate.
+        let days = t.div_euclid(86_400);
+        let (y, m, d) = {
+            let z = days + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z.rem_euclid(146_097);
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let d = doy - (153 * mp + 2) / 5 + 1;
+            let m = if mp < 10 { mp + 3 } else { mp - 9 };
+            (yoe + era * 400 + if m <= 2 { 1 } else { 0 }, m, d)
+        };
+        let s = t.rem_euclid(86_400);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            s / 3600,
+            s % 3600 / 60,
+            s % 60
+        )
+    }
+
+    #[test]
+    fn daily_same_day_and_next_day() {
+        let s = Schedule::Daily {
+            time: "22:30".into(),
+            days: vec![],
+            utc_offset_minutes: 0,
+        };
+        assert_eq!(
+            core_time(s.next_after(FRI_10UTC).unwrap()),
+            "2026-11-20T22:30:00Z"
+        );
+        let s = Schedule::Daily {
+            time: "09:00".into(),
+            days: vec![],
+            utc_offset_minutes: 0,
+        };
+        assert_eq!(
+            core_time(s.next_after(FRI_10UTC).unwrap()),
+            "2026-11-21T09:00:00Z"
+        );
+    }
+
+    #[test]
+    fn daily_weekdays_only_skips_weekend() {
+        let s = Schedule::Daily {
+            time: "09:00".into(),
+            days: vec![0, 1, 2, 3, 4],
+            utc_offset_minutes: 0,
+        };
+        assert_eq!(
+            core_time(s.next_after(FRI_10UTC).unwrap()),
+            "2026-11-23T09:00:00Z"
+        ); // Monday
+    }
+
+    #[test]
+    fn daily_respects_utc_offset() {
+        // 23:00 at UTC+2 is 21:00 UTC.
+        let s = Schedule::Daily {
+            time: "23:00".into(),
+            days: vec![],
+            utc_offset_minutes: 120,
+        };
+        assert_eq!(
+            core_time(s.next_after(FRI_10UTC).unwrap()),
+            "2026-11-20T21:00:00Z"
+        );
+        // 01:00 at UTC-5 is 06:00 UTC the next day.
+        let s = Schedule::Daily {
+            time: "01:00".into(),
+            days: vec![],
+            utc_offset_minutes: -300,
+        };
+        assert_eq!(
+            core_time(s.next_after(FRI_10UTC).unwrap()),
+            "2026-11-21T06:00:00Z"
+        );
+    }
+
+    #[test]
+    fn interval_and_validation() {
+        assert_eq!(
+            Schedule::Interval { hours: 6 }.next_after(100),
+            Some(100 + 6 * 3600)
+        );
+        assert_eq!(Schedule::Manual.next_after(100), None);
+        assert!(Schedule::Interval { hours: 0 }.validate().is_err());
+        assert!(Schedule::Daily {
+            time: "25:00".into(),
+            days: vec![],
+            utc_offset_minutes: 0
+        }
+        .validate()
+        .is_err());
+        assert!(Schedule::Daily {
+            time: "10:00".into(),
+            days: vec![7],
+            utc_offset_minutes: 0
+        }
+        .validate()
+        .is_err());
+    }
+}
