@@ -115,8 +115,43 @@ fn binary_path(st: &Shared, t: &Target) -> PathBuf {
 
 /// SHA-256 and size of an agent binary, if present.
 fn binary_info(st: &Shared, t: &Target) -> Option<(String, u64)> {
-    let data = std::fs::read(binary_path(st, t)).ok()?;
-    Some((sha256_hex(&data), data.len() as u64))
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::SystemTime;
+    // Hash once per file version, not on every heartbeat.
+    /// path -> (modified, length, sha256)
+    type HashCache = HashMap<PathBuf, (SystemTime, u64, String)>;
+    static CACHE: Mutex<Option<HashCache>> = Mutex::new(None);
+    let path = binary_path(st, t);
+    let meta = std::fs::metadata(&path).ok()?;
+    let (mtime, len) = (meta.modified().ok()?, meta.len());
+    let mut c = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    let map = c.get_or_insert_with(HashMap::new);
+    if let Some((m, l, h)) = map.get(&path) {
+        if *m == mtime && *l == len {
+            return Some((h.clone(), len));
+        }
+    }
+    let data = std::fs::read(&path).ok()?;
+    let h = sha256_hex(&data);
+    map.insert(path, (mtime, len, h.clone()));
+    Some((h, len))
+}
+
+/// The build this agent should run, if it differs from what it runs now.
+pub fn update_offer(st: &Shared, inv: &protocol::Inventory) -> Option<protocol::AgentUpdate> {
+    if inv.agent_target.is_empty() || inv.agent_sha256.is_empty() {
+        return None;
+    }
+    let t = PLATFORMS
+        .iter()
+        .flat_map(|p| p.targets.iter())
+        .find(|t| t.triple == inv.agent_target)?;
+    let (sha, _) = binary_info(st, t)?;
+    (!sha.eq_ignore_ascii_case(&inv.agent_sha256)).then(|| protocol::AgentUpdate {
+        path: format!("/agent/{}/{}", t.triple, t.file),
+        sha256: sha,
+    })
 }
 
 /// URL agents use to reach this server.

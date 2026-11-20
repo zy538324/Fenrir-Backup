@@ -5,9 +5,11 @@
 //! holds repository keys: secrets reach agents sealed by the browser.
 
 pub mod agent_api;
+pub mod anomaly;
 pub mod auth;
 pub mod db;
 pub mod downloads;
+pub mod notify;
 pub mod schedule;
 pub mod tls;
 pub mod ui_api;

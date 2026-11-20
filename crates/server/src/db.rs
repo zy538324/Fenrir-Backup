@@ -115,6 +115,32 @@ const MIGRATIONS: &[&str] = &[
         detail TEXT NOT NULL
     );
     "#,
+    // 2: retention, maintenance, anomaly hold, settings, notifications
+    r#"
+    ALTER TABLE plans ADD COLUMN retention_json TEXT;
+    ALTER TABLE repositories ADD COLUMN hold INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE repositories ADD COLUMN hold_reason TEXT;
+    ALTER TABLE repositories ADD COLUMN hold_since INTEGER;
+    ALTER TABLE repositories ADD COLUMN maintenance_agent_id TEXT;
+    ALTER TABLE repositories ADD COLUMN prune_every_days INTEGER NOT NULL DEFAULT 7;
+    ALTER TABLE repositories ADD COLUMN last_prune INTEGER;
+    ALTER TABLE images ADD COLUMN chunks_total INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE images ADD COLUMN chunks_new INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE images ADD COLUMN bytes_new_raw INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE images ADD COLUMN anomaly TEXT;
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE notifications (
+        id INTEGER PRIMARY KEY,
+        at INTEGER NOT NULL,
+        channel TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        error TEXT
+    );
+    CREATE TABLE alert_state (key TEXT PRIMARY KEY, at INTEGER NOT NULL);
+    UPDATE repositories SET maintenance_agent_id =
+        (SELECT agent_id FROM jobs WHERE jobs.repository_id = repositories.id AND kind_json LIKE '{"type":"init_repository"%' LIMIT 1);
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
@@ -136,4 +162,41 @@ pub fn audit(conn: &Connection, actor: &str, action: &str, detail: &str) {
         "INSERT INTO audit (at, actor, action, detail) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![crate::now(), actor, action, detail],
     );
+}
+
+pub fn get_setting<T: serde::de::DeserializeOwned + Default>(conn: &Connection, key: &str) -> T {
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+        r.get::<_, String>(0)
+    })
+    .ok()
+    .and_then(|v| serde_json::from_str(&v).ok())
+    .unwrap_or_default()
+}
+
+pub fn set_setting<T: serde::Serialize>(
+    conn: &Connection,
+    key: &str,
+    value: &T,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![key, serde_json::to_string(value).unwrap_or_default()],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn migrations_apply_and_are_idempotent() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        super::migrate(&c).unwrap();
+        super::migrate(&c).unwrap();
+        let v: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v as usize, super::MIGRATIONS.len());
+        c.execute("INSERT INTO settings (key, value) VALUES ('a', '1')", [])
+            .unwrap();
+    }
 }

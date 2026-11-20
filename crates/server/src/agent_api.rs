@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::auth::AgentAuth;
 use crate::db::audit;
+use crate::{anomaly, notify};
 use crate::{now, sha256_hex, ApiError, ApiResult, Shared};
 
 pub fn routes() -> Router<Shared> {
@@ -149,7 +150,10 @@ async fn heartbeat(
     if busy == 0 && req.running_job.is_none() {
         let next: Option<(String, Option<String>, String)> = db
             .query_row(
-                "SELECT id, repository_id, kind_json FROM jobs WHERE agent_id = ?1 AND state = 'queued' ORDER BY created LIMIT 1",
+                "SELECT j.id, j.repository_id, j.kind_json FROM jobs j LEFT JOIN repositories r ON r.id = j.repository_id
+                 WHERE j.agent_id = ?1 AND j.state = 'queued'
+                   AND NOT (COALESCE(r.hold, 0) = 1 AND (j.kind_json LIKE '{\"type\":\"apply_retention%' OR j.kind_json LIKE '{\"type\":\"prune%'))
+                 ORDER BY j.created LIMIT 1",
                 params![agent.agent_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -202,10 +206,19 @@ async fn heartbeat(
         .query_map(params![agent.agent_id], |r| r.get::<_, String>(0))?
         .filter_map(|r| r.ok().and_then(|s| Uuid::parse_str(&s).ok()))
         .collect();
+    drop(stmt);
+    let auto_update = crate::db::get_setting::<UpdateSettings>(&db, UPDATE_KEY).enabled();
+    drop(db);
+    let update = if auto_update {
+        crate::downloads::update_offer(&st, &req.inventory)
+    } else {
+        None
+    };
     Ok(Json(HeartbeatResponse {
         jobs,
         poll_seconds: st.cfg.poll_seconds,
         cancel,
+        update,
     }))
 }
 
@@ -217,12 +230,34 @@ async fn update_job(
 ) -> ApiResult<Json<serde_json::Value>> {
     let t = now();
     let db = st.db();
-    let (owner, repo_id, cur_state, kind_json): (String, Option<String>, String, String) = db
+    let (owner, repo_id, cur_state, kind_json, plan_id): (
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+    ) = db.query_row(
+        "SELECT agent_id, repository_id, state, kind_json, plan_id FROM jobs WHERE id = ?1",
+        params![id.to_string()],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )?;
+    let kind: Option<JobKind> = serde_json::from_str(&kind_json).ok();
+    let is_backup = matches!(
+        kind,
+        Some(
+            JobKind::BackupSystem { .. }
+                | JobKind::BackupDisks { .. }
+                | JobKind::BackupHyperv { .. }
+        )
+    );
+    let mut events: Vec<notify::Event> = Vec::new();
+    let agent_name: String = db
         .query_row(
-            "SELECT agent_id, repository_id, state, kind_json FROM jobs WHERE id = ?1",
-            params![id.to_string()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?;
+            "SELECT COALESCE(display_name, hostname) FROM agents WHERE id = ?1",
+            params![agent.agent_id],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
     if owner != agent.agent_id {
         return Err(ApiError::forbidden("job belongs to another agent"));
     }
@@ -251,10 +286,10 @@ async fn update_job(
 
     if let (Some(rid), Some(images)) = (&repo_id, &u.images) {
         for im in images {
-            db.execute(
-                "INSERT INTO images (image_id, repository_id, agent_id, machine_id, hostname, created, kind, consistency, captured_bytes, stored_new_bytes, disks_json, label, vm_name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-                 ON CONFLICT(image_id) DO UPDATE SET label = excluded.label",
+            let inserted = db.execute(
+                "INSERT INTO images (image_id, repository_id, agent_id, machine_id, hostname, created, kind, consistency, captured_bytes, stored_new_bytes, disks_json, label, vm_name, chunks_total, chunks_new, bytes_new_raw)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 ON CONFLICT(image_id) DO NOTHING",
                 params![
                     im.image_id.to_string(),
                     rid,
@@ -268,9 +303,89 @@ async fn update_job(
                     im.stored_new_bytes as i64,
                     serde_json::to_string(&im.disks)?,
                     im.label,
-                    im.vm_name
+                    im.vm_name,
+                    im.chunks_total as i64,
+                    im.chunks_new as i64,
+                    im.bytes_new_raw as i64
                 ],
             )?;
+            if inserted == 1 && is_backup {
+                if let Some(reason) = check_anomaly(&db, rid, im)? {
+                    let what = im.vm_name.clone().unwrap_or_else(|| im.hostname.clone());
+                    db.execute(
+                        "UPDATE images SET anomaly = ?1 WHERE image_id = ?2",
+                        params![reason, im.image_id.to_string()],
+                    )?;
+                    db.execute(
+                        "UPDATE repositories SET hold = 1, hold_since = ?1, hold_reason = ?2 WHERE id = ?3",
+                        params![t, format!("Possible ransomware on {what}: {reason}"), rid],
+                    )?;
+                    audit(
+                        &db,
+                        &format!("agent:{}", agent.agent_id),
+                        "repository.hold.anomaly",
+                        &format!("{what}: {reason}"),
+                    );
+                    events.push(notify::Event {
+                        severity: notify::Severity::Error,
+                        subject: format!("Possible ransomware detected on {what}"),
+                        body: format!(
+                            "The latest backup of {what} looks like mass encryption: {reason}.\n\nDeletion of old backups in this repository is on hold, so earlier images are kept. Check the machine, then release the hold in Repositories."
+                        ),
+                        link: Some("/repositories".into()),
+                    });
+                }
+            }
+        }
+    }
+    if let Some(rid) = &repo_id {
+        for removed in &u.removed_images {
+            db.execute(
+                "DELETE FROM images WHERE image_id = ?1 AND repository_id = ?2",
+                params![removed.to_string(), rid],
+            )?;
+        }
+        if matches!(kind, Some(JobKind::Prune { dry_run: false })) && u.state == JobState::Succeeded
+        {
+            db.execute(
+                "UPDATE repositories SET last_prune = ?1 WHERE id = ?2",
+                params![t, rid],
+            )?;
+        }
+    }
+    // Retention runs after each successful plan backup, unless on hold.
+    if is_backup && matches!(u.state, JobState::Succeeded | JobState::Warning) {
+        if let (Some(pid), Some(rid)) = (&plan_id, &repo_id) {
+            queue_retention(
+                &db,
+                pid,
+                rid,
+                &agent.agent_id,
+                u.images.as_deref().unwrap_or(&[]),
+            )?;
+        }
+    }
+    if u.state.is_final() {
+        let label = kind.as_ref().map(|k| k.label()).unwrap_or("Job");
+        let settings: notify::NotifySettings = crate::db::get_setting(&db, notify::KEY);
+        let link = Some(format!("/machines/{}", agent.agent_id));
+        match u.state {
+            JobState::Failed => events.push(notify::Event {
+                severity: notify::Severity::Error,
+                subject: format!("{label} failed: {agent_name}"),
+                body: format!(
+                    "{label} on {agent_name} failed.\n\n{}",
+                    u.error.clone().unwrap_or_default()
+                ),
+                link,
+            }),
+            JobState::Warning if settings.on_warning && is_backup => events.push(notify::Event {
+                severity: notify::Severity::Warning,
+                subject: format!("{label} completed with warnings: {agent_name}"),
+                body: u.warnings.join("\n"),
+                link,
+            }),
+            _ => {}
         }
     }
 
@@ -311,5 +426,92 @@ async fn update_job(
             &id.to_string(),
         );
     }
+    drop(db);
+    for ev in events {
+        notify::send(&st, ev);
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+fn check_anomaly(
+    db: &rusqlite::Connection,
+    repo: &str,
+    im: &ImageReport,
+) -> rusqlite::Result<Option<String>> {
+    let mut stmt = db.prepare(
+        "SELECT chunks_total, chunks_new, bytes_new_raw, stored_new_bytes FROM images
+         WHERE machine_id = ?1 AND repository_id = ?2 AND image_id != ?3 AND chunks_total > 0
+         ORDER BY created DESC LIMIT 10",
+    )?;
+    let hist: Vec<anomaly::Stats> = stmt
+        .query_map(params![im.machine_id, repo, im.image_id.to_string()], |r| {
+            Ok(anomaly::Stats {
+                chunks_total: r.get::<_, i64>(0)? as u64,
+                chunks_new: r.get::<_, i64>(1)? as u64,
+                bytes_new_raw: r.get::<_, i64>(2)? as u64,
+                bytes_new_stored: r.get::<_, i64>(3)? as u64,
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    let cur = anomaly::Stats {
+        chunks_total: im.chunks_total,
+        chunks_new: im.chunks_new,
+        bytes_new_raw: im.bytes_new_raw,
+        bytes_new_stored: im.stored_new_bytes,
+    };
+    Ok(anomaly::evaluate(&hist, &cur))
+}
+
+/// Queue retention for the machines a plan backup just imaged.
+fn queue_retention(
+    db: &rusqlite::Connection,
+    plan: &str,
+    repo: &str,
+    agent: &str,
+    images: &[ImageReport],
+) -> rusqlite::Result<()> {
+    let ret: Option<Retention> = db
+        .query_row(
+            "SELECT retention_json FROM plans WHERE id = ?1",
+            params![plan],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let Some(retention) = ret.filter(|r| !r.keeps_everything()) else {
+        return Ok(());
+    };
+    let mut machine_ids: Vec<String> = images.iter().map(|i| i.machine_id.clone()).collect();
+    machine_ids.sort();
+    machine_ids.dedup();
+    if machine_ids.is_empty() {
+        return Ok(());
+    }
+    let kind = JobKind::ApplyRetention {
+        machine_ids,
+        retention,
+        dry_run: false,
+    };
+    db.execute(
+        "INSERT INTO jobs (id, agent_id, repository_id, plan_id, kind_json, state, created, requested_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, 'retention')",
+        params![Uuid::new_v4().to_string(), agent, repo, plan, serde_json::to_string(&kind).unwrap_or_default(), now()],
+    )?;
+    Ok(())
+}
+
+pub const UPDATE_KEY: &str = "updates";
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct UpdateSettings {
+    /// None = default (on).
+    #[serde(default)]
+    pub auto_update: Option<bool>,
+}
+
+impl UpdateSettings {
+    pub fn enabled(&self) -> bool {
+        self.auto_update.unwrap_or(true)
+    }
 }

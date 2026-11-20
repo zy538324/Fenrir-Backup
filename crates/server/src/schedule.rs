@@ -1,6 +1,6 @@
 //! Backup plan schedules and the background task that turns them into jobs.
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::{now, Shared};
@@ -126,15 +126,155 @@ pub fn run_due(state: &Shared) -> rusqlite::Result<usize> {
     Ok(created)
 }
 
+/// Queue a prune for repositories whose maintenance interval has passed.
+/// Skipped while a repository is on hold, and while one is already queued.
+pub fn run_maintenance(state: &Shared) -> rusqlite::Result<usize> {
+    let t = now();
+    let db = state.db();
+    let mut stmt = db.prepare(
+        "SELECT r.id, r.maintenance_agent_id FROM repositories r JOIN agents a ON a.id = r.maintenance_agent_id
+         JOIN repo_access x ON x.repository_id = r.id AND x.agent_id = a.id
+         WHERE r.status = 'ready' AND r.hold = 0 AND a.revoked = 0 AND r.prune_every_days > 0
+           AND COALESCE(r.last_prune, r.created) < ?1 - r.prune_every_days * 86400
+           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.repository_id = r.id AND j.state IN ('queued','dispatched','running')
+                           AND j.kind_json LIKE '{\"type\":\"prune%')",
+    )?;
+    let due: Vec<(String, String)> = stmt
+        .query_map(params![t], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    for (repo, agent) in &due {
+        let kind =
+            serde_json::to_string(&protocol::JobKind::Prune { dry_run: false }).unwrap_or_default();
+        db.execute(
+            "INSERT INTO jobs (id, agent_id, repository_id, kind_json, state, created, requested_by) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, 'maintenance')",
+            params![uuid::Uuid::new_v4().to_string(), agent, repo, kind, t],
+        )?;
+    }
+    Ok(due.len())
+}
+
+/// Offline and overdue machines. Each alert fires once per episode
+/// (offline) or once a day (overdue); `alert_state` remembers.
+pub fn check_alerts(state: &Shared) -> rusqlite::Result<()> {
+    use crate::notify::{self, Event, NotifySettings, Severity};
+    let t = now();
+    let mut events = vec![];
+    {
+        let db = state.db();
+        let cfg: NotifySettings = crate::db::get_setting(&db, notify::KEY);
+        if cfg.email.is_none() && cfg.webhook.is_none() {
+            return Ok(());
+        }
+        let agents: Vec<(String, String, Option<i64>)> = db
+            .prepare("SELECT id, COALESCE(display_name, hostname), last_seen FROM agents WHERE revoked = 0")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        for (id, name, seen) in agents {
+            let key = format!("offline:{id}");
+            let offline = cfg.offline_hours > 0
+                && seen.is_some_and(|s| t - s > cfg.offline_hours as i64 * 3600);
+            let alerted: Option<i64> = db
+                .query_row(
+                    "SELECT at FROM alert_state WHERE key = ?1",
+                    params![key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match (offline, alerted) {
+                (true, None) => {
+                    db.execute(
+                        "INSERT INTO alert_state (key, at) VALUES (?1, ?2)",
+                        params![key, t],
+                    )?;
+                    events.push(Event {
+                        severity: Severity::Warning,
+                        subject: format!("{name} is offline"),
+                        body: format!("{name} has not checked in for more than {} hours. It will not be backed up until it is back.", cfg.offline_hours),
+                        link: Some(format!("/machines/{id}")),
+                    });
+                }
+                (false, Some(_)) => {
+                    db.execute("DELETE FROM alert_state WHERE key = ?1", params![key])?;
+                }
+                _ => {}
+            }
+            if cfg.overdue_days > 0 {
+                let has_plan: bool = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM plans WHERE agent_id = ?1 AND enabled = 1)",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                let last_good: Option<i64> = db.query_row(
+                    "SELECT MAX(finished) FROM jobs WHERE agent_id = ?1 AND state IN ('succeeded','warning') AND kind_json LIKE '{\"type\":\"backup%'",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                let enrolled: i64 = db.query_row(
+                    "SELECT enrolled FROM agents WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )?;
+                let since = last_good.unwrap_or(enrolled);
+                let okey = format!("overdue:{id}");
+                let last_alert: Option<i64> = db
+                    .query_row(
+                        "SELECT at FROM alert_state WHERE key = ?1",
+                        params![okey],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if has_plan
+                    && t - since > cfg.overdue_days as i64 * 86_400
+                    && last_alert.is_none_or(|a| t - a > 86_400)
+                {
+                    db.execute(
+                        "INSERT INTO alert_state (key, at) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET at = excluded.at",
+                        params![okey, t],
+                    )?;
+                    events.push(Event {
+                        severity: Severity::Error,
+                        subject: format!("{name} has no recent backup"),
+                        body: match last_good {
+                            Some(_) => format!("The last successful backup of {name} is more than {} days old.", cfg.overdue_days),
+                            None => format!("{name} has a backup plan but has never been backed up successfully."),
+                        },
+                        link: Some(format!("/machines/{id}")),
+                    });
+                }
+            }
+        }
+    }
+    for e in events {
+        notify::send(state, e);
+    }
+    Ok(())
+}
+
 pub async fn scheduler_loop(state: Shared) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(20));
     loop {
         tick.tick().await;
         let s = state.clone();
-        match tokio::task::spawn_blocking(move || run_due(&s)).await {
-            Ok(Ok(n)) if n > 0 => tracing::info!(jobs = n, "scheduled jobs created"),
-            Ok(Err(e)) => tracing::error!(error = %e, "scheduler"),
-            _ => {}
+        let r = tokio::task::spawn_blocking(move || {
+            let a = run_due(&s);
+            let b = run_maintenance(&s);
+            let c = check_alerts(&s);
+            (a, b, c)
+        })
+        .await;
+        if let Ok((a, b, c)) = r {
+            match a {
+                Ok(n) if n > 0 => tracing::info!(jobs = n, "scheduled jobs created"),
+                Err(e) => tracing::error!(error = %e, "scheduler"),
+                _ => {}
+            }
+            if let Err(e) = b {
+                tracing::error!(error = %e, "maintenance scheduler");
+            }
+            if let Err(e) = c {
+                tracing::error!(error = %e, "alert checks");
+            }
         }
     }
 }

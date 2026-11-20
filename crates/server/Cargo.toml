@@ -19,6 +19,7 @@ base64.workspace = true
 clap.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "rustls", "ring", "webpki-roots"] }
 protocol.workspace = true
 rcgen = "0.13"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -31,6 +32,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
 uuid.workspace = true
 x509-parser = "0.16"
 

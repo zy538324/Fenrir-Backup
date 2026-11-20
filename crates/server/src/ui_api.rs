@@ -56,6 +56,13 @@ pub fn routes() -> Router<Shared> {
         .route("/api/plans/{id}/run", post(run_plan))
         .route("/api/images", get(list_images))
         .route("/api/audit", get(list_audit))
+        .route("/api/repositories/{id}/hold", post(set_hold))
+        .route("/api/repositories/{id}/maintenance", post(set_maintenance))
+        .route("/api/repositories/{id}/prune", post(prune_now))
+        .route("/api/restores", post(create_restore))
+        .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/settings/test-notification", post(test_notification))
+        .route("/api/notifications", get(list_notifications))
 }
 
 fn uuid_param(s: &str) -> ApiResult<String> {
@@ -466,9 +473,16 @@ async fn create_job(
     Json(j): Json<NewJob>,
 ) -> ApiResult<Json<Value>> {
     let id = uuid_param(&id)?;
-    if matches!(j.kind, JobKind::InitRepository) {
+    if !matches!(
+        j.kind,
+        JobKind::BackupSystem { .. }
+            | JobKind::BackupDisks { .. }
+            | JobKind::BackupHyperv { .. }
+            | JobKind::Verify { .. }
+            | JobKind::ListImages
+    ) {
         return Err(ApiError::bad(
-            "repositories are created from the Repositories page",
+            "use the Repositories page (create, reclaim space) or the Restore dialog for that",
         ));
     }
     let repo = j.repository_id.as_deref().map(uuid_param).transpose()?;
@@ -707,8 +721,8 @@ async fn create_repo(
         let db = st.db();
         let tx = db.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO repositories (id, name, path, repo_uuid, status, created) VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
-            params![id, name, path, n.repo_uuid.to_string(), t],
+            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6)",
+            params![id, name, path, n.repo_uuid.to_string(), t, init],
         )?;
         for x in &n.access {
             let agent = uuid_param(&x.agent_id)?;
@@ -743,7 +757,9 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
         "SELECT r.id, r.name, r.path, r.repo_uuid, r.status, r.status_message, r.created,
             (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id),
             (SELECT COALESCE(SUM(stored_new_bytes),0) FROM images i WHERE i.repository_id = r.id),
-            (SELECT MAX(created) FROM images i WHERE i.repository_id = r.id)
+            (SELECT MAX(created) FROM images i WHERE i.repository_id = r.id),
+            r.hold, r.hold_reason, r.hold_since, r.maintenance_agent_id, r.prune_every_days, r.last_prune,
+            (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id AND i.anomaly IS NOT NULL)
          FROM repositories r ORDER BY r.created",
     )?;
     let mut repos: Vec<Value> = s
@@ -753,6 +769,9 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
                 "repo_uuid": r.get::<_, String>(3)?, "status": r.get::<_, String>(4)?, "status_message": r.get::<_, Option<String>>(5)?,
                 "created": r.get::<_, i64>(6)?, "images": r.get::<_, i64>(7)?, "stored_bytes": r.get::<_, i64>(8)?,
                 "last_image": r.get::<_, Option<i64>>(9)?,
+                "hold": r.get::<_, i64>(10)? != 0, "hold_reason": r.get::<_, Option<String>>(11)?, "hold_since": r.get::<_, Option<i64>>(12)?,
+                "maintenance_agent_id": r.get::<_, Option<String>>(13)?, "prune_every_days": r.get::<_, i64>(14)?,
+                "last_prune": r.get::<_, Option<i64>>(15)?, "anomalies": r.get::<_, i64>(16)?,
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -854,6 +873,8 @@ struct NewPlan {
     schedule: Schedule,
     #[serde(default = "yes")]
     enabled: bool,
+    #[serde(default)]
+    retention: Option<protocol::Retention>,
 }
 fn yes() -> bool {
     true
@@ -866,12 +887,13 @@ fn plan_from_row(r: &Row) -> rusqlite::Result<Value> {
         "job": serde_json::from_str::<Value>(&r.get::<_, String>(6)?).unwrap_or(Value::Null),
         "schedule": serde_json::from_str::<Value>(&r.get::<_, String>(7)?).unwrap_or(Value::Null),
         "enabled": r.get::<_, i64>(8)? != 0, "last_run": r.get::<_, Option<i64>>(9)?, "next_run": r.get::<_, Option<i64>>(10)?,
+        "retention": r.get::<_, Option<String>>(11)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
     }))
 }
 
 fn plans_query(st: &Shared, agent: Option<&str>) -> ApiResult<Vec<Value>> {
     let db = st.db();
-    let base = "SELECT p.id, p.name, p.agent_id, COALESCE(a.display_name, a.hostname), p.repository_id, r.name, p.job_json, p.schedule_json, p.enabled, p.last_run, p.next_run
+    let base = "SELECT p.id, p.name, p.agent_id, COALESCE(a.display_name, a.hostname), p.repository_id, r.name, p.job_json, p.schedule_json, p.enabled, p.last_run, p.next_run, p.retention_json
         FROM plans p JOIN agents a ON a.id = p.agent_id JOIN repositories r ON r.id = p.repository_id";
     let v = match agent {
         Some(id) => db
@@ -915,8 +937,9 @@ async fn create_plan(
     let t = now();
     let db = st.db();
     db.execute(
-        "INSERT INTO plans (id, name, agent_id, repository_id, job_json, schedule_json, enabled, next_run, created) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![id, p.name.trim(), agent, repo, serde_json::to_string(&p.job)?, serde_json::to_string(&p.schedule)?, p.enabled, p.schedule.next_after(t), t],
+        "INSERT INTO plans (id, name, agent_id, repository_id, job_json, schedule_json, enabled, next_run, created, retention_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![id, p.name.trim(), agent, repo, serde_json::to_string(&p.job)?, serde_json::to_string(&p.schedule)?, p.enabled, p.schedule.next_after(t), t,
+                p.retention.map(|r| serde_json::to_string(&r)).transpose()?],
     )?;
     audit(&db, &a.username, "plan.created", p.name.trim());
     Ok(Json(json!({ "id": id })))
@@ -932,6 +955,15 @@ struct PlanPatch {
     schedule: Option<Schedule>,
     #[serde(default)]
     job: Option<JobKind>,
+    /// Present (even null) to change retention; null = keep everything.
+    #[serde(default, deserialize_with = "some_value")]
+    retention: Option<Option<protocol::Retention>>,
+}
+
+fn some_value<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
 }
 
 async fn update_plan(
@@ -974,6 +1006,12 @@ async fn update_plan(
             params![serde_json::to_string(j)?, id],
         )?;
     }
+    if let Some(r) = &p.retention {
+        db.execute(
+            "UPDATE plans SET retention_json = ?1 WHERE id = ?2",
+            params![r.map(|r| serde_json::to_string(&r)).transpose()?, id],
+        )?;
+    }
     audit(&db, &a.username, "plan.updated", &id);
     Ok(Json(json!({ "ok": true })))
 }
@@ -1013,7 +1051,7 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
     let db = st.db();
     let mut s = db.prepare(
         "SELECT i.image_id, i.repository_id, r.name, i.agent_id, i.machine_id, i.hostname, i.created, i.kind, i.consistency,
-            i.captured_bytes, i.stored_new_bytes, i.disks_json, i.label, i.vm_name
+            i.captured_bytes, i.stored_new_bytes, i.disks_json, i.label, i.vm_name, i.anomaly, i.chunks_total, i.chunks_new
          FROM images i JOIN repositories r ON r.id = i.repository_id
          WHERE (?1 IS NULL OR i.agent_id = ?1) AND (?2 IS NULL OR i.repository_id = ?2)
          ORDER BY i.created DESC LIMIT 500",
@@ -1027,6 +1065,7 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
                 "captured_bytes": r.get::<_, i64>(9)?, "stored_new_bytes": r.get::<_, i64>(10)?,
                 "disks": serde_json::from_str::<Value>(&r.get::<_, String>(11)?).unwrap_or(json!([])),
                 "label": r.get::<_, Option<String>>(12)?, "vm_name": r.get::<_, Option<String>>(13)?,
+                "anomaly": r.get::<_, Option<String>>(14)?, "chunks_total": r.get::<_, i64>(15)?, "chunks_new": r.get::<_, i64>(16)?,
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -1102,6 +1141,347 @@ async fn list_audit(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
     let v = s
         .query_map([], |r| {
             Ok(json!({ "at": r.get::<_, i64>(0)?, "actor": r.get::<_, String>(1)?, "action": r.get::<_, String>(2)?, "detail": r.get::<_, String>(3)? }))
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(Json(v))
+}
+
+// ---------- holds, maintenance ----------
+
+#[derive(Deserialize)]
+struct HoldReq {
+    hold: bool,
+    #[serde(default)]
+    reason: String,
+}
+
+async fn set_hold(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(h): Json<HoldReq>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let db = st.db();
+    let n = if h.hold {
+        let reason = if h.reason.trim().is_empty() {
+            format!("Placed on hold by {}", a.username)
+        } else {
+            h.reason.trim().to_string()
+        };
+        db.execute(
+            "UPDATE repositories SET hold = 1, hold_since = ?1, hold_reason = ?2 WHERE id = ?3",
+            params![now(), reason, id],
+        )?
+    } else {
+        db.execute(
+            "UPDATE repositories SET hold = 0, hold_since = NULL, hold_reason = NULL WHERE id = ?1",
+            params![id],
+        )?
+    };
+    if n == 0 {
+        return Err(ApiError::not_found("no such repository"));
+    }
+    audit(
+        &db,
+        &a.username,
+        if h.hold {
+            "repository.hold"
+        } else {
+            "repository.hold_released"
+        },
+        &id,
+    );
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct MaintenanceReq {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    prune_every_days: Option<u32>,
+}
+
+async fn set_maintenance(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(m): Json<MaintenanceReq>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let db = st.db();
+    if let Some(agent) = m.agent_id.as_deref().map(uuid_param).transpose()? {
+        let ok: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2)",
+            params![id, agent],
+            |r| r.get(0),
+        )?;
+        if !ok {
+            return Err(ApiError::bad(
+                "that machine has no access to this repository",
+            ));
+        }
+        db.execute(
+            "UPDATE repositories SET maintenance_agent_id = ?1 WHERE id = ?2",
+            params![agent, id],
+        )?;
+    }
+    if let Some(d) = m.prune_every_days {
+        if d > 365 {
+            return Err(ApiError::bad(
+                "prune interval must be 0 (never) to 365 days",
+            ));
+        }
+        db.execute(
+            "UPDATE repositories SET prune_every_days = ?1 WHERE id = ?2",
+            params![d, id],
+        )?;
+    }
+    audit(&db, &a.username, "repository.maintenance_changed", &id);
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct PruneReq {
+    #[serde(default)]
+    dry_run: bool,
+}
+
+async fn prune_now(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(p): Json<PruneReq>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let (agent, hold): (Option<String>, i64) = st.db().query_row(
+        "SELECT maintenance_agent_id, hold FROM repositories WHERE id = ?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if hold != 0 && !p.dry_run {
+        return Err(ApiError::conflict(
+            "the repository is on hold; release the hold before reclaiming space",
+        ));
+    }
+    let agent = agent.ok_or_else(|| ApiError::bad("choose a maintenance machine first"))?;
+    let job = insert_job(
+        &st,
+        &agent,
+        &JobKind::Prune { dry_run: p.dry_run },
+        Some(&id),
+        None,
+        &a.username,
+    )?;
+    Ok(Json(json!({ "id": job })))
+}
+
+// ---------- restore ----------
+
+#[derive(Deserialize)]
+struct RestoreReq {
+    image_id: Uuid,
+    /// Machine that performs the restore (needs access to the repository).
+    agent_id: String,
+    target: protocol::RestoreTarget,
+    #[serde(default)]
+    disks: Vec<u32>,
+}
+
+async fn create_restore(
+    State(st): State<Shared>,
+    a: Admin,
+    Json(r): Json<RestoreReq>,
+) -> ApiResult<Json<Value>> {
+    let agent = uuid_param(&r.agent_id)?;
+    let repo: String = st
+        .db()
+        .query_row(
+            "SELECT repository_id FROM images WHERE image_id = ?1",
+            params![r.image_id.to_string()],
+            |x| x.get(0),
+        )
+        .map_err(|_| ApiError::not_found("no such image"))?;
+    let need = match &r.target {
+        protocol::RestoreTarget::Vhdx { directory } => {
+            if directory.trim().is_empty() {
+                return Err(ApiError::bad("choose a folder on the target machine"));
+            }
+            "restore_vhdx"
+        }
+        protocol::RestoreTarget::HypervVm {
+            name, directory, ..
+        } => {
+            if name.trim().is_empty() || directory.trim().is_empty() {
+                return Err(ApiError::bad("choose a VM name and a folder on the host"));
+            }
+            "restore_hyperv"
+        }
+        protocol::RestoreTarget::Disk {
+            device, confirm, ..
+        } => {
+            if device.trim().is_empty() || confirm != device {
+                return Err(ApiError::bad(
+                    "type the target device exactly to confirm that it will be overwritten",
+                ));
+            }
+            "restore_disk"
+        }
+    };
+    let kind = JobKind::Restore {
+        image_id: r.image_id,
+        disks: r.disks,
+        target: r.target,
+    };
+    {
+        let db = st.db();
+        let (caps, revoked): (Option<String>, i64) = db.query_row(
+            "SELECT inventory_json, revoked FROM agents WHERE id = ?1",
+            params![agent],
+            |x| Ok((x.get(0)?, x.get(1)?)),
+        )?;
+        let caps: Vec<String> = caps
+            .and_then(|s| serde_json::from_str::<Inventory>(&s).ok())
+            .map(|i| i.capabilities)
+            .unwrap_or_default();
+        if revoked != 0 || !caps.iter().any(|c| c == need) {
+            return Err(ApiError::bad(
+                "that machine cannot perform this kind of restore",
+            ));
+        }
+        let access: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2)",
+            params![repo, agent],
+            |x| x.get(0),
+        )?;
+        if !access {
+            return Err(ApiError::bad(
+                "that machine has no access to the image's repository; give it access first",
+            ));
+        }
+    }
+    let job = insert_job(&st, &agent, &kind, Some(&repo), None, &a.username)?;
+    audit(
+        &st.db(),
+        &a.username,
+        "restore.requested",
+        &format!("image {} on {agent}", r.image_id),
+    );
+    Ok(Json(json!({ "id": job })))
+}
+
+// ---------- settings ----------
+
+fn redact(mut n: crate::notify::NotifySettings) -> Value {
+    let has_pw = n.email.as_ref().is_some_and(|e| !e.password.is_empty());
+    if let Some(e) = &mut n.email {
+        e.password.clear();
+    }
+    let mut v = serde_json::to_value(n).unwrap_or(Value::Null);
+    if let Some(e) = v.get_mut("email").filter(|e| e.is_object()) {
+        e["has_password"] = json!(has_pw);
+    }
+    v
+}
+
+async fn get_settings(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Value>> {
+    let db = st.db();
+    let n: crate::notify::NotifySettings = crate::db::get_setting(&db, crate::notify::KEY);
+    let u: crate::agent_api::UpdateSettings =
+        crate::db::get_setting(&db, crate::agent_api::UPDATE_KEY);
+    Ok(Json(
+        json!({ "notifications": redact(n), "auto_update": u.enabled() }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct SettingsReq {
+    #[serde(default)]
+    notifications: Option<crate::notify::NotifySettings>,
+    #[serde(default)]
+    auto_update: Option<bool>,
+}
+
+async fn put_settings(
+    State(st): State<Shared>,
+    a: Admin,
+    Json(r): Json<SettingsReq>,
+) -> ApiResult<Json<Value>> {
+    let db = st.db();
+    if let Some(mut n) = r.notifications {
+        if let Some(e) = &mut n.email {
+            if e.host.trim().is_empty() || e.from.trim().is_empty() || e.to.is_empty() {
+                return Err(ApiError::bad(
+                    "email needs a server, a sender and at least one recipient",
+                ));
+            }
+            // Empty password = keep the stored one.
+            if e.password.is_empty() {
+                let old: crate::notify::NotifySettings =
+                    crate::db::get_setting(&db, crate::notify::KEY);
+                if let Some(o) = old.email {
+                    e.password = o.password;
+                }
+            }
+        }
+        if let Some(w) = &n.webhook {
+            if !(w.url.starts_with("https://") || w.url.starts_with("http://")) {
+                return Err(ApiError::bad(
+                    "webhook URL must start with https:// or http://",
+                ));
+            }
+        }
+        crate::db::set_setting(&db, crate::notify::KEY, &n)?;
+    }
+    if let Some(u) = r.auto_update {
+        crate::db::set_setting(
+            &db,
+            crate::agent_api::UPDATE_KEY,
+            &crate::agent_api::UpdateSettings {
+                auto_update: Some(u),
+            },
+        )?;
+    }
+    audit(&db, &a.username, "settings.updated", "");
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn test_notification(State(st): State<Shared>, a: Admin) -> ApiResult<Json<Value>> {
+    let cfg: crate::notify::NotifySettings = crate::db::get_setting(&st.db(), crate::notify::KEY);
+    if cfg.email.is_none() && cfg.webhook.is_none() {
+        return Err(ApiError::bad("configure email or a webhook first"));
+    }
+    let ev = crate::notify::Event {
+        severity: crate::notify::Severity::Info,
+        subject: "Test notification".into(),
+        body: format!(
+            "{} sent this test from the Fenrir-Backup settings page. Alerts will arrive like this.",
+            a.username
+        ),
+        link: Some("/".into()),
+    };
+    let base = st.cfg.public_url.clone();
+    let st2 = st.clone();
+    let results = tokio::task::spawn_blocking(move || {
+        crate::notify::deliver(&st2, &cfg, &ev, base.as_deref())
+    })
+    .await
+    .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({
+        "results": results.into_iter().map(|(ch, r)| json!({ "channel": ch, "ok": r.is_ok(), "error": r.err() })).collect::<Vec<_>>()
+    })))
+}
+
+async fn list_notifications(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<Value>>> {
+    let db = st.db();
+    let mut s = db.prepare(
+        "SELECT at, channel, subject, ok, error FROM notifications ORDER BY id DESC LIMIT 100",
+    )?;
+    let v = s
+        .query_map([], |r| {
+            Ok(json!({ "at": r.get::<_, i64>(0)?, "channel": r.get::<_, String>(1)?, "subject": r.get::<_, String>(2)?,
+                       "ok": r.get::<_, i64>(3)? != 0, "error": r.get::<_, Option<String>>(4)? }))
         })?
         .collect::<Result<_, _>>()?;
     Ok(Json(v))

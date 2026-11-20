@@ -485,6 +485,9 @@ async fn enrollment_repository_and_job_lifecycle() {
         disks: vec![1 << 34],
         label: None,
         vm_name: None,
+        chunks_total: 0,
+        chunks_new: 0,
+        bytes_new_raw: 0,
     };
     let (s, _) = t
         .agent(
@@ -602,4 +605,395 @@ async fn reinstall_with_new_key_drops_sealed_access() {
     assert_eq!(again, agent_id);
     let (_, repos) = t.get("/api/repositories").await;
     assert_eq!(repos[0]["agents"].as_array().unwrap().len(), 0);
+}
+
+// ---------- retention, anomaly hold, notifications, restore, updates ----------
+
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
+
+/// Minimal HTTP listener recording request bodies (webhook target).
+fn webhook_listener() -> (String, Arc<Mutex<Vec<String>>>) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let got = Arc::new(Mutex::new(Vec::new()));
+    let g2 = got.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { continue };
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            let body = loop {
+                let n = s.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break String::new();
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                let text = String::from_utf8_lossy(&buf).to_string();
+                if let Some(i) = text.find("\r\n\r\n") {
+                    let len = text[..i]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= i + 4 + len {
+                        break String::from_utf8_lossy(&buf[i + 4..i + 4 + len]).to_string();
+                    }
+                }
+            };
+            g2.lock().unwrap().push(body);
+            let _ =
+                s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+        }
+    });
+    (format!("http://{addr}/hook"), got)
+}
+
+fn wait_for(got: &Arc<Mutex<Vec<String>>>, needle: &str) -> bool {
+    for _ in 0..100 {
+        if got.lock().unwrap().iter().any(|b| b.contains(needle)) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+const CAPS: &[&str] = &[
+    "backup_disks",
+    "verify",
+    "maintenance",
+    "restore_vhdx",
+    "restore_disk",
+];
+
+async fn ready_repo(t: &mut T, key: &AgentKey, agent_id: &str, token: &str) -> String {
+    let repo_uuid = uuid::Uuid::new_v4();
+    let sealed = seal(&key.public_b64(), b"{\"passphrase\":\"p\"}").unwrap();
+    let (_, r) = t
+        .post(
+            "/api/repositories",
+            json!({ "name": "R", "path": "/r", "repo_uuid": repo_uuid, "init_agent_id": agent_id, "access": [{ "agent_id": agent_id, "sealed": sealed }] }),
+        )
+        .await;
+    let hb = heartbeat(t, token, CAPS, None).await;
+    t.agent(
+        &format!("/api/agent/jobs/{}/update", hb.jobs[0].id),
+        token,
+        json!({ "state": "succeeded", "repo_uuid": repo_uuid }),
+    )
+    .await;
+    r["id"].as_str().unwrap().to_string()
+}
+
+fn image(n: u64, new: u64, raw: u64, stored: u64) -> ImageReport {
+    ImageReport {
+        image_id: uuid::Uuid::new_v4(),
+        machine_id: "machine-1".into(),
+        hostname: "web01".into(),
+        created: "x".into(),
+        created_unix: 1_795_000_000 + n as i64 * 86_400,
+        kind: "incremental".into(),
+        consistency: "offline".into(),
+        captured_bytes: 1 << 30,
+        stored_new_bytes: stored,
+        disks: vec![1 << 34],
+        label: None,
+        vm_name: None,
+        chunks_total: 1000,
+        chunks_new: new,
+        bytes_new_raw: raw,
+    }
+}
+
+/// Run the next dispatched job to completion with `update`.
+async fn complete_next(t: &mut T, token: &str, update: Value) -> Option<JobSpec> {
+    let hb = heartbeat(t, token, CAPS, None).await;
+    let j = hb.jobs.into_iter().next()?;
+    let (s, v) = t
+        .agent(&format!("/api/agent/jobs/{}/update", j.id), token, update)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    Some(j)
+}
+
+#[tokio::test]
+async fn retention_anomaly_hold_and_notifications() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let (hook, got) = webhook_listener();
+    let (s, v, _) = t
+        .req(
+            "PUT",
+            "/api/settings",
+            Some(json!({ "notifications": { "webhook": { "url": hook, "format": "generic" } } })),
+            None,
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+
+    let (s, plan) = t
+        .post(
+            "/api/plans",
+            json!({ "name": "Nightly", "agent_id": agent_id, "repository_id": repo, "job": { "type": "backup_disks", "paths": ["/dev/sdb"] },
+                    "schedule": { "type": "manual" }, "retention": { "keep_last": 3 } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{plan}");
+    let plan = plan["id"].as_str().unwrap().to_string();
+    let (_, plans) = t.get("/api/plans").await;
+    assert_eq!(plans[0]["retention"]["keep_last"], 3);
+
+    // Six normal nightly backups; each is followed by a retention job.
+    for n in 0..6u64 {
+        t.post(&format!("/api/plans/{plan}/run"), json!({})).await;
+        let j = complete_next(
+            &mut t,
+            &token,
+            json!({ "state": "succeeded", "images": [image(n, 30, 30 << 20, 12 << 20)] }),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(j.kind, JobKind::BackupDisks { .. }));
+        let r = complete_next(
+            &mut t,
+            &token,
+            json!({ "state": "succeeded", "removed_images": [] }),
+        )
+        .await
+        .unwrap();
+        match r.kind {
+            JobKind::ApplyRetention {
+                machine_ids,
+                retention,
+                ..
+            } => {
+                assert_eq!(machine_ids, vec!["machine-1"]);
+                assert_eq!(retention.keep_last, 3);
+            }
+            k => panic!("expected retention, got {k:?}"),
+        }
+    }
+    // Retention reports removals: the server forgets those images.
+    let (_, imgs) = t.get("/api/images").await;
+    let oldest = imgs.as_array().unwrap().last().unwrap()["image_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    t.post(&format!("/api/plans/{plan}/run"), json!({})).await;
+    complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "images": [image(7, 25, 25 << 20, 10 << 20)] }),
+    )
+    .await;
+    complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "removed_images": [oldest] }),
+    )
+    .await;
+    let (_, imgs) = t.get("/api/images").await;
+    assert_eq!(imgs.as_array().unwrap().len(), 6);
+    assert!(!imgs
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["image_id"] == oldest.as_str()));
+
+    // Mass encryption: 70% changed, incompressible.
+    t.post(&format!("/api/plans/{plan}/run"), json!({})).await;
+    complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "images": [image(8, 700, 700 << 20, 699 << 20)] }),
+    )
+    .await;
+    let (_, repos) = t.get("/api/repositories").await;
+    assert_eq!(repos[0]["hold"], true);
+    assert!(repos[0]["hold_reason"]
+        .as_str()
+        .unwrap()
+        .contains("ransomware"));
+    assert_eq!(repos[0]["anomalies"], 1);
+    assert!(wait_for(&got, "Possible ransomware"), "webhook alert sent");
+
+    // On hold: the queued retention job is not dispatched, prune refused.
+    assert!(heartbeat(&mut t, &token, CAPS, None).await.jobs.is_empty());
+    let (s, _) = t
+        .post(&format!("/api/repositories/{repo}/prune"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // Backups still run during a hold.
+    t.post(&format!("/api/plans/{plan}/run"), json!({})).await;
+    let j = complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "failed", "error": "disk read error" }),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(j.kind, JobKind::BackupDisks { .. }));
+    assert!(wait_for(&got, "failed: web01"), "failure alert sent");
+
+    // Releasing the hold lets retention proceed.
+    t.post(
+        &format!("/api/repositories/{repo}/hold"),
+        json!({ "hold": false }),
+    )
+    .await;
+    let r = complete_next(&mut t, &token, json!({ "state": "succeeded" }))
+        .await
+        .unwrap();
+    assert!(matches!(r.kind, JobKind::ApplyRetention { .. }));
+}
+
+#[tokio::test]
+async fn maintenance_restore_settings_and_updates() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+
+    // Weekly prune on the maintenance machine (the creator by default).
+    let (_, repos) = t.get("/api/repositories").await;
+    assert_eq!(repos[0]["maintenance_agent_id"], agent_id.as_str());
+    assert_eq!(
+        server::schedule::run_maintenance(&t.st).unwrap(),
+        0,
+        "not due yet"
+    );
+    t.st.db()
+        .execute("UPDATE repositories SET created = 0", [])
+        .unwrap();
+    assert_eq!(server::schedule::run_maintenance(&t.st).unwrap(), 1);
+    assert_eq!(
+        server::schedule::run_maintenance(&t.st).unwrap(),
+        0,
+        "one at a time"
+    );
+    let j = complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "result": { "chunks_deleted": 3 } }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(j.kind, JobKind::Prune { dry_run: false });
+    let (_, repos) = t.get("/api/repositories").await;
+    assert!(repos[0]["last_prune"].as_i64().is_some());
+
+    // Restore: needs a known image, matching capability and typed confirmation.
+    t.st.db()
+        .execute(
+            "INSERT INTO images (image_id, repository_id, agent_id, machine_id, hostname, created, kind, consistency, captured_bytes, stored_new_bytes, disks_json)
+             VALUES ('6b2f7c1e-9f2a-4b8e-9d5f-0a1b2c3d4e5f', ?1, ?2, 'machine-1', 'web01', 1, 'full', 'offline', 1, 1, '[1]')",
+            rusqlite::params![repo, agent_id],
+        )
+        .unwrap();
+    let img = "6b2f7c1e-9f2a-4b8e-9d5f-0a1b2c3d4e5f";
+    let (s, _) = t
+        .post("/api/restores", json!({ "image_id": img, "agent_id": agent_id, "target": { "type": "disk", "device": "/dev/sdc", "disk": 0, "confirm": "/dev/sdb" } }))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "confirmation must match");
+    let (s, _) = t
+        .post("/api/restores", json!({ "image_id": img, "agent_id": agent_id, "target": { "type": "hyperv_vm", "name": "x", "directory": "D:\\\\VMs" } }))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "not a Hyper-V host");
+    let (s, v) = t.post("/api/restores", json!({ "image_id": img, "agent_id": agent_id, "target": { "type": "vhdx", "directory": "/restores" } })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let hb = heartbeat(&mut t, &token, CAPS, None).await;
+    assert!(
+        matches!(&hb.jobs[0].kind, JobKind::Restore { target: RestoreTarget::Vhdx { directory }, .. } if directory == "/restores")
+    );
+    assert!(
+        hb.jobs[0].repository.is_some(),
+        "restore carries repository access"
+    );
+    // Prune/retention/restore cannot be smuggled through the generic job endpoint.
+    let (s, _) = t
+        .post(
+            &format!("/api/agents/{agent_id}/jobs"),
+            json!({ "kind": { "type": "prune" }, "repository_id": repo }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // Settings: the SMTP password is never returned and survives an update without it.
+    let email = json!({ "host": "smtp.example", "port": 587, "username": "u", "password": "s3cret", "from": "fenrir@example.com", "to": ["ops@example.com"] });
+    let (s, _, _) = t
+        .req(
+            "PUT",
+            "/api/settings",
+            Some(json!({ "notifications": { "email": email } })),
+            None,
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, v) = t.get("/api/settings").await;
+    assert_eq!(v["notifications"]["email"]["password"], "");
+    assert_eq!(v["notifications"]["email"]["has_password"], true);
+    let mut e2 = email.clone();
+    e2["password"] = json!("");
+    e2["host"] = json!("smtp2.example");
+    t.req(
+        "PUT",
+        "/api/settings",
+        Some(json!({ "notifications": { "email": e2 } })),
+        None,
+        true,
+    )
+    .await;
+    let stored: server::notify::NotifySettings =
+        server::db::get_setting(&t.st.db(), server::notify::KEY);
+    assert_eq!(stored.email.as_ref().unwrap().password, "s3cret");
+    assert_eq!(stored.email.unwrap().host, "smtp2.example");
+
+    // Updates: offered when the agent runs a different build of its target.
+    let mut inv: Inventory = serde_json::from_value(inventory(CAPS)).unwrap();
+    inv.agent_target = "x86_64-unknown-linux-musl".into();
+    inv.agent_sha256 = "0".repeat(64);
+    let (_, v) = t
+        .agent("/api/agent/heartbeat", &token, json!({ "inventory": inv }))
+        .await;
+    let u: HeartbeatResponse = serde_json::from_value(v).unwrap();
+    let up = u.update.expect("update offered");
+    assert_eq!(up.path, "/agent/x86_64-unknown-linux-musl/fenrir-agent");
+    assert_eq!(
+        up.sha256,
+        server::sha256_hex(b"binary for x86_64-unknown-linux-musl")
+    );
+    inv.agent_sha256 = up.sha256.clone();
+    let (_, v) = t
+        .agent(
+            "/api/agent/heartbeat",
+            &token,
+            json!({ "inventory": inv.clone() }),
+        )
+        .await;
+    assert!(v["update"].is_null(), "already current");
+    inv.agent_sha256 = "1".repeat(64);
+    t.req(
+        "PUT",
+        "/api/settings",
+        Some(json!({ "auto_update": false })),
+        None,
+        true,
+    )
+    .await;
+    let (_, v) = t
+        .agent("/api/agent/heartbeat", &token, json!({ "inventory": inv }))
+        .await;
+    assert!(v["update"].is_null(), "auto-update off");
 }
