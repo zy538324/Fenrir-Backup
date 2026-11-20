@@ -239,7 +239,9 @@ pub mod linux {
         fn decodes_dev_numbers() {
             // makedev(8, 1) and makedev(259, 65537) per glibc encoding.
             assert_eq!(major_minor(0x801), (8, 1));
-            let dev = (259u64 & 0xfff) << 8 | (65537u64 & 0xff) | ((65537u64 & !0xff) << 12) | ((259u64 & !0xfff) << 32);
+            let (maj, min) = (259u64, 65537u64);
+            #[allow(clippy::identity_op)]
+            let dev = (maj & 0xfff) << 8 | (min & 0xff) | ((min & !0xff) << 12) | ((maj & !0xfff) << 32);
             assert_eq!(major_minor(dev), (259, 65537));
         }
     }

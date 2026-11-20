@@ -47,10 +47,14 @@ pub fn plan_disk(src: &dyn DiskSource, size: u64, table: &PartitionTable, plan: 
             Some(pp) if !p.role.is_boot_critical() => match &pp.used {
                 Some(u) => {
                     // Clamp to the partition; a provider bug must not make
-                    // us capture outside it, and the first sectors (boot
-                    // sector / superblock) are always kept.
+                    // us capture outside it. The first and last 64 KiB are
+                    // always kept: boot sector / superblock at the start,
+                    // and at the end the NTFS backup boot sector (outside
+                    // the cluster bitmap) and similar trailing metadata.
                     let mut v = extent::clip(&extent::normalize(u.clone()), pext);
-                    v.push(Extent(pext.0, pext.1.min(64 * 1024)));
+                    let edge = pext.1.min(64 * 1024);
+                    v.push(Extent(pext.0, edge));
+                    v.push(Extent(pext.end() - edge, edge));
                     (extent::normalize(v), pp.capture)
                 }
                 None => (vec![pext], pp.capture),
