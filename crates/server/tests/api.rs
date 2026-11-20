@@ -974,6 +974,16 @@ async fn maintenance_restore_settings_and_updates() {
         up.sha256,
         server::sha256_hex(b"binary for x86_64-unknown-linux-musl")
     );
+    // A glibc build of the same CPU is moved onto the static build.
+    let mut gnu = inv.clone();
+    gnu.agent_target = "x86_64-unknown-linux-gnu".into();
+    let (_, v) = t
+        .agent("/api/agent/heartbeat", &token, json!({ "inventory": gnu }))
+        .await;
+    assert_eq!(
+        v["update"]["path"],
+        "/agent/x86_64-unknown-linux-musl/fenrir-agent"
+    );
     inv.agent_sha256 = up.sha256.clone();
     let (_, v) = t
         .agent(

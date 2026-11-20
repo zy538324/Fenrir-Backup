@@ -20,6 +20,7 @@ local filesystem each key is a relative path under the repository root.
 | `signers/<key-id>.json` | Manifest signing key record (§6) | Secret half |
 | `chunks/<aa>/<id>` | Chunk object (§4); `<id>` is 64 hex chars, `<aa>` its first two | Yes |
 | `manifests/<image-uuid>` | Image manifest object (§5) | Yes |
+| `locks/<id>.<seq>.json` | Repository locks (§8) | No |
 | `tmp/` | Writer scratch space; readers ignore it | — |
 
 Keys match `[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*` and never contain `.` or `..`
@@ -340,7 +341,31 @@ Every JSON document carries `format` and `version`; binary containers carry
 a version byte. A reader must refuse versions it does not know. New
 optional JSON fields may appear in a version; readers ignore unknown fields.
 
-## 8. Reading checklist
+## 8. Locks
+
+Writers coordinate through lock objects so that pruning (deleting chunks
+no manifest references) never races with a backup that has decided to
+reuse a stored chunk.
+
+```json
+{ "kind": "shared" | "exclusive", "hostname": "web01", "pid": 1234, "created": 1795000000, "refreshed": 1795000120 }
+```
+
+* Key `locks/<id>.<seq>.json`, `<id>` 32 hex characters, `<seq>` a decimal
+  counter. Refreshing writes `<seq + 1>` before deleting `<seq>`; the
+  highest sequence of an id is current.
+* A lock whose `refreshed` is more than 1800 seconds old is stale.
+* Backup, restore, verify and retention ("forget") hold a shared lock;
+  prune holds the exclusive lock. Acquire by writing your lock, then
+  listing: a shared acquirer backs off if a fresh exclusive lock exists; an
+  exclusive acquirer backs off if any other fresh lock exists, and may
+  delete stale ones.
+* Read-only readers that cannot write a lock may read without one.
+
+A third-party writer must follow this protocol; a read-only reader may
+ignore locks.
+
+## 9. Reading checklist
 
 1. Read `config.json`; check format and version.
 2. Unwrap `MK` from a key slot (§3); derive subkeys.

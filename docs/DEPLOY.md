@@ -125,6 +125,37 @@ the agent runs as LocalSystem, which reaches a share as the computer
 account: grant `DOMAIN\COMPUTERNAME$` write access, or use a local disk.
 Storage on S3 with Object Lock and SFTP arrives with Phase 4.
 
+## Alerts
+
+Settings → Alerts: SMTP email (STARTTLS, TLS or none) and/or a webhook
+(Slack, Teams or generic JSON). You are told about failed backups,
+backups with warnings (optional), possible ransomware, machines offline
+for longer than a threshold (default 24 h) and machines with an active
+plan but no good backup for a few days (default 2). "Save and send a
+test" shows the mail or webhook server's answer if delivery fails. The
+SMTP password is stored on the server (it is the only server-side
+secret) and is never sent back to the browser.
+
+## Agent updates
+
+Agents run the build the server carries for their platform: when the
+server is upgraded, each agent downloads the new build between jobs over
+its pinned connection, checks the SHA-256, swaps its executable and
+restarts. Settings → Agent updates turns this off. Linux agents are
+static builds; an agent you built yourself against glibc is moved onto
+the static build the same way.
+
+## Retention and the ransomware hold
+
+Each backup plan says how many images to keep. Old images are removed
+after each backup, and the space they used is reclaimed weekly by the
+repository's maintenance machine (Repositories → Space reclamation).
+If a backup looks like mass encryption (far more changed data than usual,
+and the new data does not compress), the repository goes **on hold**:
+nothing is deleted or reclaimed until an administrator reviews it and
+types `release`. Backups continue during a hold. You can also place a
+hold by hand.
+
 ## Keys and what the server can see
 
 Repository passphrases are encrypted in the administrator's browser for

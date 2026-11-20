@@ -364,7 +364,7 @@ function Maintenance({ repo, agents, onChange }: { repo: Repository; agents: Age
   return (
     <details className="small" style={{ marginTop: 4 }}>
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-        Space reclamation · {repo.prune_every_days ? `every ${repo.prune_every_days} days` : "off"} · last {ago(repo.last_prune)}
+        Space reclamation · {repo.prune_every_days ? `every ${repo.prune_every_days} days` : "off"} · last run {ago(repo.last_prune)}
       </summary>
       <div className="stack" style={{ marginTop: 10 }}>
         <div className="muted">Removes data that no kept backup uses any more. It locks the repository briefly; backups wait until it finishes.</div>

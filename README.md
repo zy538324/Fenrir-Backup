@@ -22,12 +22,21 @@ management server and web UI. What works today:
 * **End-to-end encryption**: the server never holds repository keys. The
   browser encrypts each machine's passphrase to that machine, and generates
   the recovery key locally.
+* **Retention** per plan (grandfather-father-son), weekly space
+  reclamation, and a **ransomware guard**: a backup that looks like mass
+  encryption puts the repository on hold so no clean image is aged out.
+* **Restore from the UI**: as a VHDX (mount it to copy files, or attach it
+  to a VM), as a new Hyper-V VM on the host, or onto a disk.
+* **Alerts** by email, Slack, Teams or webhook; **agents update themselves**
+  when the server is upgraded.
 * Deduplicated, signed, verifiable images (format: [docs/FORMAT.md](docs/FORMAT.md)),
   and a CLI (`fenrir`) for scripting.
 
-Not yet: recovery media and bare-metal restore from the UI (Phase 2),
-boot-as-VM (3), retention, S3 and Object Lock (4), dissimilar-hardware
-restore, cloning and file-level restore (5), live Linux snapshots (6).
+Not yet: recovery media and bare-metal restore (Phase 2), boot-as-VM and
+automatic boot verification (3), S3 and Object Lock (4),
+dissimilar-hardware restore and cloning (5), live Linux snapshots (6).
+
+Before relying on it, work through [docs/DEPLOYMENT-TEST-PLAN.md](docs/DEPLOYMENT-TEST-PLAN.md).
 
 ## Quick start
 

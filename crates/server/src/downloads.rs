@@ -143,10 +143,15 @@ pub fn update_offer(st: &Shared, inv: &protocol::Inventory) -> Option<protocol::
     if inv.agent_target.is_empty() || inv.agent_sha256.is_empty() {
         return None;
     }
+    // Linux builds are shipped static (musl); an agent built against glibc
+    // for the same CPU is moved onto the static build.
+    let want = inv
+        .agent_target
+        .replace("-unknown-linux-gnu", "-unknown-linux-musl");
     let t = PLATFORMS
         .iter()
         .flat_map(|p| p.targets.iter())
-        .find(|t| t.triple == inv.agent_target)?;
+        .find(|t| t.triple == want)?;
     let (sha, _) = binary_info(st, t)?;
     (!sha.eq_ignore_ascii_case(&inv.agent_sha256)).then(|| protocol::AgentUpdate {
         path: format!("/agent/{}/{}", t.triple, t.file),

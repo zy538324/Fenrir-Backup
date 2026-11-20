@@ -52,8 +52,10 @@ promises of a backup product:
 | Integrity: AEAD on every object, keyed hash on every chunk, Ed25519-signed manifests | Done (Phase 1) |
 | Verify: quick / sampled / full re-hash | Done (Phase 1) |
 | Create-only writes; append-only server mode with separate admin credential | Create-only Done; server mode Phase 4 |
-| S3 Object Lock (compliance) retention | Phase 4 |
-| Change-ratio / entropy anomaly alert holding pruning | Phase 4 |
+| S3 Object Lock (compliance) retention | Phase 4 (storage milestone) |
+| Change-ratio / entropy anomaly alert holding pruning | Done: anomaly puts the repository on hold until an administrator releases it (typed confirmation) |
+| Repository locks so pruning never deletes data a running backup reuses | Done |
+| Agent self-update verified by SHA-256 over the pinned connection | Done |
 | Agent secrets protected with DPAPI (Windows) or root-only 0600 files (Linux, macOS); kernel keyring later | Done (management server release) |
 | Management server never holds repository keys: passphrases sealed in the browser to each agent's X25519 key; recovery key generated in the browser | Done |
 | Server: Argon2id admin passwords, login throttling, HttpOnly SameSite=Strict cookies, CSRF header, CSP and frame denial, audit log | Done |

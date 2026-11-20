@@ -60,6 +60,7 @@ Stable; scripts and RMM tools can rely on them.
 | 6 | `confirmation_required` | Destructive operation needs `--yes`. Nothing changed. |
 | 7 | `safety` | Refused by a safety check. Nothing changed. |
 | 8 | `cancelled` | Cancelled. |
+| 9 | `busy` | Another process holds the repository (a prune is running, or a backup is running when you prune). Retry later. |
 | 10 | `ok_with_warnings` | Succeeded with warnings (e.g. a VSS writer failed, so that application's data is crash-consistent only). |
 
 ## JSON output

@@ -893,7 +893,9 @@ fn plan_from_row(r: &Row) -> rusqlite::Result<Value> {
 
 fn plans_query(st: &Shared, agent: Option<&str>) -> ApiResult<Vec<Value>> {
     let db = st.db();
-    let base = "SELECT p.id, p.name, p.agent_id, COALESCE(a.display_name, a.hostname), p.repository_id, r.name, p.job_json, p.schedule_json, p.enabled, p.last_run, p.next_run, p.retention_json
+    let base = "SELECT p.id, p.name, p.agent_id, COALESCE(a.display_name, a.hostname), p.repository_id, r.name, p.job_json, p.schedule_json, p.enabled,
+        COALESCE((SELECT MAX(j.created) FROM jobs j WHERE j.plan_id = p.id AND j.kind_json NOT LIKE '{\"type\":\"apply_retention%'), p.last_run),
+        p.next_run, p.retention_json
         FROM plans p JOIN agents a ON a.id = p.agent_id JOIN repositories r ON r.id = p.repository_id";
     let v = match agent {
         Some(id) => db

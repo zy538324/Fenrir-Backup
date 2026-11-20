@@ -12,11 +12,25 @@
 | Server API | `crates/server/tests` | first-run setup, login throttling, CSRF header, enrollment tokens and revocation, installers carry URL/pin/token/hashes and resist Host-header injection, HTTP/2 authority, sealed secrets never stored in plaintext, one job at a time, lost-job detection, plans never pile up, cross-agent isolation, re-enrollment with a new key drops access |
 | Sealing interop | `crates/protocol` | a blob sealed by `ui/src/seal.ts` on WebCrypto opens in the Rust agent |
 | Hyper-V parsing | `crates/agent` | PowerShell/WMI output (single and multi-element), script injection refused |
+| Locks, retention, prune | `crates/core-format`, `crates/engine` | shared/exclusive exclusion, stale takeover, gap-free refresh; GFS selection over a full year of daily images; forget + prune free space while the retained image still verifies and restores byte-exact; prune refuses when any manifest is unreadable; backup and prune exclude each other |
+| VHDX writer | `crates/vdisk` | round trips; **qemu-img** (independent implementation) checks our VHDX and reads it back byte for byte; our reader reads qemu's dynamic and fixed VHDX; restore of an image as VHDX |
+| Server additions | `crates/server/tests` | retention queued after plan backups; anomaly flag puts the repository on hold, held jobs stay queued until release; failure and ransomware alerts delivered to a real local webhook listener; restore validation (capability, access, typed confirmation); SMTP password never returned; update offers incl. glibc→static move |
 | Windows VSS smoke | CI `windows-vss-smoke` | real VSS snapshot set with writers on a Windows runner, NTFS bitmap, pagefile exclusion, probe reads through shadow devices, abort |
 | Fuzzing | `fuzz/`, CI `fuzz-smoke` | manifest envelope/body, sealed objects, partition tables, key files (60 s per target per push; longer runs before release) |
 | Supply chain | CI `supply-chain` | `cargo audit`, `cargo deny` (licences, sources, advisories) |
 
-End-to-end (run by hand during development, recorded in the PR): the real
+Deployment-readiness end-to-end run (Docker image, Chromium driving the
+UI): alerts configured in the UI and a test delivered to a webhook; Linux
+agent installed by the generated one-liner; repository created in the
+wizard; a plan with "keep last 2" run three times, retention leaving
+exactly two images; space reclamation deleting the orphaned data; restore
+through the UI as VHDX, checked by `qemu-img check` and compared byte for
+byte with the disk at backup time; simulated mass encryption flagged, the
+repository put on hold with an alert, retention held until the typed
+release; an agent running a different build replacing itself with the
+server's build and restarting cleanly.
+
+Earlier end-to-end (management server first release): the real
 server with a self-signed pinned certificate, the UI driven in Chromium,
 the generated Linux one-liner piped to `sh` (pinned `curl`, hash check,
 enrollment), a repository created through the UI wizard with

@@ -27,6 +27,9 @@ jobs:
       - name: fmt
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all --check
+      - name: qemu-img (VHDX interoperability tests)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y qemu-utils
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked
       - name: test

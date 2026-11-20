@@ -1,8 +1,8 @@
 # Third-party components
 
 Every dependency shipped in a Fenrir-Backup binary or in the web UI, with its licence.
-Policy: only permissive licences (MIT, Apache-2.0, BSD, ISC, Zlib, CC0, Unicode,
-CDLA-Permissive) are allowed in the Rust crates and the UI; copyleft components
+Policy: only permissive licences (MIT, Apache-2.0, BSD, 0BSD, ISC, Zlib, CC0,
+Unicode, CDLA-Permissive) are allowed in the Rust crates and the UI; copyleft components
 need explicit approval and may only be used by `recovery-env` (which assembles a
 Debian-based image and keeps its own manifest). CI enforces the Rust side with
 `cargo deny` (`deny.toml`). Where a crate offers a choice of licences,
@@ -48,6 +48,7 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | uuid | 1.29.3 | Apache-2.0 OR MIT | Identifiers |
 | webpki-roots | 0.26.11 | CDLA-Permissive-2.0 | Mozilla CA roots for agents talking to CA-signed servers (CDLA-Permissive-2.0) |
 | windows | 0.62.2 | MIT OR Apache-2.0 | Win32/COM bindings (VSS, IOCTLs, registry, DPAPI) |
+| lettre | 0.11.24 | MIT | Email alerts (SMTP over rustls) |
 | windows-service | 0.8.1 | MIT OR Apache-2.0 | Windows service entry point |
 | x25519-dalek | 2.0.1 | BSD-3-Clause | Agent key pairs for sealed secrets |
 | x509-parser | 0.16.0 | MIT OR Apache-2.0 | Certificate fingerprints |
@@ -95,6 +96,7 @@ Versions are pinned in `ui/package-lock.json`.
 | axum-macros | 0.5.1 | MIT |
 | axum-server | 0.7.3 | MIT |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
+| base64 | 0.23.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | blake2 | 0.10.6 | MIT OR Apache-2.0 |
@@ -129,10 +131,13 @@ Versions are pinned in `ui/package-lock.json`.
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
 | ed25519 | 2.2.3 | Apache-2.0 OR MIT |
 | ed25519-dalek | 2.2.0 | BSD-3-Clause |
+| email-encoding | 0.4.3 | MIT OR Apache-2.0 |
+| email_address | 0.2.10 | MIT OR Apache-2.0 |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT |
 | errno | 0.3.15 | MIT OR Apache-2.0 |
 | fallible-iterator | 0.3.0 | MIT/Apache-2.0 |
 | fallible-streaming-iterator | 0.1.9 | MIT/Apache-2.0 |
+| fastrand | 2.5.0 | Apache-2.0 OR MIT |
 | fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
 | fnv | 1.0.7 | Apache-2.0 / MIT |
@@ -155,6 +160,7 @@ Versions are pinned in `ui/package-lock.json`.
 | hex | 0.4.3 | MIT OR Apache-2.0 |
 | hkdf | 0.12.4 | MIT OR Apache-2.0 |
 | hmac | 0.12.1 | MIT OR Apache-2.0 |
+| hostname | 0.4.2 | MIT |
 | http | 1.5.0 | MIT OR Apache-2.0 |
 | http-body | 1.1.0 | MIT |
 | http-body-util | 0.1.5 | MIT |
@@ -179,6 +185,7 @@ Versions are pinned in `ui/package-lock.json`.
 | jobserver | 0.1.35 | MIT OR Apache-2.0 |
 | js-sys | 0.3.107 | MIT OR Apache-2.0 |
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 |
+| lettre | 0.11.24 | MIT |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
 | libsqlite3-sys | 0.30.1 | MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
@@ -191,6 +198,7 @@ Versions are pinned in `ui/package-lock.json`.
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
 | mio | 1.2.5 | MIT |
 | nom | 7.1.3 | MIT |
+| nom | 8.0.0 | MIT |
 | nu-ansi-term | 0.50.3 | MIT |
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 |
@@ -212,6 +220,7 @@ Versions are pinned in `ui/package-lock.json`.
 | powerfmt | 0.2.1 | MIT OR Apache-2.0 |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
 | quote | 1.0.47 | MIT OR Apache-2.0 |
+| quoted_printable | 0.5.2 | 0BSD |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
 | rcgen | 0.13.2 | MIT OR Apache-2.0 |
@@ -346,6 +355,7 @@ Versions are pinned in `ui/package-lock.json`.
 | Crate | Licence | Used for |
 |---|---|---|
 | tempfile | MIT OR Apache-2.0 | Temporary directories in tests |
+| qemu-img (system tool, optional) | GPL-2.0 | Independent VHDX interoperability checks in tests; never linked or shipped |
 | tower, http-body-util | MIT | In-process server API tests |
 | libfuzzer-sys | (MIT OR Apache-2.0) AND NCSA | Fuzzing harness (`fuzz/`) |
 | playwright (pre-installed) | Apache-2.0 | UI end-to-end checks during development |
