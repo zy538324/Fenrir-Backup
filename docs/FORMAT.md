@@ -203,9 +203,25 @@ equals the repository's.
   "drivers": [ { "name": "", "provider": "", "version": "", "class": "", "inf": "" } ],
   "excluded": [ { "path": "C:\\pagefile.sys", "bytes": 4294967296 } ],
   "warnings": [ "string" ],
-  "stats": { "bytes_read": 0, "chunks_total": 0, "chunks_new": 0, "bytes_new_stored": 0, "duration_ms": 0 }
+  "stats": { "bytes_read": 0, "chunks_total": 0, "chunks_new": 0, "bytes_new_stored": 0, "duration_ms": 0 },
+  "vm": VmInfo (optional)
 }
 ```
+
+**VmInfo** (present when a VM was imaged from its host; one image disk per
+virtual disk, in the same order as `vm.disks`):
+
+```json
+{
+  "hypervisor": "hyper-v", "host": "HV01", "vm_id": "uuid", "name": "SQL-PROD",
+  "generation": 2, "cpu_count": 4, "memory_mb": 8192, "secure_boot": true,
+  "disks": [ { "controller": "SCSI 0:0", "path": "D:\\VMs\\sql.vhdx" } ],
+  "network_adapters": [ { "name": "Network Adapter", "switch": "LAN", "mac": "00155D010203" } ],
+  "config_version": "10.0"
+}
+```
+
+The machine ID of a VM image is `hyperv-vm:<VM GUID>`.
 
 `incremental` images share chunks with earlier images but are still
 self-contained: they list every chunk they need. `parent` records lineage

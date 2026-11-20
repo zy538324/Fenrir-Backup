@@ -1,0 +1,183 @@
+// Typed client for the fenrir-server API.
+
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (method !== "GET") headers["X-Fenrir-Csrf"] = "1";
+  const r = await fetch(path, {
+    method,
+    headers,
+    credentials: "same-origin",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await r.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!r.ok) {
+    if (r.status === 401 && path !== "/api/login") window.dispatchEvent(new Event("fenrir:signed-out"));
+    throw new ApiError(r.status, data?.error ?? `${r.status} ${r.statusText}`);
+  }
+  return data as T;
+}
+
+export const api = {
+  get: <T,>(p: string) => call<T>("GET", p),
+  post: <T,>(p: string, b: unknown = {}) => call<T>("POST", p, b),
+  patch: <T,>(p: string, b: unknown) => call<T>("PATCH", p, b),
+  del: <T,>(p: string) => call<T>("DELETE", p),
+};
+
+export interface Status {
+  setup_required: boolean;
+  version: string;
+  user: { username: string } | null;
+  tls: { pinned: boolean; cert_sha256: string } | null;
+}
+
+export interface OsSummary { family: string; name: string; version: string; arch: string }
+
+export interface Progress { phase: string; done: number; total: number; message: string }
+
+export interface Agent {
+  id: string;
+  name: string;
+  hostname: string;
+  role: "workstation" | "server" | "hyperv";
+  os: OsSummary;
+  agent_version: string;
+  enrolled: number;
+  last_seen: number | null;
+  online: boolean;
+  public_key: string;
+  capabilities: string[];
+  vm_count: number;
+  last_backup: { job_id: string; state: string; at: number; error: string | null } | null;
+  running_job: { id: string; label: string; state: string; progress: Progress | null } | null;
+}
+
+export interface Vm { id: string; name: string; state: string; generation: number; disk_bytes: number; disks: string[] }
+export interface Disk { path: string; size: number; model: string; system: boolean }
+export interface Inventory { hostname: string; os: OsSummary; capabilities: string[]; disks: Disk[]; vms: Vm[]; notes: string[]; agent_version: string }
+
+export type JobKind =
+  | { type: "init_repository" }
+  | { type: "backup_system"; settings?: BackupSettings }
+  | { type: "backup_disks"; paths: string[]; settings?: BackupSettings }
+  | { type: "backup_hyperv"; vm_ids: string[]; settings?: BackupSettings }
+  | { type: "verify"; level: "quick" | "sample" | "full"; sample_percent?: number }
+  | { type: "list_images" };
+
+export interface BackupSettings { label?: string | null; rate_limit_mib?: number; vss_full?: boolean; verify_sample_percent?: number | null }
+
+export type JobState = "queued" | "dispatched" | "running" | "succeeded" | "warning" | "failed" | "cancelled";
+
+export interface Job {
+  id: string;
+  agent_id: string;
+  agent_name: string;
+  repository_id: string | null;
+  repository_name: string | null;
+  kind: JobKind;
+  label: string;
+  state: JobState;
+  created: number;
+  started: number | null;
+  finished: number | null;
+  progress: Progress | null;
+  result: unknown;
+  error: string | null;
+  warnings: string[];
+  requested_by: string | null;
+  plan_id: string | null;
+}
+
+export interface Image {
+  image_id: string;
+  repository_id: string;
+  repository_name: string;
+  agent_id: string | null;
+  machine_id: string;
+  hostname: string;
+  created: number;
+  kind: string;
+  consistency: string;
+  captured_bytes: number;
+  stored_new_bytes: number;
+  disks: number[];
+  label: string | null;
+  vm_name: string | null;
+}
+
+export interface Repository {
+  id: string;
+  name: string;
+  path: string;
+  repo_uuid: string;
+  status: "pending" | "ready" | "failed";
+  status_message: string | null;
+  created: number;
+  images: number;
+  stored_bytes: number;
+  last_image: number | null;
+  agents: { id: string; name: string }[];
+}
+
+export type Schedule =
+  | { type: "interval"; hours: number }
+  | { type: "daily"; time: string; days: number[]; utc_offset_minutes: number }
+  | { type: "manual" };
+
+export interface Plan {
+  id: string;
+  name: string;
+  agent_id: string;
+  agent_name: string;
+  repository_id: string;
+  repository_name: string;
+  job: JobKind;
+  schedule: Schedule;
+  enabled: boolean;
+  last_run: number | null;
+  next_run: number | null;
+}
+
+export interface Overview {
+  machines: { total: number; online: number; attention: number };
+  last_24h: { succeeded: number; warning: number; failed: number };
+  running: number;
+  storage: { images: number; stored_bytes: number; protected_bytes: number };
+  repositories: number;
+  plans: number;
+  agents: Agent[];
+  recent_jobs: Job[];
+}
+
+export interface AgentDetail {
+  agent: Agent;
+  inventory: Inventory | null;
+  jobs: Job[];
+  images: Image[];
+  plans: Plan[];
+  repositories: { id: string; name: string; status: string }[];
+}
+
+export interface PlatformTarget { triple: string; arch: string; available: boolean; sha256: string | null; size: number | null }
+export interface Platform {
+  id: "windows" | "hyperv" | "linux" | "macos";
+  name: string;
+  summary: string;
+  available: boolean;
+  targets: PlatformTarget[];
+  script_name: string;
+  script_url: string | null;
+  command: string | null;
+  uninstall_url: string;
+}
+export interface Downloads { server_url: string; pinned: boolean; cert_sha256: string | null; platforms: Platform[] }
+export interface EnrollmentToken { id: string; token: string; label: string; role: string; expires: number }
+export interface AuditEntry { at: number; actor: string; action: string; detail: string }

@@ -1,0 +1,494 @@
+import { useMemo, useState } from "react";
+import { ArrowLeft, CalendarClock, Database, HardDrive, Layers, Pencil, Play, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import { api, type Agent, type AgentDetail, type BackupSettings, type Inventory, type JobKind, type Repository, type Vm } from "../api";
+import { ago, bytes, consistencyLabel, duration, health, jobWhat, osLabel, scheduleText, until, when } from "../format";
+import { Empty, Field, Link, Loading, Modal, Notice, OsBadge, Pill, ProgressBar, StatePill, useApi, useRoute, useToast } from "../ui";
+
+export default function MachinePage({ id }: { id: string }) {
+  const { data, error, reload } = useApi<AgentDetail>(`/api/agents/${id}`, 4000);
+  const [tab, setTab] = useState<"overview" | "backups" | "activity">("overview");
+  const [dialog, setDialog] = useState<null | "backup" | "verify" | "rename" | "remove">(null);
+  const [preselect, setPreselect] = useState<string[]>([]);
+  const { go } = useRoute();
+  const toast = useToast();
+
+  if (error && !data) return <div className="page"><Notice tone="bad">{error}</Notice></div>;
+  if (!data) return <div className="page"><Loading /></div>;
+  const a = data.agent;
+  const h = health(a);
+  const inv = data.inventory;
+  const canBackup = a.capabilities.some((c) => c.startsWith("backup_"));
+
+  return (
+    <div className="page">
+      <Link to="/machines" className="small row" ><ArrowLeft size={14} /> Machines</Link>
+      <div className="page-head">
+        <OsBadge role={a.role} family={a.os.family} size={24} />
+        <div className="grow">
+          <div className="row">
+            <h1 className="ellipsis">{a.name}</h1>
+            <button className="icon-btn" aria-label="Rename" onClick={() => setDialog("rename")}><Pencil size={15} /></button>
+          </div>
+          <div className="sub row wrap" style={{ gap: 8 }}>
+            <Pill tone={h.tone} pulse={!!a.running_job}>{h.text}</Pill>
+            <span>{osLabel(a)}</span>
+            <span className="faint">· {a.online ? "online" : `last seen ${ago(a.last_seen)}`}</span>
+          </div>
+        </div>
+        <div className="row">
+          <button className="btn" onClick={() => setDialog("verify")} disabled={!!a.running_job || data.repositories.length === 0}>
+            <ShieldCheck size={16} /> Verify
+          </button>
+          <button className="btn primary" onClick={() => { setPreselect([]); setDialog("backup"); }} disabled={!canBackup || !!a.running_job}>
+            <Play size={16} /> Back up now
+          </button>
+        </div>
+      </div>
+
+      {a.running_job && <RunningCard agent={a} onCancel={async () => { await api.post(`/api/jobs/${a.running_job!.id}/cancel`); toast("ok", "Cancelling…"); reload(); }} />}
+      {inv?.notes.map((n, i) => <Notice key={i} tone="info">{n}</Notice>)}
+      {data.repositories.length === 0 && (
+        <Notice tone="warn">
+          This machine has no repository to back up to yet. <Link to="/repositories">Create one or grant access</Link>.
+        </Notice>
+      )}
+
+      <div className="tabs">
+        <button className={tab === "overview" ? "on" : ""} onClick={() => setTab("overview")}>Overview</button>
+        <button className={tab === "backups" ? "on" : ""} onClick={() => setTab("backups")}>Backups ({data.images.length})</button>
+        <button className={tab === "activity" ? "on" : ""} onClick={() => setTab("activity")}>Activity</button>
+      </div>
+
+      {tab === "overview" && (
+        <div className="grid" style={{ gridTemplateColumns: "minmax(0, 2fr) minmax(260px, 1fr)", alignItems: "start" }}>
+          <div className="stack">
+            {a.role === "hyperv" && <VmTable vms={inv?.vms ?? []} disabled={!!a.running_job || data.repositories.length === 0} onBackup={(ids) => { setPreselect(ids); setDialog("backup"); }} />}
+            {inv && inv.disks.length > 0 && <DiskTable inv={inv} />}
+            <PlansCard plans={data.plans} />
+          </div>
+          <div className="card card-body">
+            <h3 style={{ marginBottom: 12 }}>Details</h3>
+            <dl className="kv">
+              <dt>Hostname</dt><dd>{a.hostname}</dd>
+              <dt>Role</dt><dd>{a.role === "hyperv" ? "Hyper-V host" : a.role === "server" ? "Server" : "Workstation"}</dd>
+              <dt>System</dt><dd>{a.os.name} {a.os.version}</dd>
+              <dt>Architecture</dt><dd>{a.os.arch}</dd>
+              <dt>Agent</dt><dd>{a.agent_version}</dd>
+              <dt>Enrolled</dt><dd>{when(a.enrolled)}</dd>
+              <dt>Repositories</dt><dd>{data.repositories.map((r) => r.name).join(", ") || "none"}</dd>
+            </dl>
+            <div style={{ borderTop: "1px solid var(--border)", margin: "16px 0 12px" }} />
+            <button className="btn danger sm" onClick={() => setDialog("remove")}><Trash2 size={14} /> Remove machine</button>
+          </div>
+        </div>
+      )}
+
+      {tab === "backups" && <ImagesTable detail={data} />}
+      {tab === "activity" && <JobsTable detail={data} />}
+
+      {dialog === "backup" && <BackupDialog agent={a} inventory={inv} preselectVms={preselect} onClose={() => setDialog(null)} onDone={() => { setDialog(null); reload(); }} />}
+      {dialog === "verify" && <VerifyDialog agent={a} onClose={() => setDialog(null)} onDone={() => { setDialog(null); reload(); }} />}
+      {dialog === "rename" && <RenameDialog agent={a} onClose={() => setDialog(null)} onDone={() => { setDialog(null); reload(); }} />}
+      {dialog === "remove" && (
+        <Modal
+          title={`Remove ${a.name}?`}
+          onClose={() => setDialog(null)}
+          foot={
+            <>
+              <button className="btn" onClick={() => setDialog(null)}>Keep it</button>
+              <button className="btn danger solid" onClick={async () => { await api.del(`/api/agents/${a.id}`); toast("ok", `${a.name} removed`); go("/machines"); }}>
+                Remove machine
+              </button>
+            </>
+          }
+        >
+          <div>The agent on this machine is locked out, its plans are paused and its repository access is withdrawn. Backups already stored are kept and can still be restored.</div>
+          <div className="muted small">To remove the agent software too, run the uninstaller from the Add machines page on the machine.</div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function RunningCard({ agent, onCancel }: { agent: Agent; onCancel: () => void }) {
+  const j = agent.running_job!;
+  const p = j.progress;
+  const pct = p && p.total ? Math.round((100 * p.done) / p.total) : null;
+  return (
+    <div className="card card-body stack tight">
+      <div className="row">
+        <Pill tone="info" pulse>{j.label}</Pill>
+        <span className="muted small ellipsis grow">{p ? `${p.phase}${p.message ? ` · ${p.message}` : ""}` : "starting…"}</span>
+        {pct !== null && <strong>{pct}%</strong>}
+        <button className="btn sm ghost" onClick={onCancel}><XCircle size={14} /> Cancel</button>
+      </div>
+      <ProgressBar done={p?.done} total={p?.total} />
+      {p && p.total > 0 && <div className="faint small">{bytes(p.done)} of {bytes(p.total)}</div>}
+    </div>
+  );
+}
+
+function VmTable({ vms, disabled, onBackup }: { vms: Vm[]; disabled: boolean; onBackup: (ids: string[]) => void }) {
+  const [sel, setSel] = useState<string[]>([]);
+  const all = sel.length === vms.length && vms.length > 0;
+  return (
+    <div className="card">
+      <div className="card-head">
+        <Layers size={17} />
+        <h2>Virtual machines</h2>
+        <span className="faint small">{vms.length} on this host</span>
+        <button className="btn sm right" disabled={disabled || sel.length === 0} onClick={() => onBackup(sel)}>
+          <Play size={14} /> Back up {sel.length ? `${sel.length} selected` : "selected"}
+        </button>
+      </div>
+      {vms.length === 0 ? (
+        <Empty icon={<Layers size={24} />} title="No VMs reported yet">The agent lists the host's VMs every few minutes.</Empty>
+      ) : (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ width: 36 }}><input type="checkbox" aria-label="Select all" checked={all} onChange={() => setSel(all ? [] : vms.map((v) => v.id))} /></th>
+                <th>Name</th><th>State</th><th>Generation</th><th>Disks</th><th style={{ textAlign: "right" }}>Size on host</th>
+              </tr>
+            </thead>
+            <tbody>
+              {vms.map((v) => (
+                <tr key={v.id} className="clickable" onClick={() => setSel(sel.includes(v.id) ? sel.filter((x) => x !== v.id) : [...sel, v.id])}>
+                  <td><input type="checkbox" aria-label={`Select ${v.name}`} checked={sel.includes(v.id)} readOnly /></td>
+                  <td><strong>{v.name}</strong></td>
+                  <td><Pill tone={v.state === "running" ? "ok" : "neutral"}>{v.state}</Pill></td>
+                  <td>Gen {v.generation} <span className="faint small">({v.generation === 2 ? "UEFI" : "BIOS"})</span></td>
+                  <td>{v.disks.length}</td>
+                  <td style={{ textAlign: "right" }}>{bytes(v.disk_bytes)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiskTable({ inv }: { inv: Inventory }) {
+  return (
+    <div className="card">
+      <div className="card-head"><HardDrive size={17} /><h2>Disks</h2></div>
+      <div className="table-wrap">
+        <table className="table">
+          <thead><tr><th>Device</th><th>Model</th><th style={{ textAlign: "right" }}>Size</th><th /></tr></thead>
+          <tbody>
+            {inv.disks.map((d) => (
+              <tr key={d.path}>
+                <td className="mono">{d.path}</td>
+                <td>{d.model || <span className="faint">—</span>}</td>
+                <td style={{ textAlign: "right" }}>{bytes(d.size)}</td>
+                <td>{d.system && <Pill tone="neutral">system disk</Pill>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function PlansCard({ plans }: { plans: AgentDetail["plans"] }) {
+  return (
+    <div className="card">
+      <div className="card-head"><CalendarClock size={17} /><h2>Backup plans</h2><Link to="/plans" className="right small">Manage plans</Link></div>
+      {plans.length === 0 ? (
+        <div className="card-body muted">No scheduled backups. <Link to="/plans">Create a plan</Link> to back this machine up automatically.</div>
+      ) : (
+        <div className="timeline">
+          {plans.map((p) => (
+            <div key={p.id} className="tl-item">
+              <div className={`tl-icon ${p.enabled ? "ok" : "neutral"}`}><CalendarClock size={15} /></div>
+              <div className="grow">
+                <div><strong>{p.name}</strong> <span className="muted">· {jobWhat(p.job)} → {p.repository_name}</span></div>
+                <div className="faint small">{scheduleText(p.schedule)}{p.enabled && p.next_run ? ` · next ${until(p.next_run)}` : ""}</div>
+              </div>
+              {!p.enabled && <Pill tone="neutral">Paused</Pill>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ImagesTable({ detail }: { detail: AgentDetail }) {
+  if (detail.images.length === 0)
+    return <div className="card"><Empty icon={<Database size={24} />} title="No backups yet">Images appear here after the first backup finishes.</Empty></div>;
+  return (
+    <div className="card table-wrap">
+      <table className="table">
+        <thead>
+          <tr><th>Taken</th>{detail.agent.role === "hyperv" && <th>VM</th>}<th>Type</th><th>Consistency</th><th style={{ textAlign: "right" }}>Captured</th><th style={{ textAlign: "right" }}>New data</th><th>Repository</th></tr>
+        </thead>
+        <tbody>
+          {detail.images.map((i) => (
+            <tr key={i.image_id}>
+              <td className="nowrap"><div>{when(i.created)}</div><div className="faint small mono">{i.image_id.slice(0, 8)}</div></td>
+              {detail.agent.role === "hyperv" && <td><strong>{i.vm_name}</strong></td>}
+              <td>{i.kind === "full" ? "Full" : "Incremental"}{i.label && <div className="faint small">{i.label}</div>}</td>
+              <td><Pill tone={consistencyLabel(i.consistency).tone}>{consistencyLabel(i.consistency).text}</Pill></td>
+              <td style={{ textAlign: "right" }}>{bytes(i.captured_bytes)}</td>
+              <td style={{ textAlign: "right" }}>{bytes(i.stored_new_bytes)}</td>
+              <td>{i.repository_name}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function JobsTable({ detail }: { detail: AgentDetail }) {
+  if (detail.jobs.length === 0) return <div className="card"><Empty icon={<CalendarClock size={24} />} title="Nothing has run on this machine yet" /></div>;
+  return (
+    <div className="card table-wrap">
+      <table className="table">
+        <thead><tr><th>Job</th><th>Status</th><th>Started</th><th>Duration</th><th>Details</th></tr></thead>
+        <tbody>
+          {detail.jobs.map((j) => (
+            <tr key={j.id}>
+              <td><strong>{j.label}</strong><div className="faint small">{jobWhat(j.kind)}{j.repository_name ? ` → ${j.repository_name}` : ""}</div></td>
+              <td><StatePill state={j.state} /></td>
+              <td className="nowrap">{when(j.started ?? j.created)}</td>
+              <td className="nowrap">{duration(j.started, j.finished)}</td>
+              <td className="small" style={{ maxWidth: 380 }}>
+                {j.error && <div style={{ color: "var(--bad)" }}>{j.error}</div>}
+                {j.warnings.map((w, i) => <div key={i} style={{ color: "var(--warn)" }}>{w}</div>)}
+                {!j.error && j.warnings.length === 0 && <span className="faint">{j.requested_by === "schedule" ? "scheduled" : j.requested_by ? `by ${j.requested_by}` : ""}</span>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------- dialogs ----------
+
+export function useRepos(agentId: string) {
+  const r = useApi<Repository[]>("/api/repositories");
+  const usable = useMemo(() => (r.data ?? []).filter((x) => x.status === "ready" && x.agents.some((a) => a.id === agentId)), [r.data, agentId]);
+  return { usable, loading: r.loading };
+}
+
+/** Choose what to back up on a machine. Shared by "Back up now" and plans. */
+export function WhatPicker({ agent, inventory, value, onChange }: { agent: Agent; inventory: Inventory | null; value: JobKind | null; onChange: (k: JobKind | null) => void }) {
+  const settings = (value && "settings" in value ? value.settings : undefined) ?? {};
+  if (agent.capabilities.includes("backup_hyperv")) {
+    const vms = inventory?.vms ?? [];
+    const ids = value?.type === "backup_hyperv" ? value.vm_ids : [];
+    const all = value?.type === "backup_hyperv" && ids.length === 0;
+    return (
+      <Field label="Virtual machines" hint="New VMs are included automatically when “All VMs” is chosen.">
+        <div className="seg" style={{ alignSelf: "flex-start" }}>
+          <button className={all ? "on" : ""} onClick={() => onChange({ type: "backup_hyperv", vm_ids: [], settings })}>All VMs</button>
+          <button className={!all ? "on" : ""} onClick={() => onChange({ type: "backup_hyperv", vm_ids: vms.slice(0, 1).map((v) => v.id), settings })}>Choose VMs</button>
+        </div>
+        {!all && (
+          <div className="chips" style={{ marginTop: 6 }}>
+            {vms.map((v) => (
+              <button
+                key={v.id}
+                className={`chip${ids.includes(v.id) ? " on" : ""}`}
+                onClick={() => {
+                  const next = ids.includes(v.id) ? ids.filter((x) => x !== v.id) : [...ids, v.id];
+                  onChange(next.length ? { type: "backup_hyperv", vm_ids: next, settings } : null);
+                }}
+              >
+                {v.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </Field>
+    );
+  }
+  if (agent.capabilities.includes("backup_system")) {
+    return <Notice tone="info">The whole system: every partition on the system disk, through a Volume Shadow Copy snapshot so open files and databases are captured consistently.</Notice>;
+  }
+  const disks = inventory?.disks ?? [];
+  const paths = value?.type === "backup_disks" ? value.paths : [];
+  return (
+    <Field label="Disks" hint="Disks in use by the running system cannot be imaged until live Linux snapshots arrive. Unmounted and secondary disks work today.">
+      <div className="stack tight">
+        {disks.map((d) => (
+          <label key={d.path} className="check">
+            <input
+              type="checkbox"
+              checked={paths.includes(d.path)}
+              disabled={d.system}
+              onChange={() => {
+                const next = paths.includes(d.path) ? paths.filter((x) => x !== d.path) : [...paths, d.path];
+                onChange(next.length ? { type: "backup_disks", paths: next, settings } : null);
+              }}
+            />
+            <span><span className="mono">{d.path}</span> <span className="muted">{d.model} · {bytes(d.size)}</span> {d.system && <Pill tone="neutral">in use by the system</Pill>}</span>
+          </label>
+        ))}
+        {disks.length === 0 && <div className="muted small">The agent has not reported any disks.</div>}
+      </div>
+    </Field>
+  );
+}
+
+export function defaultWhat(agent: Agent, preselectVms: string[] = []): JobKind | null {
+  if (agent.capabilities.includes("backup_hyperv")) return { type: "backup_hyperv", vm_ids: preselectVms };
+  if (agent.capabilities.includes("backup_system")) return { type: "backup_system" };
+  return null;
+}
+
+export function withSettings(k: JobKind, s: BackupSettings): JobKind {
+  return k.type === "backup_system" || k.type === "backup_disks" || k.type === "backup_hyperv" ? { ...k, settings: s } : k;
+}
+
+export function OptionsPicker({ s, onChange, windows }: { s: BackupSettings; onChange: (s: BackupSettings) => void; windows: boolean }) {
+  return (
+    <details>
+      <summary className="small" style={{ cursor: "pointer", fontWeight: 600 }}>Options</summary>
+      <div className="stack" style={{ marginTop: 12 }}>
+        <label className="check">
+          <input type="checkbox" checked={(s.verify_sample_percent ?? 0) > 0} onChange={(e) => onChange({ ...s, verify_sample_percent: e.target.checked ? 5 : null })} />
+          <span>Spot-check the new image afterwards<div className="faint small">Reads back 5% of the new image's data to prove it is restorable.</div></span>
+        </label>
+        <Field label="Bandwidth limit" hint="Reads are throttled to keep the machine responsive. 0 means unlimited.">
+          <div className="row"><input className="input" type="number" min={0} style={{ width: 110 }} value={s.rate_limit_mib ?? 0} onChange={(e) => onChange({ ...s, rate_limit_mib: Math.max(0, Number(e.target.value)) })} /> <span className="muted">MiB/s</span></div>
+        </Field>
+        {windows && (
+          <label className="check">
+            <input type="checkbox" checked={!!s.vss_full} onChange={(e) => onChange({ ...s, vss_full: e.target.checked })} />
+            <span>Let SQL Server and Exchange truncate their logs<div className="faint small">Only if Fenrir-Backup is their backup of record. Off by default so other backup tools keep working.</div></span>
+          </label>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function BackupDialog({ agent, inventory, preselectVms, onClose, onDone }: { agent: Agent; inventory: Inventory | null; preselectVms: string[]; onClose: () => void; onDone: () => void }) {
+  const { usable, loading } = useRepos(agent.id);
+  const [repo, setRepo] = useState("");
+  const [what, setWhat] = useState<JobKind | null>(defaultWhat(agent, preselectVms));
+  const [s, setS] = useState<BackupSettings>({ label: "", rate_limit_mib: 0, verify_sample_percent: 5 });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const toast = useToast();
+  const repoId = repo || usable[0]?.id || "";
+
+  const start = async () => {
+    if (!what) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.post(`/api/agents/${agent.id}/jobs`, { kind: withSettings(what, { ...s, label: s.label || null }), repository_id: repoId });
+      toast("ok", `Backup of ${agent.name} queued; it starts within seconds`);
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Back up ${agent.name}`}
+      sub="Runs once, now. Use a backup plan for regular backups."
+      onClose={onClose}
+      foot={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || !what || !repoId} onClick={start}><Play size={15} /> Start backup</button></>}
+    >
+      {err && <Notice tone="bad">{err}</Notice>}
+      {!loading && usable.length === 0 ? (
+        <Notice tone="warn">No ready repository is available to this machine. <Link to="/repositories">Set one up first</Link>.</Notice>
+      ) : (
+        <Field label="Repository">
+          <select className="input" value={repoId} onChange={(e) => setRepo(e.target.value)}>
+            {usable.map((r) => <option key={r.id} value={r.id}>{r.name} — {r.path}</option>)}
+          </select>
+        </Field>
+      )}
+      <WhatPicker agent={agent} inventory={inventory} value={what} onChange={setWhat} />
+      <Field label="Label (optional)" hint="Shown next to the image, e.g. “before upgrade”.">
+        <input className="input" value={s.label ?? ""} onChange={(e) => setS({ ...s, label: e.target.value })} maxLength={80} />
+      </Field>
+      <OptionsPicker s={s} onChange={setS} windows={agent.os.family === "windows"} />
+    </Modal>
+  );
+}
+
+function VerifyDialog({ agent, onClose, onDone }: { agent: Agent; onClose: () => void; onDone: () => void }) {
+  const { usable } = useRepos(agent.id);
+  const [repo, setRepo] = useState("");
+  const [level, setLevel] = useState<"quick" | "sample" | "full">("sample");
+  const toast = useToast();
+  const repoId = repo || usable[0]?.id || "";
+  return (
+    <Modal
+      title="Verify backups"
+      sub={`${agent.name} reads the repository and checks every image it holds.`}
+      onClose={onClose}
+      foot={
+        <>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button
+            className="btn primary"
+            disabled={!repoId}
+            onClick={async () => {
+              try {
+                await api.post(`/api/agents/${agent.id}/jobs`, { kind: { type: "verify", level, sample_percent: level === "sample" ? 5 : undefined }, repository_id: repoId });
+                toast("ok", "Verification queued");
+                onDone();
+              } catch (e) {
+                toast("bad", (e as Error).message);
+              }
+            }}
+          >
+            <ShieldCheck size={15} /> Verify
+          </button>
+        </>
+      }
+    >
+      <Field label="Repository">
+        <select className="input" value={repoId} onChange={(e) => setRepo(e.target.value)}>
+          {usable.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+      </Field>
+      <div className="stack tight">
+        {(
+          [
+            ["quick", "Quick", "Signatures and the presence of every piece of data. Seconds."],
+            ["sample", "Spot check", "Quick, plus decrypts and re-hashes 5% of the data. Catches silent corruption early."],
+            ["full", "Full", "Decrypts and re-hashes everything. Reads the whole repository."],
+          ] as const
+        ).map(([k, t, d]) => (
+          <label key={k} className="check card card-pad" style={{ padding: "12px 14px", borderColor: level === k ? "var(--accent)" : undefined }}>
+            <input type="radio" name="lvl" checked={level === k} onChange={() => setLevel(k)} />
+            <span><strong>{t}</strong><div className="muted small">{d}</div></span>
+          </label>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+function RenameDialog({ agent, onClose, onDone }: { agent: Agent; onClose: () => void; onDone: () => void }) {
+  const [name, setName] = useState(agent.name);
+  return (
+    <Modal
+      title="Rename machine"
+      onClose={onClose}
+      foot={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" onClick={async () => { await api.patch(`/api/agents/${agent.id}`, { name }); onDone(); }}>Save</button></>}
+    >
+      <Field label="Display name" hint={`Leave empty to use the hostname (${agent.hostname}).`}>
+        <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={80} />
+      </Field>
+    </Modal>
+  );
+}

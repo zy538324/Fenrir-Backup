@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,13 +32,31 @@ jobs:
       - name: test
         run: cargo test --workspace --locked
 
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+        working-directory: ui
+      - run: npm run build
+        working-directory: ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: ui/dist
+
   # The VSS path needs real Windows with admin rights; GitHub's Windows
   # runners have both. Imaging the whole runner disk would take too long,
   # so this takes a real VSS snapshot set with writers, reads NTFS bitmaps,
   # resolves pagefile extents, probe-reads every partition through the
   # shadow devices, then aborts. It exercises all the hand-written FFI.
-  # Full backup/restore of Windows guests runs in the VM matrix
-  # (docs/TESTING.md).
+  # Full backup/restore of Windows guests and Hyper-V hosts runs in the VM
+  # matrix (docs/TESTING.md).
   windows-vss-smoke:
     runs-on: windows-latest
     needs: test
@@ -56,6 +74,80 @@ jobs:
           $snap = $p.result.disks.partitions | Where-Object { $_.capture -eq 'snapshot_bitmap' }
           if (-not $snap) { Write-Error 'no partition was captured through a VSS snapshot'; exit 1 }
 
+  # Agent, CLI and server binaries for every platform the server offers
+  # downloads for. Linux builds are static (musl) so one binary runs on
+  # any distribution.
+  build:
+    name: build (${{ matrix.target }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, bins: "-p agent -p cli -p server", ext: ".exe" }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, bins: "-p agent -p cli -p server", ext: "", musl: true }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, bins: "-p agent -p cli", ext: "", musl: true }
+          - { os: macos-latest, target: aarch64-apple-darwin, bins: "-p agent -p cli", ext: "" }
+          - { os: macos-latest, target: x86_64-apple-darwin, bins: "-p agent -p cli", ext: "" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: musl toolchain
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }} ${{ matrix.bins }}
+      - name: collect
+        shell: bash
+        run: |
+          mkdir -p out
+          for b in fenrir-agent fenrir fenrir-server; do
+            f="target/${{ matrix.target }}/release/$b${{ matrix.ext }}"
+            if [ -f "$f" ]; then cp "$f" out/; fi
+          done
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: out
+
+  # Server bundles: fenrir-server + web UI + agent builds for every
+  # platform, ready to unpack and run. SHA256SUMS covers every file.
+  bundle:
+    needs: [build, ui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: assemble
+        run: |
+          set -eu
+          for os in linux-x64 windows-x64; do
+            d="fenrir-server-$os"
+            mkdir -p "$d/agents"
+            if [ "$os" = linux-x64 ]; then cp art/bin-x86_64-unknown-linux-musl/fenrir-server "$d/"; chmod +x "$d/fenrir-server"
+            else cp art/bin-x86_64-pc-windows-msvc/fenrir-server.exe "$d/"; fi
+            cp -r art/ui-dist "$d/ui"
+            for t in x86_64-pc-windows-msvc x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
+              mkdir -p "$d/agents/$t"
+              cp art/bin-$t/fenrir-agent* "$d/agents/$t/"
+              chmod +x "$d/agents/$t/"* || true
+            done
+            (cd "$d" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          done
+          tar czf fenrir-server-linux-x64.tar.gz fenrir-server-linux-x64
+          zip -qr fenrir-server-windows-x64.zip fenrir-server-windows-x64
+          sha256sum fenrir-server-*.tar.gz fenrir-server-*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fenrir-server-bundles
+          path: |
+            fenrir-server-linux-x64.tar.gz
+            fenrir-server-windows-x64.zip
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
@@ -68,6 +160,12 @@ jobs:
         run: cargo audit
       - name: cargo deny (licences, sources, advisories)
         run: cargo deny check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm audit (UI)
+        working-directory: ui
+        run: npm ci && npm audit --omit=dev --audit-level=high
 
   fuzz-smoke:
     runs-on: ubuntu-latest

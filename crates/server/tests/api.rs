@@ -19,7 +19,7 @@ impl T {
         let agents = dir.path().join("agents");
         for (t, f) in [
             ("x86_64-pc-windows-msvc", "fenrir-agent.exe"),
-            ("x86_64-unknown-linux-gnu", "fenrir-agent"),
+            ("x86_64-unknown-linux-musl", "fenrir-agent"),
         ] {
             std::fs::create_dir_all(agents.join(t)).unwrap();
             std::fs::write(agents.join(t).join(f), format!("binary for {t}")).unwrap();
@@ -310,9 +310,9 @@ async fn downloads_and_installers() {
         .await;
     let body = body.unwrap();
     assert!(body.contains("ROLE='workstation'"));
-    assert!(body.contains(&server::sha256_hex(b"binary for x86_64-unknown-linux-gnu")));
+    assert!(body.contains(&server::sha256_hex(b"binary for x86_64-unknown-linux-musl")));
     assert!(
-        body.contains("aarch64-unknown-linux-gnu; SHA=''"),
+        body.contains("aarch64-unknown-linux-musl; SHA=''"),
         "missing arm build reported as empty hash"
     );
 
@@ -345,6 +345,17 @@ async fn downloads_and_installers() {
         (r.status(), Value::Null, None::<String>)
     };
     assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // HTTP/2 clients send :authority instead of Host; it arrives in the URI.
+    let req = Request::builder()
+        .uri(format!("https://h2.backup.test:9443/install/{token}/linux"))
+        .body(Body::empty())
+        .unwrap();
+    let r = router(t.st.clone()).oneshot(req).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let body =
+        String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+    assert!(body.contains("SERVER='https://h2.backup.test:9443'"));
 
     // Revoked tokens stop working.
     t.post(
@@ -495,7 +506,10 @@ async fn enrollment_repository_and_job_lifecycle() {
     let (_, imgs) = t.get(&format!("/api/images?agent_id={agent_id}")).await;
     assert_eq!(imgs.as_array().unwrap().len(), 1);
     let (_, ov) = t.get("/api/overview").await;
-    assert_eq!(ov["last_24h"]["succeeded"], 2);
+    assert_eq!(
+        ov["last_24h"]["succeeded"], 1,
+        "only backups count, not the repository creation"
+    );
     assert_eq!(ov["storage"]["images"], 1);
 
     // Another agent cannot touch this agent's jobs.

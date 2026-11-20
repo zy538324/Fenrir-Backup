@@ -54,4 +54,8 @@ promises of a backup product:
 | Create-only writes; append-only server mode with separate admin credential | Create-only Done; server mode Phase 4 |
 | S3 Object Lock (compliance) retention | Phase 4 |
 | Change-ratio / entropy anomaly alert holding pruning | Phase 4 |
-| Credentials protected with DPAPI / kernel keyring; protected service | Phase 7 (agent) |
+| Agent secrets protected with DPAPI (Windows) or root-only 0600 files (Linux, macOS); kernel keyring later | Done (management server release) |
+| Management server never holds repository keys: passphrases sealed in the browser to each agent's X25519 key; recovery key generated in the browser | Done |
+| Server: Argon2id admin passwords, login throttling, HttpOnly SameSite=Strict cookies, CSRF header, CSP and frame denial, audit log | Done |
+| Agents pin a self-signed server certificate; installers verify agent binaries by SHA-256 before running them | Done |
+| Role-based access for several administrators | Planned |

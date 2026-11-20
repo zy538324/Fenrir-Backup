@@ -8,9 +8,22 @@
 | Engine integration | `crates/engine/tests` | backup→restore byte comparison on a synthetic GPT disk; partition table byte-exact incl. backup GPT; free-space garbage never stored; incremental stores only changed chunks; zero chunks skipped and zero-filled on dirty targets; full verify finds a corrupted chunk, quick verify finds a missing one; restore refuses corrupt data; **fault injection**: backend failing mid-backup → no manifest, rerun completes and reuses chunks; cancellation; restore safety (confirmation mismatch, too-small target); MBR disk; multi-disk image |
 | CLI end-to-end | `crates/cli/tests` | real binary with `--json`: init, backup, list, show, dry-run, verify, restore with and without `--yes`, wrong passphrase, recovery key unlock, corrupted chunk → exit 3 |
 | Reference reader | `crates/core-format/tests` | `fenrir-reader export` rebuilds a sparse disk written via the library API |
+| VHDX reader | `crates/vdisk/tests` | dynamic and differencing VHDX files built by a spec-following test writer: reads match, parent-linkage mismatch refused, damaged/dirty-log files refused, random corruption never panics, engine reads only allocated blocks and restores byte-exact |
+| Server API | `crates/server/tests` | first-run setup, login throttling, CSRF header, enrollment tokens and revocation, installers carry URL/pin/token/hashes and resist Host-header injection, HTTP/2 authority, sealed secrets never stored in plaintext, one job at a time, lost-job detection, plans never pile up, cross-agent isolation, re-enrollment with a new key drops access |
+| Sealing interop | `crates/protocol` | a blob sealed by `ui/src/seal.ts` on WebCrypto opens in the Rust agent |
+| Hyper-V parsing | `crates/agent` | PowerShell/WMI output (single and multi-element), script injection refused |
 | Windows VSS smoke | CI `windows-vss-smoke` | real VSS snapshot set with writers on a Windows runner, NTFS bitmap, pagefile exclusion, probe reads through shadow devices, abort |
 | Fuzzing | `fuzz/`, CI `fuzz-smoke` | manifest envelope/body, sealed objects, partition tables, key files (60 s per target per push; longer runs before release) |
 | Supply chain | CI `supply-chain` | `cargo audit`, `cargo deny` (licences, sources, advisories) |
+
+End-to-end (run by hand during development, recorded in the PR): the real
+server with a self-signed pinned certificate, the UI driven in Chromium,
+the generated Linux one-liner piped to `sh` (pinned `curl`, hash check,
+enrollment), a repository created through the UI wizard with
+browser-sealed secrets and a browser-generated recovery key, a disk backup
+plus an incremental that stores 0 new bytes, and the recovery key opening
+the repository with the CLI. Hyper-V backups need a Hyper-V host and run in
+the VM matrix.
 
 Run locally:
 

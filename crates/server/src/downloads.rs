@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -43,12 +43,12 @@ const WIN: &[Target] = &[Target {
 }];
 const LINUX: &[Target] = &[
     Target {
-        triple: "x86_64-unknown-linux-gnu",
+        triple: "x86_64-unknown-linux-musl",
         file: "fenrir-agent",
         arch: "x86_64",
     },
     Target {
-        triple: "aarch64-unknown-linux-gnu",
+        triple: "aarch64-unknown-linux-musl",
         file: "fenrir-agent",
         arch: "arm64",
     },
@@ -120,13 +120,17 @@ fn binary_info(st: &Shared, t: &Target) -> Option<(String, u64)> {
 }
 
 /// URL agents use to reach this server.
-pub fn public_url(st: &Shared, headers: &HeaderMap) -> ApiResult<String> {
+pub fn public_url(st: &Shared, headers: &HeaderMap, uri: &Uri) -> ApiResult<String> {
     let url = match &st.cfg.public_url {
         Some(u) => u.trim_end_matches('/').to_string(),
         None => {
+            // HTTP/1.1 sends Host; HTTP/2 carries it as the :authority
+            // pseudo-header, which appears in the request URI.
             let host = headers
                 .get(header::HOST)
                 .and_then(|h| h.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| uri.authority().map(|a| a.to_string()))
                 .ok_or_else(|| ApiError::bad("no Host header"))?;
             format!(
                 "{}://{host}",
@@ -186,9 +190,10 @@ async fn catalogue(
     State(st): State<Shared>,
     _a: Admin,
     headers: HeaderMap,
+    uri: Uri,
     Query(q): Query<CatalogueQuery>,
 ) -> ApiResult<Json<Value>> {
-    let url = public_url(&st, &headers)?;
+    let url = public_url(&st, &headers, &uri)?;
     let pin = st.cfg.tls.as_ref().filter(|t| t.pinned);
     let token = match &q.token {
         Some(t) => {
@@ -265,6 +270,7 @@ fn script_response(name: &str, body: String) -> Response {
 async fn installer(
     State(st): State<Shared>,
     headers: HeaderMap,
+    uri: Uri,
     Path((token, platform)): Path<(String, String)>,
 ) -> ApiResult<Response> {
     let token_role = token_valid(&st, &token)?;
@@ -272,7 +278,7 @@ async fn installer(
         .iter()
         .find(|p| p.id == platform)
         .ok_or_else(|| ApiError::not_found("unknown platform"))?;
-    let url = public_url(&st, &headers)?;
+    let url = public_url(&st, &headers, &uri)?;
     let role = p.role.unwrap_or(&token_role).to_string();
     let pin = st
         .cfg
@@ -438,8 +444,8 @@ fn linux_script(
 # Fenrir-Backup agent installer for Linux. Generated for this enrollment only.
 {common}
 case "$(uname -m)" in
-  x86_64|amd64) TARGET=x86_64-unknown-linux-gnu; SHA='{x64}' ;;
-  aarch64|arm64) TARGET=aarch64-unknown-linux-gnu; SHA='{arm}' ;;
+  x86_64|amd64) TARGET=x86_64-unknown-linux-musl; SHA='{x64}' ;;
+  aarch64|arm64) TARGET=aarch64-unknown-linux-musl; SHA='{arm}' ;;
   *) echo "Unsupported CPU: $(uname -m)" >&2; exit 1 ;;
 esac
 if [ -z "$SHA" ]; then echo "The server has no agent build for $TARGET yet." >&2; exit 1; fi
@@ -473,8 +479,8 @@ systemctl enable --now fenrir-agent
 echo "Fenrir-Backup agent installed and running. This machine will appear in the web UI within a minute."
 "#,
         common = unix_common(url, pin, token, role),
-        x64 = sha("x86_64-unknown-linux-gnu"),
-        arm = sha("aarch64-unknown-linux-gnu"),
+        x64 = sha("x86_64-unknown-linux-musl"),
+        arm = sha("aarch64-unknown-linux-musl"),
     )
 }
 

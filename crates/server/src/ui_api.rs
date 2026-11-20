@@ -1056,9 +1056,9 @@ async fn overview(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Value>>
     let t = now();
     let (ok, warn, failed, running, images, stored, protected_bytes): (i64, i64, i64, i64, i64, i64, i64) = st.db().query_row(
         "SELECT
-            (SELECT COUNT(*) FROM jobs WHERE state = 'succeeded' AND finished > ?1),
-            (SELECT COUNT(*) FROM jobs WHERE state = 'warning' AND finished > ?1),
-            (SELECT COUNT(*) FROM jobs WHERE state = 'failed' AND finished > ?1),
+            (SELECT COUNT(*) FROM jobs WHERE state = 'succeeded' AND finished > ?1 AND kind_json LIKE '{\"type\":\"backup%'),
+            (SELECT COUNT(*) FROM jobs WHERE state = 'warning' AND finished > ?1 AND kind_json LIKE '{\"type\":\"backup%'),
+            (SELECT COUNT(*) FROM jobs WHERE state = 'failed' AND finished > ?1 AND kind_json LIKE '{\"type\":\"backup%'),
             (SELECT COUNT(*) FROM jobs WHERE state IN ('queued','dispatched','running')),
             (SELECT COUNT(*) FROM images),
             (SELECT COALESCE(SUM(stored_new_bytes),0) FROM images),
