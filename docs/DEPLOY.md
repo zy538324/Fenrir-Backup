@@ -56,6 +56,26 @@ as arguments after the image name, e.g. `fenrir-server --poll-seconds 30`.
 * **Logs:** `docker logs fenrir` (JSON lines). `GET /healthz` is the health
   check the image already uses.
 
+### Keep it updated from GitHub
+
+`scripts/server-sync/` holds a systemd timer that checks GitHub every 5
+minutes and, when there is a new commit, rebuilds the image and restarts
+the container. The data volume is kept. If a build fails, the running
+version stays up and that commit is not tried again until a newer one
+arrives (`fenrir-sync.sh --force` retries).
+
+```bash
+sudo git clone --branch <branch> https://github.com/zy538324/Fenrir-Backup /opt/fenrir-backup
+```
+
+```bash
+sudo sh /opt/fenrir-backup/scripts/server-sync/install.sh
+```
+
+Put local settings (e.g. `FENRIR_PUBLIC_URL`) in
+`/opt/fenrir-backup/compose.override.yaml`, not in `compose.yaml`: the
+sync discards edits to tracked files. Logs: `journalctl -u fenrir-sync`.
+
 ## Run it (Linux)
 
 ```bash
