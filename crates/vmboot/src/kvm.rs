@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -465,7 +464,7 @@ impl VmSession {
     pub fn check(
         &mut self,
         opts: &BootOptions,
-        cancelled: &AtomicBool,
+        cancelled: &dyn Fn() -> bool,
         progress: &dyn Fn(&str),
     ) -> BootReport {
         let fw = match self.firmware {
@@ -486,7 +485,7 @@ impl VmSession {
         };
         loop {
             let t = self.started.elapsed();
-            if cancelled.load(Ordering::SeqCst) {
+            if cancelled() {
                 return report(self, Outcome::Failed, "cancelled", "cancelled".into());
             }
             if !self.running() {
@@ -621,7 +620,7 @@ pub fn boot_check(
     image: &ManifestBody,
     host: &HostSupport,
     opts: &BootOptions,
-    cancelled: &AtomicBool,
+    cancelled: &dyn Fn() -> bool,
     progress: &dyn Fn(&str),
 ) -> Result<(BootReport, Option<VmSession>)> {
     let mut s = VmSession::start(repo, image, host, opts)?;

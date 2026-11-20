@@ -338,11 +338,30 @@ async fn update_job(
             }
         }
     }
+    if let (Some(rid), Some(b), Some(JobKind::BootCheck { image_id, .. })) =
+        (&repo_id, &u.boot_check, &kind)
+    {
+        if u.state.is_final() && b.image_id == *image_id {
+            record_boot_check(&db, rid, &agent.agent_id, &id.to_string(), b)?;
+            if b.outcome == "failed" {
+                events.push(notify::Event {
+                    severity: notify::Severity::Error,
+                    subject: format!("Backup of {agent_name}'s image did not boot"),
+                    body: format!("A boot check of image {image_id} failed: {}", b.message),
+                    link: Some("/machines".into()),
+                });
+            }
+        }
+    }
     if let Some(rid) = &repo_id {
         for removed in &u.removed_images {
             db.execute(
                 "DELETE FROM images WHERE image_id = ?1 AND repository_id = ?2",
                 params![removed.to_string(), rid],
+            )?;
+            db.execute(
+                "DELETE FROM boot_checks WHERE image_id = ?1",
+                params![removed.to_string()],
             )?;
         }
         if matches!(kind, Some(JobKind::Prune { dry_run: false })) && u.state == JobState::Succeeded
@@ -514,4 +533,46 @@ impl UpdateSettings {
     pub fn enabled(&self) -> bool {
         self.auto_update.unwrap_or(true)
     }
+}
+
+/// Largest screenshot stored per boot check.
+const MAX_SCREENSHOT: usize = 4 << 20;
+
+fn record_boot_check(
+    db: &rusqlite::Connection,
+    repo_id: &str,
+    agent_id: &str,
+    job_id: &str,
+    b: &protocol::BootCheckResult,
+) -> rusqlite::Result<()> {
+    use base64::Engine;
+    let shot = b
+        .screenshot_png
+        .as_deref()
+        .and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok())
+        .filter(|p| p.len() <= MAX_SCREENSHOT && p.starts_with(b"\x89PNG"));
+    let outcome = match b.outcome.as_str() {
+        "verified" | "screen" => b.outcome.as_str(),
+        _ => "failed",
+    };
+    let clip = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+    db.execute(
+        "INSERT INTO boot_checks (image_id, repository_id, agent_id, job_id, at, outcome, method, seconds, firmware, accel, message, screenshot)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            b.image_id.to_string(),
+            repo_id,
+            agent_id,
+            job_id,
+            now(),
+            outcome,
+            clip(&b.method, 40),
+            b.seconds as i64,
+            clip(&b.firmware, 10),
+            clip(&b.accel, 10),
+            clip(&b.message, 1000),
+            shot
+        ],
+    )?;
+    Ok(())
 }

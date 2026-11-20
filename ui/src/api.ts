@@ -63,7 +63,8 @@ export interface Agent {
 
 export interface Vm { id: string; name: string; state: string; generation: number; disk_bytes: number; disks: string[] }
 export interface Disk { path: string; size: number; model: string; system: boolean }
-export interface Inventory { hostname: string; os: OsSummary; capabilities: string[]; disks: Disk[]; vms: Vm[]; notes: string[]; agent_version: string }
+export interface RunningVm { session_id: string; image_id: string; started_unix: number; vnc_port: number; forwards: Record<string, number> }
+export interface Inventory { hostname: string; os: OsSummary; capabilities: string[]; disks: Disk[]; vms: Vm[]; notes: string[]; agent_version: string; running_vms?: RunningVm[] }
 
 export type JobKind =
   | { type: "init_repository" }
@@ -74,7 +75,23 @@ export type JobKind =
   | { type: "list_images" }
   | { type: "apply_retention"; machine_ids: string[]; retention: Retention; dry_run?: boolean }
   | { type: "prune"; dry_run?: boolean }
-  | { type: "restore"; image_id: string; disks: number[]; target: RestoreTarget };
+  | { type: "restore"; image_id: string; disks: number[]; target: RestoreTarget }
+  | { type: "boot_check"; image_id: string; keep_running?: boolean; memory_mb?: number | null; cpus?: number | null }
+  | { type: "stop_vm"; session_id: string };
+
+export type BootOutcome = "verified" | "screen" | "failed";
+export interface BootCheck {
+  id: number;
+  at: number;
+  outcome: BootOutcome;
+  method: string;
+  seconds: number;
+  firmware: string;
+  accel: string;
+  message: string;
+  has_screenshot: boolean;
+  agent_name?: string | null;
+}
 
 export interface Retention { keep_last?: number; keep_daily?: number; keep_weekly?: number; keep_monthly?: number; keep_yearly?: number }
 
@@ -125,6 +142,7 @@ export interface Image {
   anomaly: string | null;
   chunks_total: number;
   chunks_new: number;
+  boot_check: BootCheck | null;
 }
 
 export interface Repository {
@@ -146,6 +164,9 @@ export interface Repository {
   prune_every_days: number;
   last_prune: number | null;
   anomalies: number;
+  boot_agent_id: string | null;
+  boot_every_days: number;
+  last_verified_boot: number | null;
 }
 
 export type Schedule =
@@ -169,6 +190,7 @@ export interface Plan {
 }
 
 export interface Overview {
+  boot: { verified_30d: number; screen_30d: number; failed_30d: number; last_verified: { at: number; hostname: string | null; vm_name: string | null; id: number; seconds: number } | null };
   machines: { total: number; online: number; attention: number };
   last_24h: { succeeded: number; warning: number; failed: number };
   running: number;

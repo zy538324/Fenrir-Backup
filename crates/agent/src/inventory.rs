@@ -102,6 +102,9 @@ pub fn capabilities(role: &str) -> Vec<String> {
         c.push("backup_disks".into());
         c.push("restore_disk".into());
     }
+    if let Some(b) = crate::boot::capability(role) {
+        c.push(b.into());
+    }
     c
 }
 
@@ -182,5 +185,6 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         notes,
         agent_target: crate::update::TARGET.into(),
         agent_sha256: crate::update::self_sha256(),
+        running_vms: crate::boot::running_vms(),
     }
 }

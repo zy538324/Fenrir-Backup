@@ -382,6 +382,88 @@ pub fn vm_exists(name: &str) -> anyhow::Result<bool> {
         == "yes")
 }
 
+const PS_BOOT_CHECK: &str = r#"
+Import-Module Hyper-V
+$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SPEC__')) | ConvertFrom-Json
+$vm = Get-VM -Name $p.name
+Get-VMNetworkAdapter -VM $vm | Disconnect-VMNetworkAdapter
+Start-VM -VM $vm
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$outcome = 'timeout'; $msg = 'no heartbeat before the time limit'
+while ($sw.Elapsed.TotalSeconds -lt $p.timeout) {
+  Start-Sleep -Seconds 5
+  $vm = Get-VM -Id $vm.Id
+  if ($vm.State -ne 'Running') { $outcome = 'stopped'; $msg = "the VM stopped (state $($vm.State))"; break }
+  if ("$($vm.Heartbeat)" -like 'Ok*') { $outcome = 'heartbeat'; $msg = "the Hyper-V heartbeat service reported $($vm.Heartbeat)"; break }
+}
+$thumb = $null
+try {
+  $ms = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_VirtualSystemManagementService
+  $vs = Get-CimInstance -Namespace root\virtualization\v2 -ClassName Msvm_VirtualSystemSettingData -Filter "ConfigurationID='$($vm.Id)' AND VirtualSystemType='Microsoft:Hyper-V:System:Realized'"
+  $r = Invoke-CimMethod -CimInstance $ms -MethodName GetVirtualSystemThumbnailImage -Arguments @{ TargetSystem = $vs; WidthPixels = [uint16]$p.width; HeightPixels = [uint16]$p.height }
+  if ($r.ImageData) { $thumb = [Convert]::ToBase64String([byte[]]$r.ImageData) }
+} catch {}
+[pscustomobject]@{ outcome = $outcome; message = $msg; seconds = [int]$sw.Elapsed.TotalSeconds; thumb = $thumb } | ConvertTo-Json -Compress
+"#;
+
+const PS_REMOVE_VM: &str = r#"
+Import-Module Hyper-V
+$n = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__NAME__'))
+$vm = Get-VM -Name $n -ErrorAction SilentlyContinue
+if ($vm) { Stop-VM -VM $vm -TurnOff -Force -ErrorAction SilentlyContinue; Remove-VM -VM $vm -Force }
+"#;
+
+pub const THUMB_W: u32 = 800;
+pub const THUMB_H: u32 = 600;
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct HvBootResult {
+    /// "heartbeat", "stopped" or "timeout".
+    pub outcome: String,
+    pub message: String,
+    pub seconds: u64,
+    /// RGB565 thumbnail, base64.
+    #[serde(default)]
+    pub thumb: Option<String>,
+}
+
+/// Start an existing (disconnected) VM and wait for its heartbeat.
+pub fn boot_check_vm(name: &str, timeout_secs: u64) -> anyhow::Result<HvBootResult> {
+    check_vm_name(name)?;
+    let spec = serde_json::json!({ "name": name, "timeout": timeout_secs, "width": THUMB_W, "height": THUMB_H });
+    let out = run_ps(&format!(
+        "{PS_PRELUDE}{}",
+        PS_BOOT_CHECK.replace("__SPEC__", &b64(&spec.to_string()))
+    ))?;
+    parse_boot_result(&out)
+}
+
+pub fn parse_boot_result(out: &str) -> anyhow::Result<HvBootResult> {
+    let line = out
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('{'))
+        .ok_or_else(|| anyhow::anyhow!("no result from the boot check script"))?;
+    Ok(serde_json::from_str(line.trim())?)
+}
+
+#[cfg(test)]
+fn boot_check_script_for_test(name: &str) -> String {
+    let spec =
+        serde_json::json!({ "name": name, "timeout": 1, "width": THUMB_W, "height": THUMB_H });
+    PS_BOOT_CHECK.replace("__SPEC__", &b64(&spec.to_string()))
+}
+
+/// Turn off and delete a VM (not its files).
+pub fn remove_vm(name: &str) -> anyhow::Result<()> {
+    check_vm_name(name)?;
+    run_ps(&format!(
+        "{PS_PRELUDE}{}",
+        PS_REMOVE_VM.replace("__NAME__", &b64(name))
+    ))?;
+    Ok(())
+}
+
 /// Run a script with Windows PowerShell; returns stdout.
 pub fn run_ps(script: &str) -> anyhow::Result<String> {
     #[cfg(windows)]
@@ -429,6 +511,21 @@ pub fn list_vms() -> anyhow::Result<Vec<protocol::VmSummary>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boot_check_output() {
+        let r = parse_boot_result("WARNING: noise\r\n{\"outcome\":\"heartbeat\",\"message\":\"ok\",\"seconds\":42,\"thumb\":null}\r\n").unwrap();
+        assert_eq!(
+            (r.outcome.as_str(), r.seconds, r.thumb),
+            ("heartbeat", 42, None)
+        );
+        assert!(parse_boot_result("").is_err());
+        let s = boot_check_script_for_test("fenrir-check-1234abcd");
+        assert!(
+            !s.contains("fenrir-check-1234abcd"),
+            "name travels base64-encoded"
+        );
+    }
 
     #[test]
     fn scripts_refuse_injection() {

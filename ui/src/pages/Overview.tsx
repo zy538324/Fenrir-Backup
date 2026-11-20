@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Database, HardDrive, MonitorSmartphone, PlusCircle, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, Rocket, CalendarClock, CheckCircle2, Database, HardDrive, MonitorSmartphone, PlusCircle, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
 import type { Agent, Job, Overview, Repository } from "../api";
 import { ago, bytes, health, jobTone, jobWhat, osLabel } from "../format";
 import { Empty, Link, Loading, Notice, OsBadge, Pill, ProgressBar, StatePill, useApi, useRoute } from "../ui";
@@ -36,6 +36,7 @@ export default function OverviewPage() {
         <Stat icon={<ShieldCheck size={15} />} label="Data protected" value={bytes(data.storage.protected_bytes)} foot={`${data.storage.images} images kept`} />
         <Stat icon={<HardDrive size={15} />} label="Storage used" value={bytes(data.storage.stored_bytes)} foot="after deduplication and compression" />
       </div>
+      <BootStrip ov={data} />
 
       <div className="grid cols-2" style={{ alignItems: "start" }}>
         <MachinesCard agents={data.agents} />
@@ -191,5 +192,31 @@ function Holds() {
         </Link>
       ))}
     </>
+  );
+}
+
+function BootStrip({ ov }: { ov: Overview }) {
+  const b = ov.boot;
+  const tested = b.verified_30d + b.screen_30d + b.failed_30d;
+  return (
+    <div className="card card-body row wrap" style={{ gap: 12 }}>
+      <Rocket size={17} style={{ color: "var(--text-2)" }} />
+      <strong>Boot tests</strong>
+      {tested === 0 ? (
+        <span className="muted">No backup has been test-booted in the last 30 days. Open a machine's backups and choose “Test boot”, or turn on boot verification for a repository.</span>
+      ) : (
+        <>
+          <span className="muted">Last 30 days:</span>
+          <Pill tone="ok">{b.verified_30d} booted</Pill>
+          {b.screen_30d > 0 && <Pill tone="warn">{b.screen_30d} to check</Pill>}
+          {b.failed_30d > 0 && <Pill tone="bad">{b.failed_30d} did not boot</Pill>}
+          {b.last_verified && (
+            <span className="faint small right">
+              last verified: {b.last_verified.vm_name ?? b.last_verified.hostname ?? "image"} {ago(b.last_verified.at)}
+            </span>
+          )}
+        </>
+      )}
+    </div>
   );
 }

@@ -58,6 +58,7 @@ dependencies = [
  "ureq",
  "uuid",
  "vdisk",
+ "vmboot",
  "windows",
  "windows-service",
 ]

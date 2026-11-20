@@ -1,6 +1,7 @@
 //! fenrir-agent: enrolls with a Fenrir-Backup server, then runs the jobs it
 //! is given (backups, Hyper-V VM backups, verification).
 
+mod boot;
 mod client;
 mod config;
 mod hyperv;
@@ -275,7 +276,9 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
                 }
                 // Update only between jobs, and do not retry a failing
                 // build more than hourly.
-                if let (None, Some(u)) = (&running, &hb.update) {
+                if let (None, Some(u), true) =
+                    (&running, &hb.update, req.inventory.running_vms.is_empty())
+                {
                     let recently_failed = failed_update.as_ref().is_some_and(|(sha, t)| {
                         sha == &u.sha256 && t.elapsed() < Duration::from_secs(3600)
                     });
@@ -314,6 +317,7 @@ pub fn run_loop(stop: Arc<AtomicBool>) -> anyhow::Result<LoopExit> {
         r.ctl.cancel();
         let _ = r.handle.join();
     }
+    boot::stop_all();
     log::info("agent stopped");
     Ok(LoopExit::Stopped)
 }

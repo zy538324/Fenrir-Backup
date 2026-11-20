@@ -4,6 +4,7 @@ import { api, type Agent, type Repository } from "../api";
 import { ago, bytes, passwordStrength, when } from "../format";
 import { newRecoveryKey, seal, sealSupported } from "../seal";
 import { Empty, Field, Loading, Modal, Notice, Pill, useApi, useToast } from "../ui";
+import { BootVerification } from "./Boot";
 
 export default function RepositoriesPage() {
   const repos = useApi<Repository[]>("/api/repositories", 5000);
@@ -82,6 +83,7 @@ export default function RepositoriesPage() {
                 <div className="row">
                   {r.status === "ready" && <Maintenance repo={r} agents={agents.data!} onChange={repos.reload} />}
                 </div>
+                {r.status === "ready" && <BootVerification repo={r} agents={agents.data!} onSaved={repos.reload} />}
                 <div className="row">
                   <span className="faint small mono">ID {r.repo_uuid.slice(0, 8)}</span>
                   {!r.hold && r.status === "ready" && (

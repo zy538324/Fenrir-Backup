@@ -141,6 +141,27 @@ const MIGRATIONS: &[&str] = &[
     UPDATE repositories SET maintenance_agent_id =
         (SELECT agent_id FROM jobs WHERE jobs.repository_id = repositories.id AND kind_json LIKE '{"type":"init_repository"%' LIMIT 1);
     "#,
+    // 3: boot checks
+    r#"
+    CREATE TABLE boot_checks (
+        id INTEGER PRIMARY KEY,
+        image_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        job_id TEXT,
+        at INTEGER NOT NULL,
+        outcome TEXT NOT NULL,
+        method TEXT NOT NULL,
+        seconds INTEGER NOT NULL,
+        firmware TEXT NOT NULL,
+        accel TEXT NOT NULL,
+        message TEXT NOT NULL,
+        screenshot BLOB
+    );
+    CREATE INDEX boot_checks_image ON boot_checks(image_id, at);
+    ALTER TABLE repositories ADD COLUMN boot_agent_id TEXT;
+    ALTER TABLE repositories ADD COLUMN boot_every_days INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

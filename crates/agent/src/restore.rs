@@ -20,6 +20,7 @@ fn done(state: JobState) -> JobUpdate {
         images: None,
         repo_uuid: None,
         removed_images: vec![],
+        boot_check: None,
     }
 }
 
@@ -62,7 +63,7 @@ pub fn vhdx_names(m: &ManifestBody, disks: &[u32]) -> Vec<(u32, String)> {
 }
 
 /// Write the selected disks as VHDX files into `dir`. Returns their paths.
-fn write_vhdx(
+pub fn write_vhdx(
     ctx: &Ctx,
     repo: &Repository,
     m: &ManifestBody,
@@ -166,41 +167,7 @@ pub fn run(
             }
             let files = write_vhdx(ctx, repo, &m, disks, &dir, rep)?;
             rep.progress("creating VM", 1, 1, name);
-            let spec = crate::hyperv::NewVm {
-                name: name.clone(),
-                path: dir.display().to_string(),
-                generation: if vm.generation == 1 {
-                    1
-                } else if vm.generation == 2 {
-                    2
-                } else {
-                    guess_generation(&m)
-                },
-                cpu_count: vm.cpu_count.max(1),
-                memory_mb: if vm.memory_mb >= 512 {
-                    vm.memory_mb
-                } else {
-                    4096
-                },
-                secure_boot: vm.secure_boot,
-                disks: files
-                    .iter()
-                    .map(|(i, p)| crate::hyperv::NewVmDisk {
-                        path: p.display().to_string(),
-                        controller: vm
-                            .disks
-                            .get(*i as usize)
-                            .map(|d| d.controller.clone())
-                            .unwrap_or_default(),
-                    })
-                    .collect(),
-                switch: switch
-                    .clone()
-                    .or_else(|| vm.network_adapters.first().map(|n| n.switch.clone()))
-                    .filter(|s| !s.is_empty()),
-                adapters: vm.network_adapters.len().max(1) as u32,
-                start: *start,
-            };
+            let spec = vm_spec(&m, name, &dir, &files, switch.clone(), *start);
             let out = crate::hyperv::run_ps(&crate::hyperv::new_vm_script(&spec)?)?;
             let mut u = done(JobState::Succeeded);
             u.result = Some(
@@ -245,6 +212,50 @@ pub fn run(
             u.result = Some(serde_json::to_value(&r)?);
             Ok(u)
         }
+    }
+}
+
+/// Hyper-V settings for a VM made from `m`'s disks written to `files`.
+pub fn vm_spec(
+    m: &ManifestBody,
+    name: &str,
+    dir: &Path,
+    files: &[(u32, PathBuf)],
+    switch: Option<String>,
+    start: bool,
+) -> crate::hyperv::NewVm {
+    let vm = m.vm.clone().unwrap_or_default();
+    crate::hyperv::NewVm {
+        name: name.to_string(),
+        path: dir.display().to_string(),
+        generation: if vm.generation == 1 || vm.generation == 2 {
+            vm.generation
+        } else {
+            guess_generation(m)
+        },
+        cpu_count: vm.cpu_count.max(1),
+        memory_mb: if vm.memory_mb >= 512 {
+            vm.memory_mb
+        } else {
+            4096
+        },
+        secure_boot: vm.secure_boot,
+        disks: files
+            .iter()
+            .map(|(i, p)| crate::hyperv::NewVmDisk {
+                path: p.display().to_string(),
+                controller: vm
+                    .disks
+                    .get(*i as usize)
+                    .map(|d| d.controller.clone())
+                    .unwrap_or_default(),
+            })
+            .collect(),
+        switch: switch
+            .or_else(|| vm.network_adapters.first().map(|n| n.switch.clone()))
+            .filter(|s| !s.is_empty()),
+        adapters: vm.network_adapters.len().max(1) as u32,
+        start,
     }
 }
 

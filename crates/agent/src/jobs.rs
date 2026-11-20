@@ -88,7 +88,12 @@ fn running(progress: Option<JobProgress>) -> JobUpdate {
         images: None,
         repo_uuid: None,
         removed_images: vec![],
+        boot_check: None,
     }
+}
+
+pub fn finished(state: JobState) -> JobUpdate {
+    done(state)
 }
 
 fn done(state: JobState) -> JobUpdate {
@@ -101,6 +106,7 @@ fn done(state: JobState) -> JobUpdate {
         images: None,
         repo_uuid: None,
         removed_images: vec![],
+        boot_check: None,
     }
 }
 
@@ -338,6 +344,22 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
             crate::restore::run(ctx, &repo, *image_id, disks, target, rep)
         }
+        JobKind::BootCheck {
+            image_id,
+            keep_running,
+            memory_mb,
+            cpus,
+        } => {
+            let repo = open_repo(ctx.key, access.ok_or_else(|| anyhow!("no repository"))?)?;
+            let req = crate::boot::BootRequest {
+                image_id: *image_id,
+                keep_running: *keep_running,
+                memory_mb: *memory_mb,
+                cpus: *cpus,
+            };
+            crate::boot::run(ctx, &repo, &req, rep)
+        }
+        JobKind::StopVm { session_id } => crate::boot::stop_vm(*session_id),
     }
 }
 

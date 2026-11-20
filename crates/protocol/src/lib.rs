@@ -120,6 +120,42 @@ pub struct Inventory {
     /// SHA-256 of the running agent executable (auto-update).
     #[serde(default)]
     pub agent_sha256: String,
+    /// VMs this host runs from backups (boot checks kept running).
+    #[serde(default)]
+    pub running_vms: Vec<RunningVm>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunningVm {
+    pub session_id: Uuid,
+    pub image_id: Uuid,
+    pub started_unix: i64,
+    /// Loopback VNC port on the host (KVM); 0 if none.
+    #[serde(default)]
+    pub vnc_port: u16,
+    /// Guest service name → loopback port on the host.
+    #[serde(default)]
+    pub forwards: std::collections::BTreeMap<String, u16>,
+}
+
+/// Outcome of a boot check, reported with the job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BootCheckResult {
+    pub image_id: Uuid,
+    /// "verified", "screen" or "failed".
+    pub outcome: String,
+    pub method: String,
+    pub seconds: u64,
+    pub firmware: String,
+    /// "kvm", "tcg" or "hyperv".
+    pub accel: String,
+    pub message: String,
+    /// PNG, base64.
+    #[serde(default)]
+    pub screenshot_png: Option<String>,
+    /// Set when the VM was left running.
+    #[serde(default)]
+    pub session: Option<RunningVm>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +300,19 @@ pub enum JobKind {
         disks: Vec<u32>,
         target: RestoreTarget,
     },
+    /// Boot the image as an isolated VM and check that it starts.
+    BootCheck {
+        image_id: Uuid,
+        /// Leave the VM running after the check (KVM hosts).
+        #[serde(default)]
+        keep_running: bool,
+        #[serde(default)]
+        memory_mb: Option<u64>,
+        #[serde(default)]
+        cpus: Option<u32>,
+    },
+    /// Power off a VM left running by a boot check.
+    StopVm { session_id: Uuid },
 }
 
 impl JobKind {
@@ -278,6 +327,8 @@ impl JobKind {
             JobKind::ApplyRetention { .. } => "Apply retention",
             JobKind::Prune { .. } => "Reclaim space",
             JobKind::Restore { .. } => "Restore",
+            JobKind::BootCheck { .. } => "Boot check",
+            JobKind::StopVm { .. } => "Stop VM",
         }
     }
 }
@@ -390,6 +441,8 @@ pub struct JobUpdate {
     /// Images deleted by retention.
     #[serde(default)]
     pub removed_images: Vec<Uuid>,
+    #[serde(default)]
+    pub boot_check: Option<BootCheckResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

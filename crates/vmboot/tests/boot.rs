@@ -5,7 +5,6 @@
 //! * `cirros_boots_from_backup` needs a bootable raw image in
 //!   `FENRIR_TEST_BOOT_IMAGE` (CI downloads CirrOS); skipped otherwise.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -79,7 +78,7 @@ fn blank_disk_is_not_verified() {
     o.timeout = Duration::from_secs(120);
     o.min_boot = Duration::from_secs(20);
     o.stable_for = Duration::from_secs(15);
-    let (r, s) = vmboot::boot_check(&repo, &m, &h, &o, &AtomicBool::new(false), &|_| {}).unwrap();
+    let (r, s) = vmboot::boot_check(&repo, &m, &h, &o, &|| false, &|_| {}).unwrap();
     eprintln!("{r:?}");
     assert!(s.is_none());
     assert_ne!(r.outcome, Outcome::Verified);
@@ -101,10 +100,7 @@ fn cirros_boots_from_backup() {
     o.memory_mb = 512;
     o.cpus = 1;
     o.timeout = Duration::from_secs(if h.kvm { 300 } else { 900 });
-    let (r, s) = vmboot::boot_check(&repo, &m, &h, &o, &AtomicBool::new(false), &|p| {
-        eprintln!("{p}")
-    })
-    .unwrap();
+    let (r, s) = vmboot::boot_check(&repo, &m, &h, &o, &|| false, &|p| eprintln!("{p}")).unwrap();
     eprintln!("{r:?}");
     assert!(s.is_none());
     assert_eq!(r.outcome, Outcome::Verified, "{}", r.message);

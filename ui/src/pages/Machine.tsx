@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, CalendarClock, Database, HardDrive, Layers, Pencil, Play, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, CalendarClock, Database, HardDrive, Layers, Pencil, Play, Rocket, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
 import { RestoreDialog } from "./Restore";
+import { BootCheckDialog, BootPill, BootResultDialog, RunningVmsCard } from "./Boot";
 import { api, type Agent, type AgentDetail, type BackupSettings, type Image, type Inventory, type JobKind, type Repository, type Vm } from "../api";
 import { ago, bytes, consistencyLabel, duration, health, jobWhat, osLabel, scheduleText, until, when } from "../format";
 import { Empty, Field, Link, Loading, Modal, Notice, OsBadge, Pill, ProgressBar, StatePill, useApi, useRoute, useToast } from "../ui";
@@ -63,6 +64,7 @@ export default function MachinePage({ id }: { id: string }) {
       {tab === "overview" && (
         <div className="grid" style={{ gridTemplateColumns: "minmax(0, 2fr) minmax(260px, 1fr)", alignItems: "start" }}>
           <div className="stack">
+            <RunningVmsCard agent={a} vms={inv?.running_vms ?? []} images={data.images} />
             {a.role === "hyperv" && <VmTable vms={inv?.vms ?? []} disabled={!!a.running_job || data.repositories.length === 0} onBackup={(ids) => { setPreselect(ids); setDialog("backup"); }} />}
             {inv && inv.disks.length > 0 && <DiskTable inv={inv} />}
             <PlansCard plans={data.plans} />
@@ -221,13 +223,15 @@ function PlansCard({ plans }: { plans: AgentDetail["plans"] }) {
 
 function ImagesTable({ detail }: { detail: AgentDetail }) {
   const [restoring, setRestoring] = useState<Image | null>(null);
+  const [booting, setBooting] = useState<Image | null>(null);
+  const [results, setResults] = useState<Image | null>(null);
   if (detail.images.length === 0)
     return <div className="card"><Empty icon={<Database size={24} />} title="No backups yet">Images appear here after the first backup finishes.</Empty></div>;
   return (
     <div className="card table-wrap">
       <table className="table">
         <thead>
-          <tr><th>Taken</th>{detail.agent.role === "hyperv" && <th>VM</th>}<th>Type</th><th>Consistency</th><th style={{ textAlign: "right" }}>Captured</th><th style={{ textAlign: "right" }}>New data</th><th>Repository</th><th /></tr>
+          <tr><th>Taken</th>{detail.agent.role === "hyperv" && <th>VM</th>}<th>Type</th><th>Consistency</th><th style={{ textAlign: "right" }}>Captured</th><th style={{ textAlign: "right" }}>New data</th><th>Boot test</th><th>Repository</th><th /></tr>
         </thead>
         <tbody>
           {detail.images.map((i) => (
@@ -241,13 +245,19 @@ function ImagesTable({ detail }: { detail: AgentDetail }) {
               </td>
               <td style={{ textAlign: "right" }}>{bytes(i.captured_bytes)}</td>
               <td style={{ textAlign: "right" }}>{bytes(i.stored_new_bytes)}</td>
+              <td><BootPill check={i.boot_check} onClick={() => setResults(i)} /></td>
               <td>{i.repository_name}</td>
-              <td style={{ textAlign: "right" }}><button className="btn sm" onClick={() => setRestoring(i)}><RotateCcw size={13} /> Restore</button></td>
+              <td style={{ textAlign: "right" }} className="nowrap">
+                <button className="btn sm ghost" title="Start this backup as an isolated VM and check that it boots" onClick={() => setBooting(i)}><Rocket size={13} /> Test boot</button>{" "}
+                <button className="btn sm" onClick={() => setRestoring(i)}><RotateCcw size={13} /> Restore</button>
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
       {restoring && <RestoreDialog image={restoring} onClose={() => setRestoring(null)} />}
+      {booting && <BootCheckDialog image={booting} onClose={() => setBooting(null)} />}
+      {results && <BootResultDialog image={results} onClose={() => setResults(null)} />}
     </div>
   );
 }

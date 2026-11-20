@@ -1007,3 +1007,150 @@ async fn maintenance_restore_settings_and_updates() {
         .await;
     assert!(v["update"].is_null(), "auto-update off");
 }
+
+#[tokio::test]
+async fn boot_checks_results_and_schedule() {
+    use base64::Engine;
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+    let img = "6b2f7c1e-9f2a-4b8e-9d5f-0a1b2c3d4e5f";
+    t.st.db()
+        .execute(
+            "INSERT INTO images (image_id, repository_id, agent_id, machine_id, hostname, created, kind, consistency, captured_bytes, stored_new_bytes, disks_json)
+             VALUES (?3, ?1, ?2, 'machine-1', 'web01', 1, 'full', 'offline', 1, 1, '[1]')",
+            rusqlite::params![repo, agent_id, img],
+        )
+        .unwrap();
+
+    // Needs a host that can boot VMs.
+    let req = json!({ "agent_id": agent_id });
+    let (s, _) = t
+        .post(&format!("/api/images/{img}/boot-check"), req.clone())
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let mut caps: Vec<&str> = CAPS.to_vec();
+    caps.push("boot_kvm");
+    heartbeat(&mut t, &token, &caps, None).await;
+    let (s, v) = t
+        .post(
+            &format!("/api/images/{img}/boot-check"),
+            json!({ "agent_id": agent_id, "keep_running": true }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    let png = b"\x89PNG\r\n\x1a\nfake".to_vec();
+    let result = json!({
+        "image_id": img, "outcome": "verified", "method": "SSH", "seconds": 68, "firmware": "uefi", "accel": "tcg",
+        "message": "the guest's SSH service answered",
+        "screenshot_png": base64::engine::general_purpose::STANDARD.encode(&png),
+        "session": { "session_id": "11111111-2222-4333-8444-555555555555", "image_id": img, "started_unix": 1, "vnc_port": 5901, "forwards": { "SSH": 40022 } }
+    });
+    let hb = heartbeat(&mut t, &token, &caps, None).await;
+    let j = &hb.jobs[0];
+    assert!(matches!(
+        &j.kind,
+        JobKind::BootCheck {
+            keep_running: true,
+            ..
+        }
+    ));
+    assert!(j.repository.is_some());
+    let (s, v) = t
+        .agent(
+            &format!("/api/agent/jobs/{}/update", j.id),
+            &token,
+            json!({ "state": "succeeded", "boot_check": result }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    let (_, images) = t.get(&format!("/api/images?repository_id={repo}")).await;
+    let b = &images[0]["boot_check"];
+    assert_eq!(b["outcome"], "verified");
+    assert_eq!(b["has_screenshot"], true);
+    let (s, body) = t
+        .get(&format!("/api/boot-checks/{}/screenshot.png", b["id"]))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(body.as_str().unwrap().ends_with("PNG\r\n\u{1a}\nfake"));
+    let (_, hist) = t.get(&format!("/api/images/{img}/boot-checks")).await;
+    assert_eq!(hist.as_array().unwrap().len(), 1);
+    let (_, ov) = t.get("/api/overview").await;
+    assert_eq!(ov["boot"]["verified_30d"], 1);
+    assert_eq!(ov["boot"]["last_verified"]["hostname"], "web01");
+
+    // Stop a kept-running VM.
+    let (s, _) = t
+        .post(
+            &format!("/api/agents/{agent_id}/vms/11111111-2222-4333-8444-555555555555/stop"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let j = complete_next(&mut t, &token, json!({ "state": "succeeded" }))
+        .await
+        .unwrap();
+    assert!(matches!(j.kind, JobKind::StopVm { .. }));
+
+    // Scheduled boot verification: weekly; the recent check means not due.
+    heartbeat(&mut t, &token, &caps, None).await;
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/boot-verification"),
+            json!({ "agent_id": agent_id, "every_days": 0 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/boot-verification"),
+            json!({ "agent_id": agent_id, "every_days": 7 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        server::schedule::run_boot_checks(&t.st).unwrap(),
+        0,
+        "checked recently"
+    );
+    t.st.db()
+        .execute("UPDATE boot_checks SET at = 0", [])
+        .unwrap();
+    assert_eq!(server::schedule::run_boot_checks(&t.st).unwrap(), 1);
+    assert_eq!(
+        server::schedule::run_boot_checks(&t.st).unwrap(),
+        0,
+        "one at a time"
+    );
+    // A failed result is recorded and alerts; the job fails.
+    let failed = json!({ "image_id": img, "outcome": "failed", "method": "firmware", "seconds": 19, "firmware": "bios", "accel": "kvm", "message": "No bootable device" });
+    let j = complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "failed", "error": "did not boot", "boot_check": failed }),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        j.kind,
+        JobKind::BootCheck {
+            keep_running: false,
+            ..
+        }
+    ));
+    let (_, images) = t.get(&format!("/api/images?repository_id={repo}")).await;
+    assert_eq!(images[0]["boot_check"]["outcome"], "failed");
+    assert_eq!(
+        server::schedule::run_boot_checks(&t.st).unwrap(),
+        0,
+        "a failed check counts as checked"
+    );
+    let (_, repos) = t.get("/api/repositories").await;
+    assert_eq!(repos[0]["boot_every_days"], 7);
+    assert!(repos[0]["last_verified_boot"].as_i64().is_some());
+}

@@ -9,6 +9,7 @@
 
 #[cfg(unix)]
 mod kvm;
+pub mod png;
 pub mod probe;
 #[cfg(unix)]
 mod qmp;

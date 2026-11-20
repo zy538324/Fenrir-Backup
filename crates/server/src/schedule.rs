@@ -154,6 +154,55 @@ pub fn run_maintenance(state: &Shared) -> rusqlite::Result<usize> {
     Ok(due.len())
 }
 
+/// Boot verification: per repository with a boot host and an interval,
+/// queue a boot check of the newest image of each machine that has not
+/// been checked within the interval. One check per repository at a time.
+pub fn run_boot_checks(state: &Shared) -> rusqlite::Result<usize> {
+    let t = now();
+    let db = state.db();
+    let due: Vec<(String, String, String)> = db
+        .prepare(
+            "SELECT r.id, r.boot_agent_id, i.image_id FROM repositories r
+             JOIN agents a ON a.id = r.boot_agent_id AND a.revoked = 0
+             JOIN repo_access x ON x.repository_id = r.id AND x.agent_id = a.id
+             JOIN images i ON i.repository_id = r.id
+             WHERE r.status = 'ready' AND r.boot_every_days > 0
+               AND i.created = (SELECT MAX(created) FROM images j WHERE j.repository_id = r.id AND j.machine_id = i.machine_id)
+               AND NOT EXISTS (SELECT 1 FROM boot_checks b WHERE b.repository_id = r.id AND b.image_id IN
+                    (SELECT image_id FROM images k WHERE k.repository_id = r.id AND k.machine_id = i.machine_id)
+                    AND b.at > ?1 - r.boot_every_days * 86400)
+               AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.repository_id = r.id AND j.state IN ('queued','dispatched','running')
+                    AND j.kind_json LIKE '{\"type\":\"boot_check%')
+               AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.repository_id = r.id AND j.kind_json LIKE '{\"type\":\"boot_check%'
+                    AND j.requested_by = 'boot verification'
+                    AND j.kind_json LIKE '%' || i.image_id || '%' AND j.created > ?1 - 86400)
+             ORDER BY i.created",
+        )?
+        .query_map(params![t], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut queued = std::collections::BTreeSet::new();
+    for (repo, agent, image) in &due {
+        if !queued.insert(repo.clone()) {
+            continue;
+        }
+        let Ok(image_id) = image.parse() else {
+            continue;
+        };
+        let kind = serde_json::to_string(&protocol::JobKind::BootCheck {
+            image_id,
+            keep_running: false,
+            memory_mb: None,
+            cpus: None,
+        })
+        .unwrap_or_default();
+        db.execute(
+            "INSERT INTO jobs (id, agent_id, repository_id, kind_json, state, created, requested_by) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, 'boot verification')",
+            params![uuid::Uuid::new_v4().to_string(), agent, repo, kind, t],
+        )?;
+    }
+    Ok(queued.len())
+}
+
 /// Offline and overdue machines. Each alert fires once per episode
 /// (offline) or once a day (overdue); `alert_state` remembers.
 pub fn check_alerts(state: &Shared) -> rusqlite::Result<()> {
@@ -260,6 +309,9 @@ pub async fn scheduler_loop(state: Shared) {
             let a = run_due(&s);
             let b = run_maintenance(&s);
             let c = check_alerts(&s);
+            if let Err(e) = run_boot_checks(&s) {
+                tracing::error!(error = %e, "boot verification scheduler");
+            }
             (a, b, c)
         })
         .await;

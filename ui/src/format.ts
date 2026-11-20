@@ -92,6 +92,10 @@ export function jobWhat(k: JobKind): string {
         : k.target.type === "hyperv_vm"
           ? `As Hyper-V VM “${k.target.name}”`
           : `To ${k.target.device}`;
+    case "boot_check":
+      return k.keep_running ? "Boot as VM and keep running" : "Boot test in an isolated VM";
+    case "stop_vm":
+      return "Power off a VM";
   }
 }
 
@@ -178,4 +182,12 @@ export function retentionText(r: Retention | null | undefined): string {
   if (r.keep_monthly) parts.push(`${r.keep_monthly} monthly`);
   if (r.keep_yearly) parts.push(`${r.keep_yearly} yearly`);
   return parts.length ? parts.join(", ") : "keep everything";
+}
+
+export function bootLabel(o: string): { text: string; tone: "ok" | "warn" | "bad" } {
+  return o === "verified" ? { text: "Boots", tone: "ok" } : o === "screen" ? { text: "Check screenshot", tone: "warn" } : { text: "Did not boot", tone: "bad" };
+}
+
+export function accelLabel(a: string): string {
+  return a === "kvm" ? "KVM" : a === "tcg" ? "software emulation" : a === "hyperv" ? "Hyper-V" : a;
 }

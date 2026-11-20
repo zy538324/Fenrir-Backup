@@ -60,6 +60,14 @@ pub fn routes() -> Router<Shared> {
         .route("/api/repositories/{id}/maintenance", post(set_maintenance))
         .route("/api/repositories/{id}/prune", post(prune_now))
         .route("/api/restores", post(create_restore))
+        .route("/api/images/{id}/boot-check", post(create_boot_check))
+        .route("/api/images/{id}/boot-checks", get(list_boot_checks))
+        .route("/api/boot-checks/{id}/screenshot.png", get(boot_screenshot))
+        .route("/api/agents/{id}/vms/{session}/stop", post(stop_vm))
+        .route(
+            "/api/repositories/{id}/boot-verification",
+            post(set_boot_verification),
+        )
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/settings/test-notification", post(test_notification))
         .route("/api/notifications", get(list_notifications))
@@ -759,7 +767,9 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
             (SELECT COALESCE(SUM(stored_new_bytes),0) FROM images i WHERE i.repository_id = r.id),
             (SELECT MAX(created) FROM images i WHERE i.repository_id = r.id),
             r.hold, r.hold_reason, r.hold_since, r.maintenance_agent_id, r.prune_every_days, r.last_prune,
-            (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id AND i.anomaly IS NOT NULL)
+            (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id AND i.anomaly IS NOT NULL),
+            r.boot_agent_id, r.boot_every_days,
+            (SELECT MAX(at) FROM boot_checks b WHERE b.repository_id = r.id AND b.outcome = 'verified')
          FROM repositories r ORDER BY r.created",
     )?;
     let mut repos: Vec<Value> = s
@@ -772,6 +782,8 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
                 "hold": r.get::<_, i64>(10)? != 0, "hold_reason": r.get::<_, Option<String>>(11)?, "hold_since": r.get::<_, Option<i64>>(12)?,
                 "maintenance_agent_id": r.get::<_, Option<String>>(13)?, "prune_every_days": r.get::<_, i64>(14)?,
                 "last_prune": r.get::<_, Option<i64>>(15)?, "anomalies": r.get::<_, i64>(16)?,
+                "boot_agent_id": r.get::<_, Option<String>>(17)?, "boot_every_days": r.get::<_, i64>(18)?,
+                "last_verified_boot": r.get::<_, Option<i64>>(19)?,
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -1053,7 +1065,10 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
     let db = st.db();
     let mut s = db.prepare(
         "SELECT i.image_id, i.repository_id, r.name, i.agent_id, i.machine_id, i.hostname, i.created, i.kind, i.consistency,
-            i.captured_bytes, i.stored_new_bytes, i.disks_json, i.label, i.vm_name, i.anomaly, i.chunks_total, i.chunks_new
+            i.captured_bytes, i.stored_new_bytes, i.disks_json, i.label, i.vm_name, i.anomaly, i.chunks_total, i.chunks_new,
+            (SELECT json_object('id', b.id, 'at', b.at, 'outcome', b.outcome, 'method', b.method, 'seconds', b.seconds,
+                    'firmware', b.firmware, 'accel', b.accel, 'message', b.message, 'has_screenshot', b.screenshot IS NOT NULL)
+               FROM boot_checks b WHERE b.image_id = i.image_id ORDER BY b.at DESC, b.id DESC LIMIT 1)
          FROM images i JOIN repositories r ON r.id = i.repository_id
          WHERE (?1 IS NULL OR i.agent_id = ?1) AND (?2 IS NULL OR i.repository_id = ?2)
          ORDER BY i.created DESC LIMIT 500",
@@ -1068,6 +1083,7 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
                 "disks": serde_json::from_str::<Value>(&r.get::<_, String>(11)?).unwrap_or(json!([])),
                 "label": r.get::<_, Option<String>>(12)?, "vm_name": r.get::<_, Option<String>>(13)?,
                 "anomaly": r.get::<_, Option<String>>(14)?, "chunks_total": r.get::<_, i64>(15)?, "chunks_new": r.get::<_, i64>(16)?,
+                "boot_check": boot_json(r.get::<_, Option<String>>(17)?),
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -1124,7 +1140,23 @@ async fn overview(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Value>>
                 })
         })
         .count();
+    let boot: Value = st.db().query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM boot_checks WHERE outcome = 'verified' AND at > ?1),
+            (SELECT COUNT(*) FROM boot_checks WHERE outcome = 'screen' AND at > ?1),
+            (SELECT COUNT(*) FROM boot_checks WHERE outcome = 'failed' AND at > ?1),
+            (SELECT json_object('at', b.at, 'image_id', b.image_id, 'hostname', i.hostname, 'vm_name', i.vm_name, 'id', b.id, 'seconds', b.seconds)
+               FROM boot_checks b LEFT JOIN images i ON i.image_id = b.image_id WHERE b.outcome = 'verified' ORDER BY b.at DESC LIMIT 1)",
+        params![t - 30 * 86_400],
+        |r| {
+            Ok(json!({
+                "verified_30d": r.get::<_, i64>(0)?, "screen_30d": r.get::<_, i64>(1)?, "failed_30d": r.get::<_, i64>(2)?,
+                "last_verified": boot_json(r.get::<_, Option<String>>(3)?),
+            }))
+        },
+    )?;
     Ok(Json(json!({
+        "boot": boot,
         "machines": { "total": agents.len(), "online": agents.iter().filter(|a| a.online).count(), "attention": attention },
         "last_24h": { "succeeded": ok, "warning": warn, "failed": failed },
         "running": running,
@@ -1487,4 +1519,242 @@ async fn list_notifications(State(st): State<Shared>, _a: Admin) -> ApiResult<Js
         })?
         .collect::<Result<_, _>>()?;
     Ok(Json(v))
+}
+
+// ---------- boot checks ----------
+
+fn boot_json(s: Option<String>) -> Value {
+    let mut v = s
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or(Value::Null);
+    if let Some(h) = v.get_mut("has_screenshot") {
+        *h = json!(h.as_i64().map(|x| x != 0).or(h.as_bool()).unwrap_or(false));
+    }
+    v
+}
+
+fn agent_caps(db: &rusqlite::Connection, agent: &str) -> ApiResult<Vec<String>> {
+    let (inv, revoked): (Option<String>, i64) = db
+        .query_row(
+            "SELECT inventory_json, revoked FROM agents WHERE id = ?1",
+            params![agent],
+            |x| Ok((x.get(0)?, x.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("no such machine"))?;
+    if revoked != 0 {
+        return Err(ApiError::bad("that machine has been removed"));
+    }
+    Ok(inv
+        .and_then(|s| serde_json::from_str::<Inventory>(&s).ok())
+        .map(|i| i.capabilities)
+        .unwrap_or_default())
+}
+
+#[derive(Deserialize)]
+struct BootCheckReq {
+    agent_id: String,
+    #[serde(default)]
+    keep_running: bool,
+    #[serde(default)]
+    memory_mb: Option<u64>,
+    #[serde(default)]
+    cpus: Option<u32>,
+}
+
+async fn create_boot_check(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<BootCheckReq>,
+) -> ApiResult<Json<Value>> {
+    let image_id: Uuid = id.parse().map_err(|_| ApiError::bad("invalid image id"))?;
+    let agent = uuid_param(&r.agent_id)?;
+    if r.memory_mb.is_some_and(|m| !(256..=65536).contains(&m))
+        || r.cpus.is_some_and(|c| !(1..=16).contains(&c))
+    {
+        return Err(ApiError::bad(
+            "memory must be 256 MB to 64 GB, CPUs 1 to 16",
+        ));
+    }
+    let repo: String = {
+        let db = st.db();
+        let repo: String = db
+            .query_row(
+                "SELECT repository_id FROM images WHERE image_id = ?1",
+                params![image_id.to_string()],
+                |x| x.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| ApiError::not_found("no such image"))?;
+        let caps = agent_caps(&db, &agent)?;
+        let kvm = caps.iter().any(|c| c == "boot_kvm");
+        if !kvm && !caps.iter().any(|c| c == "boot_hyperv") {
+            return Err(ApiError::bad(
+                "that machine cannot boot VMs (it needs QEMU on Linux, or the Hyper-V role)",
+            ));
+        }
+        if r.keep_running && !kvm {
+            return Err(ApiError::bad(
+                "keeping the VM running is available on Linux (QEMU/KVM) hosts",
+            ));
+        }
+        let access: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2)",
+            params![repo, agent],
+            |x| x.get(0),
+        )?;
+        if !access {
+            return Err(ApiError::bad(
+                "that machine has no access to the image's repository; give it access first",
+            ));
+        }
+        repo
+    };
+    let kind = JobKind::BootCheck {
+        image_id,
+        keep_running: r.keep_running,
+        memory_mb: r.memory_mb,
+        cpus: r.cpus,
+    };
+    let job = insert_job(&st, &agent, &kind, Some(&repo), None, &a.username)?;
+    audit(
+        &st.db(),
+        &a.username,
+        "boot_check.requested",
+        &format!("image {image_id} on {agent}"),
+    );
+    Ok(Json(json!({ "id": job })))
+}
+
+async fn list_boot_checks(
+    State(st): State<Shared>,
+    _a: Admin,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<Value>>> {
+    let id = uuid_param(&id)?;
+    let db = st.db();
+    let mut s = db.prepare(
+        "SELECT b.id, b.at, b.outcome, b.method, b.seconds, b.firmware, b.accel, b.message, b.screenshot IS NOT NULL,
+                b.agent_id, COALESCE(a.display_name, a.hostname), b.job_id
+         FROM boot_checks b LEFT JOIN agents a ON a.id = b.agent_id WHERE b.image_id = ?1 ORDER BY b.at DESC, b.id DESC LIMIT 50",
+    )?;
+    let v = s
+        .query_map(params![id], |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?, "at": r.get::<_, i64>(1)?, "outcome": r.get::<_, String>(2)?,
+                "method": r.get::<_, String>(3)?, "seconds": r.get::<_, i64>(4)?, "firmware": r.get::<_, String>(5)?,
+                "accel": r.get::<_, String>(6)?, "message": r.get::<_, String>(7)?, "has_screenshot": r.get::<_, bool>(8)?,
+                "agent_id": r.get::<_, String>(9)?, "agent_name": r.get::<_, Option<String>>(10)?, "job_id": r.get::<_, Option<String>>(11)?,
+            }))
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(Json(v))
+}
+
+async fn boot_screenshot(
+    State(st): State<Shared>,
+    _a: Admin,
+    Path(id): Path<i64>,
+) -> ApiResult<impl IntoResponse> {
+    let png: Option<Vec<u8>> = st
+        .db()
+        .query_row(
+            "SELECT screenshot FROM boot_checks WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let png = png.ok_or_else(|| ApiError::not_found("no screenshot"))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "private, max-age=86400"),
+        ],
+        png,
+    ))
+}
+
+async fn stop_vm(
+    State(st): State<Shared>,
+    a: Admin,
+    Path((id, session)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    let agent = uuid_param(&id)?;
+    let session_id: Uuid = session
+        .parse()
+        .map_err(|_| ApiError::bad("invalid session id"))?;
+    {
+        let db = st.db();
+        agent_caps(&db, &agent)?;
+    }
+    let job = insert_job(
+        &st,
+        &agent,
+        &JobKind::StopVm { session_id },
+        None,
+        None,
+        &a.username,
+    )?;
+    audit(
+        &st.db(),
+        &a.username,
+        "vm.stop_requested",
+        &format!("session {session_id} on {agent}"),
+    );
+    Ok(Json(json!({ "id": job })))
+}
+
+#[derive(Deserialize)]
+struct BootVerificationReq {
+    /// Boot host; null = turn boot verification off.
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    every_days: u32,
+}
+
+async fn set_boot_verification(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<BootVerificationReq>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let db = st.db();
+    let agent = r.agent_id.as_deref().map(uuid_param).transpose()?;
+    if let Some(agent) = &agent {
+        if !(1..=90).contains(&r.every_days) {
+            return Err(ApiError::bad("the interval must be 1 to 90 days"));
+        }
+        let caps = agent_caps(&db, agent)?;
+        if !caps.iter().any(|c| c == "boot_kvm" || c == "boot_hyperv") {
+            return Err(ApiError::bad("that machine cannot boot VMs"));
+        }
+        let ok: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2)",
+            params![id, agent],
+            |r| r.get(0),
+        )?;
+        if !ok {
+            return Err(ApiError::bad(
+                "that machine has no access to this repository",
+            ));
+        }
+    }
+    let n = db.execute(
+        "UPDATE repositories SET boot_agent_id = ?1, boot_every_days = ?2 WHERE id = ?3",
+        params![agent, if agent.is_some() { r.every_days } else { 0 }, id],
+    )?;
+    if n == 0 {
+        return Err(ApiError::not_found("no such repository"));
+    }
+    audit(
+        &db,
+        &a.username,
+        "repository.boot_verification_changed",
+        &id,
+    );
+    Ok(Json(json!({ "ok": true })))
 }
