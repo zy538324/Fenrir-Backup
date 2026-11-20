@@ -48,6 +48,39 @@ pub struct Candidate {
     pub image_id: Uuid,
     pub machine_id: String,
     pub created_unix: i64,
+    /// The image this one was taken after (orders backups made in the
+    /// same second).
+    pub parent: Option<Uuid>,
+}
+
+/// Indices of `items` (one machine's images), newest first: by time, then
+/// by position in the parent chain (backups taken within the same second),
+/// then by ID for determinism.
+pub fn newest_first<T>(items: &[T], key: impl Fn(&T) -> (Uuid, i64, Option<Uuid>)) -> Vec<usize> {
+    let keys: Vec<(Uuid, i64, Option<Uuid>)> = items.iter().map(&key).collect();
+    let pos: BTreeMap<Uuid, usize> = keys.iter().enumerate().map(|(i, k)| (k.0, i)).collect();
+    // Length of the parent chain within this set (bounded against cycles).
+    let depth = |mut i: usize| {
+        let mut d = 0usize;
+        while let Some(p) = keys[i].2.and_then(|p| pos.get(&p)) {
+            d += 1;
+            i = *p;
+            if d > keys.len() {
+                break;
+            }
+        }
+        d
+    };
+    let depths: Vec<usize> = (0..keys.len()).map(depth).collect();
+    let mut idx: Vec<usize> = (0..keys.len()).collect();
+    idx.sort_by(|&a, &b| {
+        keys[b]
+            .1
+            .cmp(&keys[a].1)
+            .then(depths[b].cmp(&depths[a]))
+            .then(keys[b].0.cmp(&keys[a].0))
+    });
+    idx
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,13 +100,9 @@ pub fn select(images: &[Candidate], p: &RetentionPolicy) -> Vec<Decision> {
         by_machine.entry(&c.machine_id).or_default().push(c);
     }
     let mut out = Vec::new();
-    for (_, mut list) in by_machine {
-        // Newest first; ties broken by ID for determinism.
-        list.sort_by(|a, b| {
-            b.created_unix
-                .cmp(&a.created_unix)
-                .then(b.image_id.cmp(&a.image_id))
-        });
+    for (_, list) in by_machine {
+        let order = newest_first(&list, |c| (c.image_id, c.created_unix, c.parent));
+        let list: Vec<&Candidate> = order.into_iter().map(|i| list[i]).collect();
         let mut reasons: Vec<Vec<&'static str>> = vec![vec![]; list.len()];
         if p.keeps_everything() {
             for r in &mut reasons {
@@ -168,6 +197,7 @@ pub fn forget(
             image_id: m.image_id,
             machine_id: m.machine.machine_id.clone(),
             created_unix: m.created_unix,
+            parent: m.parent,
         })
         .collect();
     let decisions = select(&cands, p);
@@ -246,6 +276,7 @@ mod tests {
             image_id: Uuid::from_u128(t as u128),
             machine_id: "m".into(),
             created_unix: t,
+            parent: None,
         }
     }
 
@@ -325,6 +356,7 @@ mod tests {
             image_id: Uuid::from_u128(1),
             machine_id: "other".into(),
             created_unix: at(2020, 1, 1, 0),
+            parent: None,
         });
         let p = RetentionPolicy {
             keep_last: 1,
@@ -332,5 +364,37 @@ mod tests {
         };
         let d = select(&imgs, &p);
         assert_eq!(kept(&d), vec![at(2020, 1, 1, 0), at(2026, 1, 2, 0)]);
+    }
+
+    #[test]
+    fn same_second_backups_follow_the_parent_chain() {
+        // Three backups in one second; IDs deliberately in the wrong order.
+        let (a, b, cc) = (
+            Uuid::from_u128(30),
+            Uuid::from_u128(20),
+            Uuid::from_u128(10),
+        );
+        let mk = |id, parent| Candidate {
+            image_id: id,
+            machine_id: "m".into(),
+            created_unix: 100,
+            parent,
+        };
+        let imgs = vec![mk(a, None), mk(b, Some(a)), mk(cc, Some(b))];
+        let d = select(
+            &imgs,
+            &RetentionPolicy {
+                keep_last: 1,
+                ..Default::default()
+            },
+        );
+        let kept: Vec<Uuid> = d.iter().filter(|x| x.keep).map(|x| x.image_id).collect();
+        assert_eq!(kept, vec![cc]);
+        // A parent cycle (corrupt data) must not hang.
+        let cyc = vec![mk(a, Some(b)), mk(b, Some(a))];
+        assert_eq!(
+            newest_first(&cyc, |c| (c.image_id, c.created_unix, c.parent)).len(),
+            2
+        );
     }
 }

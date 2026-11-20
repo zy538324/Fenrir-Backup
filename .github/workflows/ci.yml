@@ -253,5 +253,5 @@ jobs:
         working-directory: fuzz
         run: |
           for t in manifest_envelope sealed_object partition_table key_files; do
-            cargo +nightly fuzz run "$t" -- -max_total_time=60 -rss_limit_mb=2048
+            cargo +nightly fuzz run --target x86_64-unknown-linux-gnu "$t" -- -max_total_time=60 -rss_limit_mb=2048
           done

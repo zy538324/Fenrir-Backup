@@ -283,11 +283,12 @@ pub fn probe_reads(src: &dyn DiskSource, planned: &PlannedDisk) -> Result<u64> {
 
 fn latest_image_for_machine(repo: &Repository, machine_id: &str) -> Result<Option<Uuid>> {
     let (all, _bad) = repo.load_all_manifests()?;
-    Ok(all
+    let mine: Vec<_> = all
         .iter()
-        .rev()
-        .find(|m| m.machine.machine_id == machine_id)
-        .map(|m| m.image_id))
+        .filter(|m| m.machine.machine_id == machine_id)
+        .collect();
+    let order = crate::retention::newest_first(&mine, |m| (m.image_id, m.created_unix, m.parent));
+    Ok(order.first().map(|&i| mine[i].image_id))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -29,11 +29,11 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | hex | 0.4.3 | MIT OR Apache-2.0 | Hex encoding |
 | hkdf | 0.12.4 | MIT OR Apache-2.0 | Sealed secrets key derivation |
 | libc | 0.2.191 | MIT OR Apache-2.0 | Linux block-device ioctls |
-| libsqlite3-sys | 0.30.1 | MIT | Bundled SQLite (the SQLite C source is public domain) |
+| libsqlite3-sys | 0.40.0 | MIT | Bundled SQLite (the SQLite C source is public domain) |
 | rcgen | 0.13.2 | MIT OR Apache-2.0 | Self-signed server certificate |
 | ring | 0.17.14 | Apache-2.0 AND ISC | Cryptographic primitives for rustls (Apache-2.0 AND ISC) |
 | rpassword | 7.5.5 | Apache-2.0 | Passphrase prompt without echo |
-| rusqlite | 0.32.1 | MIT | Server database |
+| rusqlite | 0.43.0 | MIT | Server database |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT | TLS (server and agent) |
 | rustls-pemfile | 2.2.0 | Apache-2.0 OR ISC OR MIT | PEM parsing |
 | serde | 1.0.229 | MIT OR Apache-2.0 | Serialisation |
@@ -75,7 +75,6 @@ Versions are pinned in `ui/package-lock.json`.
 | aead | 0.5.2 | MIT OR Apache-2.0 |
 | aes | 0.8.4 | MIT OR Apache-2.0 |
 | aes-gcm | 0.10.3 | Apache-2.0 OR MIT |
-| ahash | 0.8.12 | MIT OR Apache-2.0 |
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
 | anstream | 1.0.0 | MIT OR Apache-2.0 |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 |
@@ -141,6 +140,7 @@ Versions are pinned in `ui/package-lock.json`.
 | fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 |
 | fnv | 1.0.7 | Apache-2.0 / MIT |
+| foldhash | 0.2.0 | Zlib |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
 | fs-err | 3.3.2 | MIT OR Apache-2.0 |
 | futures-channel | 0.3.34 | MIT OR Apache-2.0 |
@@ -153,9 +153,8 @@ Versions are pinned in `ui/package-lock.json`.
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | ghash | 0.5.1 | Apache-2.0 OR MIT |
 | h2 | 0.4.20 | MIT |
-| hashbrown | 0.14.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
-| hashlink | 0.9.1 | MIT OR Apache-2.0 |
+| hashlink | 0.12.2 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
 | hex | 0.4.3 | MIT OR Apache-2.0 |
 | hkdf | 0.12.4 | MIT OR Apache-2.0 |
@@ -187,7 +186,8 @@ Versions are pinned in `ui/package-lock.json`.
 | lazy_static | 1.5.1 | MIT OR Apache-2.0 |
 | lettre | 0.11.24 | MIT |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
-| libsqlite3-sys | 0.30.1 | MIT |
+| libsqlite3-sys | 0.40.0 | MIT |
+| linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
 | log | 0.4.35 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
@@ -228,10 +228,12 @@ Versions are pinned in `ui/package-lock.json`.
 | regex-syntax | 0.8.12 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
 | rpassword | 7.5.5 | Apache-2.0 |
+| rsqlite-vfs | 0.2.0 | MIT |
 | rtoolbox | 0.0.6 | Apache-2.0 |
-| rusqlite | 0.32.1 | MIT |
+| rusqlite | 0.43.0 | MIT |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rusticata-macros | 4.1.0 | MIT/Apache-2.0 |
+| rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
 | rustls-pemfile | 2.2.0 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 |
@@ -254,6 +256,7 @@ Versions are pinned in `ui/package-lock.json`.
 | smallvec | 1.16.6 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
+| sqlite-wasm-rs | 0.6.3 | MIT |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | strsim | 0.11.1 | MIT |
 | subtle | 2.6.1 | BSD-3-Clause |
@@ -262,6 +265,7 @@ Versions are pinned in `ui/package-lock.json`.
 | sync_wrapper | 1.0.2 | Apache-2.0 |
 | synstructure | 0.13.2 | MIT |
 | synstructure | 0.14.0 | MIT |
+| tempfile | 3.27.0 | MIT OR Apache-2.0 |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
@@ -336,8 +340,6 @@ Versions are pinned in `ui/package-lock.json`.
 | yasna | 0.5.2 | MIT OR Apache-2.0 |
 | yoke | 0.8.4 | Unicode-3.0 |
 | yoke-derive | 0.8.4 | Unicode-3.0 |
-| zerocopy | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
-| zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Unicode-3.0 |
 | zerofrom-derive | 0.1.8 | Unicode-3.0 |
 | zeroize | 1.9.2 | Apache-2.0 OR MIT |
