@@ -9,6 +9,7 @@ pub mod backup;
 pub mod control;
 pub mod layout;
 pub mod restore;
+pub mod retention;
 pub mod source;
 pub mod target;
 pub mod verify;
@@ -38,3 +39,16 @@ pub enum EngineError {
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
+
+/// Shared lock for readers. A prune in progress is an error (it may be
+/// deleting what we are about to read); a repository we cannot write a lock
+/// to (read-only media) is read without one.
+pub(crate) fn reader_lock(
+    repo: &core_format::Repository,
+) -> crate::Result<Option<core_format::lock::RepoLock>> {
+    match repo.lock(core_format::lock::LockKind::Shared) {
+        Ok(l) => Ok(Some(l)),
+        Err(e @ core_format::Error::Busy(_)) => Err(e.into()),
+        Err(_) => Ok(None),
+    }
+}

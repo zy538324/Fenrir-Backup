@@ -55,6 +55,7 @@ pub fn verify(
     ctl: &JobControl,
     workers: usize,
 ) -> Result<VerifyReport> {
+    let _lock = crate::reader_lock(repo)?;
     let ids: Vec<Uuid> = match images {
         Some(v) => v.to_vec(),
         None => repo.list_image_ids()?,

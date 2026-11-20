@@ -520,3 +520,144 @@ fn image_with_two_disks() {
         "unpartitioned disk captured whole"
     );
 }
+
+// ---------- retention, prune and locks ----------
+
+#[test]
+fn forget_and_prune_free_space_but_keep_retained_images_intact() {
+    use engine::retention::{forget, prune, RetentionPolicy};
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    let mut ids = vec![];
+    for round in 0..3u8 {
+        // Each round rewrites a different used megabyte with new content.
+        let off = ((6 + round as u64) * MIB) as usize;
+        disk.data.write().unwrap()[off..off + MIB as usize]
+            .copy_from_slice(&pattern(100 + round as u64, MIB as usize));
+        ids.push(run_backup(&repo, &disk).unwrap().image_id);
+    }
+    let before = repo.backend().list("chunks").unwrap().len();
+    let latest_disk = disk.data.read().unwrap().clone();
+
+    let r = forget(
+        &repo,
+        &[],
+        &RetentionPolicy {
+            keep_last: 1,
+            ..Default::default()
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(r.removed.len(), 2);
+    assert_eq!(repo.list_image_ids().unwrap(), vec![ids[2]]);
+
+    let dry = prune(&repo, true, &JobControl::new()).unwrap();
+    assert!(
+        dry.chunks_deleted >= 2,
+        "chunks unique to forgotten images: {dry:?}"
+    );
+    assert_eq!(
+        repo.backend().list("chunks").unwrap().len(),
+        before,
+        "dry run deletes nothing"
+    );
+
+    let p = prune(&repo, false, &JobControl::new()).unwrap();
+    assert_eq!(p.chunks_deleted, dry.chunks_deleted);
+    assert!(p.bytes_deleted > 0);
+    assert_eq!(
+        repo.backend().list("chunks").unwrap().len(),
+        before - p.chunks_deleted
+    );
+
+    // The retained image is complete: full verify and a byte-exact restore.
+    assert!(
+        verify(&repo, None, VerifyLevel::Full, &JobControl::new(), 2)
+            .unwrap()
+            .ok
+    );
+    let out = dir.path().join("latest.img");
+    restore_to(&repo, ids[2], &out);
+    let m = repo.load_manifest(&ids[2]).unwrap();
+    let restored = std::fs::read(&out).unwrap();
+    for e in &m.disks[0].used_extents {
+        assert_eq!(
+            &restored[e.0 as usize..e.end() as usize],
+            &latest_disk[e.0 as usize..e.end() as usize]
+        );
+    }
+    // Nothing left to prune.
+    assert_eq!(
+        prune(&repo, false, &JobControl::new())
+            .unwrap()
+            .chunks_deleted,
+        0
+    );
+}
+
+#[test]
+fn prune_refuses_when_a_manifest_is_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    let id = run_backup(&repo, &disk).unwrap().image_id;
+    // A chunk nobody references, and a damaged manifest.
+    let orphan = vec![9u8; 4096];
+    repo.put_chunk(&repo.chunk_id(&orphan), &orphan).unwrap();
+    let mpath = dir
+        .path()
+        .join("repo")
+        .join("manifests")
+        .join(id.to_string());
+    let mut raw = std::fs::read(&mpath).unwrap();
+    let n = raw.len();
+    raw[n - 3] ^= 1;
+    std::fs::write(&mpath, raw).unwrap();
+    let before = repo.backend().list("chunks").unwrap().len();
+    let e = engine::retention::prune(&repo, false, &JobControl::new()).unwrap_err();
+    assert!(matches!(e, EngineError::Safety(_)), "{e}");
+    assert_eq!(
+        repo.backend().list("chunks").unwrap().len(),
+        before,
+        "nothing deleted"
+    );
+}
+
+#[test]
+fn prune_and_backup_exclude_each_other() {
+    use core_format::lock::LockKind;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    {
+        let _backup_running = repo.lock(LockKind::Shared).unwrap();
+        let e = engine::retention::prune(&repo, false, &JobControl::new()).unwrap_err();
+        assert!(e.to_string().contains("busy"), "{e}");
+    }
+    {
+        let _prune_running = repo.lock(LockKind::Exclusive).unwrap();
+        let e = run_backup(&repo, &disk).unwrap_err();
+        assert!(e.to_string().contains("pruned"), "{e}");
+        assert!(repo.list_image_ids().unwrap().is_empty());
+    }
+    // Locks were released: both work now.
+    run_backup(&repo, &disk).unwrap();
+    engine::retention::prune(&repo, false, &JobControl::new()).unwrap();
+    assert!(core_format::lock::list_locks(&**repo.backend())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn stats_record_raw_and_stored_bytes_of_new_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = new_repo(dir.path());
+    let disk = make_disk();
+    // Highly compressible content in one used range.
+    disk.data.write().unwrap()[(20 * MIB) as usize..(21 * MIB) as usize].fill(0x41);
+    let r = run_backup(&repo, &disk).unwrap();
+    assert_eq!(r.stats.bytes_new_raw, r.stats.chunks_new * MIB);
+    assert!(r.stats.bytes_new_stored < r.stats.bytes_new_raw);
+}

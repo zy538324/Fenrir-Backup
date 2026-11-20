@@ -103,6 +103,9 @@ pub fn backup(
     if sources.is_empty() {
         return Err(EngineError::InvalidInput("no disks to back up".into()));
     }
+    // Shared lock: a prune (exclusive) cannot delete chunks this backup
+    // finds already stored and reuses.
+    let _lock = repo.lock(core_format::lock::LockKind::Shared)?;
     let started = Instant::now();
     ctl.set_rate_limit(opts.rate_limit);
     let cs = repo.chunk_size() as u64;
@@ -374,11 +377,12 @@ fn run_pipeline(
                 }) => {
                     refs.push(ChunkRef(index, id));
                     stats.chunks_total += 1;
+                    let len = cs.min(size - index * cs);
                     if new {
                         stats.chunks_new += 1;
                         stats.bytes_new_stored += stored;
+                        stats.bytes_new_raw += len;
                     }
-                    let len = cs.min(size - index * cs);
                     stats.bytes_read += len;
                     bytes_done += len;
                 }

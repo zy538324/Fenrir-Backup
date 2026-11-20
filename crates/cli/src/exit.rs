@@ -23,6 +23,9 @@ pub enum ExitCode {
     Safety = 7,
     /// Cancelled by the user or service.
     Cancelled = 8,
+    /// Another process holds the repository (a prune, or a backup while
+    /// pruning). Nothing was changed; retry later.
+    Busy = 9,
     /// Succeeded, with warnings (e.g. a VSS writer failed, so part of the
     /// image is crash-consistent only).
     OkWithWarnings = 10,
@@ -40,6 +43,7 @@ impl ExitCode {
             ExitCode::ConfirmationRequired => "confirmation_required",
             ExitCode::Safety => "safety",
             ExitCode::Cancelled => "cancelled",
+            ExitCode::Busy => "busy",
             ExitCode::OkWithWarnings => "ok_with_warnings",
         }
     }
@@ -70,6 +74,7 @@ impl From<core_format::Error> for CliError {
             E::WrongKey | E::Locked => ExitCode::KeyError,
             E::NotFound(_) | E::NotARepository(_) => ExitCode::NotFound,
             E::Integrity(_) => ExitCode::VerifyFailed,
+            E::Busy(_) => ExitCode::Busy,
             E::InvalidArgument(_) => ExitCode::Usage,
             _ => ExitCode::Error,
         };

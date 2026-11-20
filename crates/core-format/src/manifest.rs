@@ -211,6 +211,10 @@ pub struct ImageStats {
     pub chunks_total: u64,
     pub chunks_new: u64,
     pub bytes_new_stored: u64,
+    /// Plaintext size of the newly stored chunks. With `bytes_new_stored`
+    /// this gives the new data's compressibility (anomaly detection).
+    #[serde(default)]
+    pub bytes_new_raw: u64,
     pub duration_ms: u64,
 }
 

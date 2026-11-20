@@ -171,6 +171,17 @@ impl Backend for LocalBackend {
         })
     }
 
+    fn size(&self, key: &str) -> Result<u64> {
+        let p = self.path(key)?;
+        std::fs::metadata(&p).map(|m| m.len()).map_err(|e| {
+            if e.kind() == ErrorKind::NotFound {
+                Error::NotFound(key.to_string())
+            } else {
+                e.into()
+            }
+        })
+    }
+
     fn describe(&self) -> String {
         format!("local:{}", self.root.display())
     }

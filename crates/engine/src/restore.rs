@@ -49,6 +49,7 @@ pub fn restore_disk(
     ctl: &JobControl,
     progress: &(dyn Fn(u64, u64) + Sync),
 ) -> Result<RestoreReport> {
+    let _lock = crate::reader_lock(repo)?;
     let disk = image
         .disks
         .iter()

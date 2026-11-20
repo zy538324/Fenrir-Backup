@@ -286,6 +286,11 @@ impl Repository {
         &self.config
     }
 
+    /// Take a repository lock (see `lock`).
+    pub fn lock(&self, kind: crate::lock::LockKind) -> Result<crate::lock::RepoLock> {
+        crate::lock::acquire(self.backend.clone(), kind)
+    }
+
     pub fn backend(&self) -> &Arc<dyn Backend> {
         &self.backend
     }

@@ -32,6 +32,10 @@ pub enum Error {
     #[error("malformed data: {0}")]
     Malformed(String),
 
+    /// Another process holds a conflicting repository lock.
+    #[error("repository busy: {0}")]
+    Busy(String),
+
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 

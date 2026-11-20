@@ -31,6 +31,10 @@ pub trait Backend: Send + Sync {
     fn exists(&self, key: &str) -> Result<bool>;
     fn list(&self, prefix: &str) -> Result<Vec<String>>;
     fn delete(&self, key: &str) -> Result<()>;
+    /// Stored size of an object in bytes.
+    fn size(&self, key: &str) -> Result<u64> {
+        Ok(self.get(key)?.len() as u64)
+    }
     /// Human-readable location, for logs.
     fn describe(&self) -> String;
 }

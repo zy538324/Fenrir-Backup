@@ -14,6 +14,7 @@ pub mod extent;
 pub mod fsdetect;
 pub mod io;
 pub mod keys;
+pub mod lock;
 pub mod manifest;
 pub mod object;
 pub mod partition;
