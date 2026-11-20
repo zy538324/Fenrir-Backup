@@ -1303,6 +1303,11 @@ dependencies = [
 [[package]]
 name = "nbd-server"
 version = "0.1.0"
+dependencies = [
+ "core-format",
+ "engine",
+ "tempfile",
+]
 
 [[package]]
 name = "nom"
