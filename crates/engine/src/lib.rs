@@ -13,7 +13,9 @@ pub mod source;
 pub mod target;
 pub mod verify;
 
-pub use backup::{backup, BackupOptions, BackupReport, ImageMeta, Progress};
+pub use backup::{
+    backup, plan_image, probe_reads, BackupOptions, BackupReport, ImageMeta, PlannedDisk, Progress,
+};
 pub use control::JobControl;
 pub use restore::{restore_disk, RestoreOptions, RestoreReport};
 pub use source::{CapturePlan, DiskInfo, DiskSource, PartitionPlan, ReadAtSource};

@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand};
 use core_format::backend::{Backend, LocalBackend};
-use core_format::manifest::{ManifestBody, MachineInfo};
+use core_format::manifest::{MachineInfo, ManifestBody};
 use core_format::repo::{InitOptions, Repository};
 use core_format::{crypto::KdfParams, RecoveryKey};
-use engine::{BackupOptions, DestructiveConfirmation, FileTarget, JobControl, RestoreOptions, VerifyLevel};
+use engine::{
+    BackupOptions, DestructiveConfirmation, FileTarget, JobControl, RestoreOptions, VerifyLevel,
+};
 use serde::Serialize;
 use serde_json::json;
 
@@ -22,7 +24,11 @@ mod exit;
 use exit::{CliError, ExitCode};
 
 #[derive(Parser)]
-#[command(name = "fenrir", version, about = "Fenrir-Backup: disk imaging and recovery")]
+#[command(
+    name = "fenrir",
+    version,
+    about = "Fenrir-Backup: disk imaging and recovery"
+)]
 struct Cli {
     /// Print one JSON document on stdout instead of human-readable text.
     #[arg(long, global = true)]
@@ -107,6 +113,11 @@ struct CommonBackup {
     /// Worker threads for hashing, compression and encryption.
     #[arg(long)]
     workers: Option<usize>,
+    /// Plan only: read partition tables (and, for `system`, take and
+    /// release a VSS snapshot), probe-read each partition, report what
+    /// would be captured. Writes nothing; needs no repository.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Subcommand)]
@@ -198,12 +209,27 @@ struct Ctx {
 
 fn main() {
     let cli = Cli::parse();
-    let ctx = Ctx { json: cli.json, repo: cli.repo, passphrase_file: cli.passphrase_file, recovery_key: cli.recovery_key };
+    let ctx = Ctx {
+        json: cli.json,
+        repo: cli.repo,
+        passphrase_file: cli.passphrase_file,
+        recovery_key: cli.recovery_key,
+    };
     let result = run(&ctx, cli.cmd);
     let code = match result {
-        Ok(Outcome { value, human, warnings }) => {
+        Ok(Outcome {
+            value,
+            human,
+            warnings,
+        }) => {
             if ctx.json {
-                println!("{}", serde_json::to_string_pretty(&json!({ "ok": true, "result": value, "warnings": warnings })).unwrap());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &json!({ "ok": true, "result": value, "warnings": warnings })
+                    )
+                    .unwrap()
+                );
             } else {
                 print!("{human}");
                 for w in &warnings {
@@ -240,7 +266,11 @@ struct Outcome {
 
 impl Outcome {
     fn new(value: impl Serialize, human: String) -> Self {
-        Outcome { value: serde_json::to_value(value).unwrap(), human, warnings: vec![] }
+        Outcome {
+            value: serde_json::to_value(value).unwrap(),
+            human,
+            warnings: vec![],
+        }
     }
     fn with_warnings(mut self, w: Vec<String>) -> Self {
         self.warnings = w;
@@ -252,23 +282,45 @@ type R<T> = Result<T, CliError>;
 
 fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
     match cmd {
-        Cmd::Repo(RepoCmd::Init { recovery_key_out, chunk_size_kib, zstd_level }) => repo_init(ctx, &recovery_key_out, chunk_size_kib, zstd_level),
+        Cmd::Repo(RepoCmd::Init {
+            recovery_key_out,
+            chunk_size_kib,
+            zstd_level,
+        }) => repo_init(ctx, &recovery_key_out, chunk_size_kib, zstd_level),
         Cmd::Repo(RepoCmd::Info) => repo_info(ctx),
         Cmd::Key(KeyCmd::AddPassphrase) => {
             let repo = open_repo(ctx)?;
             let p = new_passphrase("FENRIR_NEW_PASSPHRASE")?;
             let slot = repo.add_passphrase(p.as_bytes(), KdfParams::DEFAULT)?;
-            Ok(Outcome::new(json!({ "slot_id": slot }), format!("Added passphrase (key slot {slot}).\n")))
+            Ok(Outcome::new(
+                json!({ "slot_id": slot }),
+                format!("Added passphrase (key slot {slot}).\n"),
+            ))
         }
         Cmd::Key(KeyCmd::AddRecovery { out }) => {
             let repo = open_repo(ctx)?;
             ensure_new_file(&out)?;
             let rk = repo.add_recovery_key()?;
             write_secret_file(&out, &rk.to_file_contents())?;
-            Ok(Outcome::new(json!({ "slot_id": rk.slot_id, "path": out }), format!("Recovery key written to {}. Store it offline.\n", out.display())))
+            Ok(Outcome::new(
+                json!({ "slot_id": rk.slot_id, "path": out }),
+                format!(
+                    "Recovery key written to {}. Store it offline.\n",
+                    out.display()
+                ),
+            ))
         }
-        Cmd::Backup(BackupCmd::Disk { common, paths, allow_inconsistent, machine_id }) => backup_disk(ctx, common, paths, allow_inconsistent, machine_id),
-        Cmd::Backup(BackupCmd::System { common, include_disk, vss_full }) => backup_system(ctx, common, include_disk, vss_full),
+        Cmd::Backup(BackupCmd::Disk {
+            common,
+            paths,
+            allow_inconsistent,
+            machine_id,
+        }) => backup_disk(ctx, common, paths, allow_inconsistent, machine_id),
+        Cmd::Backup(BackupCmd::System {
+            common,
+            include_disk,
+            vss_full,
+        }) => backup_system(ctx, common, include_disk, vss_full),
         Cmd::Image(ImageCmd::List) => image_list(ctx),
         Cmd::Image(ImageCmd::Show { image }) => {
             let repo = open_repo(ctx)?;
@@ -278,28 +330,46 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             Ok(Outcome::new(&m, human))
         }
         Cmd::Verify(a) => verify(ctx, a),
-        Cmd::Restore(RestoreCmd::Disk { image, disk, target, yes, no_zero_fill, workers }) => restore(ctx, &image, disk, &target, yes, !no_zero_fill, workers),
+        Cmd::Restore(RestoreCmd::Disk {
+            image,
+            disk,
+            target,
+            yes,
+            no_zero_fill,
+            workers,
+        }) => restore(ctx, &image, disk, &target, yes, !no_zero_fill, workers),
     }
 }
 
 // ---------- repository access ----------
 
 fn repo_path(ctx: &Ctx) -> R<&Path> {
-    ctx.repo.as_deref().ok_or_else(|| CliError::usage("no repository given: use --repo or FENRIR_REPO"))
+    ctx.repo
+        .as_deref()
+        .ok_or_else(|| CliError::usage("no repository given: use --repo or FENRIR_REPO"))
 }
 
 fn read_passphrase(ctx: &Ctx, prompt: &str) -> R<String> {
     if let Some(p) = &ctx.passphrase_file {
-        let s = std::fs::read_to_string(p).map_err(|e| CliError::new(ExitCode::Usage, format!("passphrase file {}: {e}", p.display())))?;
+        let s = std::fs::read_to_string(p).map_err(|e| {
+            CliError::new(
+                ExitCode::Usage,
+                format!("passphrase file {}: {e}", p.display()),
+            )
+        })?;
         return Ok(s.lines().next().unwrap_or("").to_string());
     }
     if let Ok(p) = std::env::var("FENRIR_PASSPHRASE") {
         return Ok(p);
     }
     if !std::io::stdin().is_terminal() {
-        return Err(CliError::new(ExitCode::KeyError, "no passphrase: use --passphrase-file, FENRIR_PASSPHRASE or a terminal"));
+        return Err(CliError::new(
+            ExitCode::KeyError,
+            "no passphrase: use --passphrase-file, FENRIR_PASSPHRASE or a terminal",
+        ));
     }
-    rpassword::prompt_password(prompt).map_err(|e| CliError::new(ExitCode::KeyError, format!("reading passphrase: {e}")))
+    rpassword::prompt_password(prompt)
+        .map_err(|e| CliError::new(ExitCode::KeyError, format!("reading passphrase: {e}")))
 }
 
 fn new_passphrase(env: &str) -> R<String> {
@@ -310,12 +380,20 @@ fn new_passphrase(env: &str) -> R<String> {
         return Ok(p);
     }
     if !std::io::stdin().is_terminal() {
-        return Err(CliError::new(ExitCode::KeyError, format!("no new passphrase: set {env} or use a terminal")));
+        return Err(CliError::new(
+            ExitCode::KeyError,
+            format!("no new passphrase: set {env} or use a terminal"),
+        ));
     }
-    let a = rpassword::prompt_password("New passphrase: ").map_err(|e| CliError::new(ExitCode::KeyError, e.to_string()))?;
-    let b = rpassword::prompt_password("Repeat passphrase: ").map_err(|e| CliError::new(ExitCode::KeyError, e.to_string()))?;
+    let a = rpassword::prompt_password("New passphrase: ")
+        .map_err(|e| CliError::new(ExitCode::KeyError, e.to_string()))?;
+    let b = rpassword::prompt_password("Repeat passphrase: ")
+        .map_err(|e| CliError::new(ExitCode::KeyError, e.to_string()))?;
     if a != b {
-        return Err(CliError::new(ExitCode::KeyError, "passphrases do not match"));
+        return Err(CliError::new(
+            ExitCode::KeyError,
+            "passphrases do not match",
+        ));
     }
     if a.chars().count() < 8 {
         return Err(CliError::usage("passphrase must be at least 8 characters"));
@@ -327,7 +405,12 @@ fn open_repo(ctx: &Ctx) -> R<Repository> {
     let path = repo_path(ctx)?;
     let backend: Arc<dyn Backend> = Arc::new(LocalBackend::open(path)?);
     if let Some(rkp) = &ctx.recovery_key {
-        let s = std::fs::read_to_string(rkp).map_err(|e| CliError::new(ExitCode::KeyError, format!("recovery key {}: {e}", rkp.display())))?;
+        let s = std::fs::read_to_string(rkp).map_err(|e| {
+            CliError::new(
+                ExitCode::KeyError,
+                format!("recovery key {}: {e}", rkp.display()),
+            )
+        })?;
         let rk = RecoveryKey::from_file_contents(&s)?;
         return Ok(Repository::unlock_with_recovery_key(backend, &rk)?);
     }
@@ -339,7 +422,10 @@ fn open_repo(ctx: &Ctx) -> R<Repository> {
 
 fn ensure_new_file(p: &Path) -> R<()> {
     if p.exists() {
-        return Err(CliError::usage(format!("{} already exists; refusing to overwrite", p.display())));
+        return Err(CliError::usage(format!(
+            "{} already exists; refusing to overwrite",
+            p.display()
+        )));
     }
     Ok(())
 }
@@ -349,7 +435,9 @@ fn write_secret_file(p: &Path, contents: &str) -> R<()> {
     o.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    let mut f = o.open(p).map_err(|e| CliError::new(ExitCode::Error, format!("{}: {e}", p.display())))?;
+    let mut f = o
+        .open(p)
+        .map_err(|e| CliError::new(ExitCode::Error, format!("{}: {e}", p.display())))?;
     f.write_all(contents.as_bytes())?;
     f.sync_all()?;
     Ok(())
@@ -361,7 +449,9 @@ fn repo_init(ctx: &Ctx, rk_out: &Path, chunk_kib: u32, zstd_level: i32) -> R<Out
     if !(1..=19).contains(&zstd_level) {
         return Err(CliError::usage("zstd level must be 1..19"));
     }
-    let chunk_size = chunk_kib.checked_mul(1024).ok_or_else(|| CliError::usage("chunk size too large"))?;
+    let chunk_size = chunk_kib
+        .checked_mul(1024)
+        .ok_or_else(|| CliError::usage("chunk size too large"))?;
     core_format::chunk::check_chunk_size(chunk_size)?;
     let pass = match (&ctx.passphrase_file, std::env::var("FENRIR_PASSPHRASE")) {
         (Some(_), _) | (None, Ok(_)) => read_passphrase(ctx, "")?,
@@ -371,7 +461,15 @@ fn repo_init(ctx: &Ctx, rk_out: &Path, chunk_kib: u32, zstd_level: i32) -> R<Out
         return Err(CliError::usage("passphrase must not be empty"));
     }
     let backend: Arc<dyn Backend> = Arc::new(LocalBackend::create(path)?);
-    let (repo, rk) = Repository::init(backend, pass.as_bytes(), InitOptions { chunk_size, zstd_level, kdf: KdfParams::DEFAULT })?;
+    let (repo, rk) = Repository::init(
+        backend,
+        pass.as_bytes(),
+        InitOptions {
+            chunk_size,
+            zstd_level,
+            kdf: KdfParams::DEFAULT,
+        },
+    )?;
     write_secret_file(rk_out, &rk.to_file_contents())?;
     let c = repo.config();
     Ok(Outcome::new(
@@ -402,7 +500,13 @@ fn repo_info(ctx: &Ctx) -> R<Outcome> {
     let c = repo.config();
     let chunks = repo.backend().list("chunks")?;
     let path = repo_path(ctx)?;
-    let stored: u64 = chunks.iter().filter_map(|k| std::fs::metadata(k.split('/').fold(path.to_path_buf(), |p, s| p.join(s))).ok()).map(|m| m.len()).sum();
+    let stored: u64 = chunks
+        .iter()
+        .filter_map(|k| {
+            std::fs::metadata(k.split('/').fold(path.to_path_buf(), |p, s| p.join(s))).ok()
+        })
+        .map(|m| m.len())
+        .sum();
     let info = RepoInfo {
         repo_id: c.repo_id,
         location: repo.backend().describe(),
@@ -436,12 +540,25 @@ fn progress_printer(json: bool) -> impl Fn(&engine::Progress) + Sync {
             return;
         }
         let mut l = last.lock().unwrap();
-        if l.elapsed() < Duration::from_millis(if tty { 250 } else { 10_000 }) && p.bytes_done < p.bytes_total {
+        if l.elapsed() < Duration::from_millis(if tty { 250 } else { 10_000 })
+            && p.bytes_done < p.bytes_total
+        {
             return;
         }
         *l = Instant::now();
-        let pct = if p.bytes_total == 0 { 100.0 } else { p.bytes_done as f64 * 100.0 / p.bytes_total as f64 };
-        let line = format!("disk {}: {:5.1}%  {} / {}  new chunks: {}", p.disk, pct, human_bytes(p.bytes_done), human_bytes(p.bytes_total), p.chunks_new);
+        let pct = if p.bytes_total == 0 {
+            100.0
+        } else {
+            p.bytes_done as f64 * 100.0 / p.bytes_total as f64
+        };
+        let line = format!(
+            "disk {}: {:5.1}%  {} / {}  new chunks: {}",
+            p.disk,
+            pct,
+            human_bytes(p.bytes_done),
+            human_bytes(p.bytes_total),
+            p.chunks_new
+        );
         if tty {
             eprint!("\r{line}   ");
             if p.bytes_done >= p.bytes_total {
@@ -454,7 +571,10 @@ fn progress_printer(json: bool) -> impl Fn(&engine::Progress) + Sync {
 }
 
 fn backup_options(c: &CommonBackup) -> BackupOptions {
-    let mut o = BackupOptions { rate_limit: c.rate_limit_mib.saturating_mul(1024 * 1024), ..Default::default() };
+    let mut o = BackupOptions {
+        rate_limit: c.rate_limit_mib.saturating_mul(1024 * 1024),
+        ..Default::default()
+    };
     if let Some(w) = c.workers {
         o.workers = w.max(1);
     }
@@ -466,7 +586,9 @@ fn report_outcome(r: engine::BackupReport) -> Outcome {
         "Image {} created ({:?}{}).\n  read {}, {} chunks, {} new ({} stored), {:.1}s\n",
         r.image_id,
         r.kind,
-        r.parent.map(|p| format!(", parent {p}")).unwrap_or_default(),
+        r.parent
+            .map(|p| format!(", parent {p}"))
+            .unwrap_or_default(),
         human_bytes(r.stats.bytes_read),
         r.stats.chunks_total,
         r.stats.chunks_new,
@@ -477,30 +599,59 @@ fn report_outcome(r: engine::BackupReport) -> Outcome {
     Outcome::new(&r, human).with_warnings(w)
 }
 
-fn backup_disk(ctx: &Ctx, common: CommonBackup, paths: Vec<PathBuf>, allow_inconsistent: bool, machine_id: Option<String>) -> R<Outcome> {
-    let repo = open_repo(ctx)?;
+fn backup_disk(
+    ctx: &Ctx,
+    common: CommonBackup,
+    paths: Vec<PathBuf>,
+    allow_inconsistent: bool,
+    machine_id: Option<String>,
+) -> R<Outcome> {
     let mut opened = Vec::new();
     for p in &paths {
         opened.push(
-            snapshot_linux::open_disk(p, allow_inconsistent)
-                .map_err(|e| CliError::new(if e.is::<snapshot_linux::InUse>() { ExitCode::Safety } else { ExitCode::Error }, e.to_string()))?,
+            snapshot_linux::open_disk(p, allow_inconsistent).map_err(|e| {
+                CliError::new(
+                    if e.is::<snapshot_linux::InUse>() {
+                        ExitCode::Safety
+                    } else {
+                        ExitCode::Error
+                    },
+                    e.to_string(),
+                )
+            })?,
         );
     }
     let mut warnings: Vec<String> = opened.iter().flat_map(|o| o.warnings.clone()).collect();
-    let consistency = if opened.iter().any(|o| o.consistency == core_format::manifest::Consistency::Inconsistent) {
+    let consistency = if opened
+        .iter()
+        .any(|o| o.consistency == core_format::manifest::Consistency::Inconsistent)
+    {
         core_format::manifest::Consistency::Inconsistent
     } else {
         core_format::manifest::Consistency::Offline
     };
+    if common.dry_run {
+        let sources: Vec<&dyn engine::DiskSource> = opened
+            .iter()
+            .map(|o| &o.source as &dyn engine::DiskSource)
+            .collect();
+        return dry_run(&sources).map(|o| o.with_warnings(warnings));
+    }
+    let repo = open_repo(ctx)?;
     let machine_id = match machine_id {
         Some(m) => m,
         None => local_machine_id(),
     };
     if machine_id.is_empty() {
-        return Err(CliError::usage("could not determine a machine ID; pass --machine-id"));
+        return Err(CliError::usage(
+            "could not determine a machine ID; pass --machine-id",
+        ));
     }
     let meta = engine::ImageMeta {
-        machine: MachineInfo { machine_id, hostname: hostname() },
+        machine: MachineInfo {
+            machine_id,
+            hostname: hostname(),
+        },
         consistency,
         os: Default::default(),
         boot: Default::default(),
@@ -508,29 +659,73 @@ fn backup_disk(ctx: &Ctx, common: CommonBackup, paths: Vec<PathBuf>, allow_incon
         label: common.label.clone(),
         warnings: std::mem::take(&mut warnings),
     };
-    let sources: Vec<&dyn engine::DiskSource> = opened.iter().map(|o| &o.source as &dyn engine::DiskSource).collect();
+    let sources: Vec<&dyn engine::DiskSource> = opened
+        .iter()
+        .map(|o| &o.source as &dyn engine::DiskSource)
+        .collect();
     let pr = progress_printer(ctx.json);
-    let r = engine::backup(&repo, &sources, meta, &backup_options(&common), &JobControl::new(), &pr)?;
+    let r = engine::backup(
+        &repo,
+        &sources,
+        meta,
+        &backup_options(&common),
+        &JobControl::new(),
+        &pr,
+    )?;
     Ok(report_outcome(r))
 }
 
 #[cfg(windows)]
-fn backup_system(ctx: &Ctx, common: CommonBackup, include_disk: Vec<u32>, vss_full: bool) -> R<Outcome> {
-    let repo = open_repo(ctx)?;
+fn backup_system(
+    ctx: &Ctx,
+    common: CommonBackup,
+    include_disk: Vec<u32>,
+    vss_full: bool,
+) -> R<Outcome> {
+    let repo = if common.dry_run {
+        None
+    } else {
+        Some(open_repo(ctx)?)
+    };
     if !ctx.json {
         eprintln!("Creating VSS snapshot set...");
     }
-    let sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions { full_backup_type: vss_full, extra_disks: include_disk })
-        .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+    let sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
+        full_backup_type: vss_full,
+        extra_disks: include_disk,
+    })
+    .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+    if common.dry_run {
+        let r = dry_run(&sb.sources());
+        let vss_warnings = sb.meta.warnings.clone();
+        // Abort: writers are told no backup happened.
+        let finish = sb.finish(false);
+        let mut out = r?;
+        out.warnings.splice(0..0, vss_warnings);
+        if let Err(e) = finish {
+            out.warnings.push(format!("VSS abort reported: {e}"));
+        }
+        return Ok(out);
+    }
+    let repo = repo.expect("opened when not a dry run");
     let mut meta = sb.meta.clone();
     meta.label = common.label.clone();
     let pr = progress_printer(ctx.json);
-    let result = engine::backup(&repo, &sb.sources(), meta, &backup_options(&common), &JobControl::new(), &pr);
+    let result = engine::backup(
+        &repo,
+        &sb.sources(),
+        meta,
+        &backup_options(&common),
+        &JobControl::new(),
+        &pr,
+    );
     let finish = sb.finish(result.is_ok());
     let r = result?;
     let mut out = report_outcome(r);
     if let Err(e) = finish {
-        out.warnings.push(format!("image stored, but VSS BackupComplete reported: {e}"));
+        out.warnings.push(format!(
+            "image stored, but VSS BackupComplete reported: {e}"
+        ));
     }
     Ok(out)
 }
@@ -540,6 +735,98 @@ fn backup_system(_ctx: &Ctx, _c: CommonBackup, _d: Vec<u32>, _f: bool) -> R<Outc
     Err(CliError::usage(
         "`backup system` uses VSS and runs on Windows. On Linux, image unmounted disks with `backup disk` (live Linux snapshots arrive in a later release).",
     ))
+}
+
+#[derive(Serialize)]
+struct PlannedPartitionOut {
+    number: u32,
+    role: core_format::partition::PartitionRole,
+    filesystem: core_format::fsdetect::FsType,
+    capture: core_format::manifest::CaptureMethod,
+    start: u64,
+    length: u64,
+    captured_bytes: u64,
+    volume: Option<String>,
+    mount_points: Vec<String>,
+    encryption: Option<String>,
+}
+
+#[derive(Serialize)]
+struct PlannedDiskOut {
+    index: usize,
+    device: String,
+    model: String,
+    size: u64,
+    logical_sector_size: u32,
+    scheme: core_format::partition::Scheme,
+    captured_bytes: u64,
+    probe_bytes_read: u64,
+    partitions: Vec<PlannedPartitionOut>,
+    excluded: Vec<core_format::manifest::ExcludedFile>,
+}
+
+fn dry_run(sources: &[&dyn engine::DiskSource]) -> R<Outcome> {
+    let planned = engine::plan_image(sources)?;
+    let mut out = Vec::new();
+    let mut human = String::from("Dry run: nothing was written.\n");
+    let mut warnings = Vec::new();
+    for (i, (p, src)) in planned.iter().zip(sources).enumerate() {
+        let probe = engine::probe_reads(*src, p)?;
+        warnings.extend(p.plan.warnings.iter().cloned());
+        let captured = core_format::extent::total_len(&p.layout.used);
+        human += &format!(
+            "disk {i}: {} {} ({}, {:?}), would capture {}\n",
+            p.info.device,
+            p.info.model,
+            human_bytes(p.info.size),
+            p.table.scheme,
+            human_bytes(captured)
+        );
+        for r in &p.layout.partitions {
+            human += &format!(
+                "  #{:<2} {:<9} {:<10} {:<16} {:>10} of {:>10}  {}\n",
+                r.entry.number,
+                format!("{:?}", r.entry.role).to_lowercase(),
+                format!("{:?}", r.filesystem).to_lowercase(),
+                format!("{:?}", r.capture).to_lowercase(),
+                human_bytes(r.captured_bytes),
+                human_bytes(r.entry.length),
+                r.mount_points.join(" ")
+            );
+        }
+        for x in &p.plan.excluded {
+            human += &format!("  excluded: {} ({})\n", x.path, human_bytes(x.bytes));
+        }
+        out.push(PlannedDiskOut {
+            index: i,
+            device: p.info.device.clone(),
+            model: p.info.model.clone(),
+            size: p.info.size,
+            logical_sector_size: p.sector_size,
+            scheme: p.table.scheme,
+            captured_bytes: captured,
+            probe_bytes_read: probe,
+            partitions: p
+                .layout
+                .partitions
+                .iter()
+                .map(|r| PlannedPartitionOut {
+                    number: r.entry.number,
+                    role: r.entry.role,
+                    filesystem: r.filesystem,
+                    capture: r.capture,
+                    start: r.entry.start,
+                    length: r.entry.length,
+                    captured_bytes: r.captured_bytes,
+                    volume: r.volume.clone(),
+                    mount_points: r.mount_points.clone(),
+                    encryption: r.encryption.clone(),
+                })
+                .collect(),
+            excluded: p.plan.excluded.clone(),
+        });
+    }
+    Ok(Outcome::new(json!({ "dry_run": true, "disks": out }), human).with_warnings(warnings))
 }
 
 fn local_machine_id() -> String {
@@ -591,7 +878,11 @@ fn summarize(m: &ManifestBody) -> ImageSummary {
         consistency: m.consistency,
         label: m.label.clone(),
         disks: m.disks.iter().map(|d| d.size).collect(),
-        captured_bytes: m.disks.iter().map(|d| core_format::extent::total_len(&d.used_extents)).sum(),
+        captured_bytes: m
+            .disks
+            .iter()
+            .map(|d| core_format::extent::total_len(&d.used_extents))
+            .sum(),
         chunks: m.chunk_ids().len(),
     }
 }
@@ -616,7 +907,10 @@ fn image_list(ctx: &Ctx) -> R<Outcome> {
     if list.is_empty() {
         human = "No images.\n".into();
     }
-    let warnings = bad.iter().map(|(id, e)| format!("image {id} could not be read: {e}")).collect();
+    let warnings = bad
+        .iter()
+        .map(|(id, e)| format!("image {id} could not be read: {e}"))
+        .collect();
     Ok(Outcome::new(&list, human).with_warnings(warnings))
 }
 
@@ -624,7 +918,11 @@ fn image_list(ctx: &Ctx) -> R<Outcome> {
 
 fn verify(ctx: &Ctx, a: VerifyArgs) -> R<Outcome> {
     let repo = open_repo(ctx)?;
-    let ids = a.image.iter().map(|s| repo.resolve_image_id(s)).collect::<Result<Vec<_>, _>>()?;
+    let ids = a
+        .image
+        .iter()
+        .map(|s| repo.resolve_image_id(s))
+        .collect::<Result<Vec<_>, _>>()?;
     let level = match (a.full, a.sample) {
         (true, _) => VerifyLevel::Full,
         (false, Some(p)) => {
@@ -635,7 +933,13 @@ fn verify(ctx: &Ctx, a: VerifyArgs) -> R<Outcome> {
         }
         _ => VerifyLevel::Quick,
     };
-    let r = engine::verify(&repo, (!ids.is_empty()).then_some(&ids[..]), level, &JobControl::new(), a.workers)?;
+    let r = engine::verify(
+        &repo,
+        (!ids.is_empty()).then_some(&ids[..]),
+        level,
+        &JobControl::new(),
+        a.workers,
+    )?;
     let mut human = format!(
         "Verified {} image(s), {} referenced chunks, {} read and re-hashed: {}\n",
         r.images_checked,
@@ -647,25 +951,51 @@ fn verify(ctx: &Ctx, a: VerifyArgs) -> R<Outcome> {
         human += &format!("  manifest {}: {}\n", m.image_id, m.problem);
     }
     for c in r.missing_chunks.iter().chain(&r.corrupt_chunks) {
-        human += &format!("  chunk {}: {} (used by {} image(s))\n", c.chunk, c.problem, c.images.len());
+        human += &format!(
+            "  chunk {}: {} (used by {} image(s))\n",
+            c.chunk,
+            c.problem,
+            c.images.len()
+        );
     }
     if !r.ok {
         if ctx.json {
-            println!("{}", serde_json::to_string_pretty(&json!({ "ok": false, "result": r, "exit_code": ExitCode::VerifyFailed as i32 })).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &json!({ "ok": false, "result": r, "exit_code": ExitCode::VerifyFailed as i32 })
+                )
+                .unwrap()
+            );
             std::process::exit(ExitCode::VerifyFailed as i32);
         }
-        return Err(CliError::new(ExitCode::VerifyFailed, human.trim_end().to_string()));
+        return Err(CliError::new(
+            ExitCode::VerifyFailed,
+            human.trim_end().to_string(),
+        ));
     }
     Ok(Outcome::new(&r, human))
 }
 
 // ---------- restore ----------
 
-fn restore(ctx: &Ctx, image: &str, disk: u32, target: &Path, yes: bool, zero_fill: bool, workers: usize) -> R<Outcome> {
+fn restore(
+    ctx: &Ctx,
+    image: &str,
+    disk: u32,
+    target: &Path,
+    yes: bool,
+    zero_fill: bool,
+    workers: usize,
+) -> R<Outcome> {
     let repo = open_repo(ctx)?;
     let id = repo.resolve_image_id(image)?;
     let m = repo.load_manifest(&id)?;
-    let d = m.disks.iter().find(|d| d.index == disk).ok_or_else(|| CliError::usage(format!("image has no disk {disk}")))?;
+    let d = m
+        .disks
+        .iter()
+        .find(|d| d.index == disk)
+        .ok_or_else(|| CliError::usage(format!("image has no disk {disk}")))?;
     if !yes {
         return Err(CliError::new(
             ExitCode::ConfirmationRequired,
@@ -687,15 +1017,36 @@ fn restore(ctx: &Ctx, image: &str, disk: u32, target: &Path, yes: bool, zero_fil
             let mut l = last.lock().unwrap();
             if l.elapsed() > Duration::from_millis(250) {
                 *l = Instant::now();
-                eprint!("\rrestoring: {} / {}   ", human_bytes(done), human_bytes(total));
+                eprint!(
+                    "\rrestoring: {} / {}   ",
+                    human_bytes(done),
+                    human_bytes(total)
+                );
             }
         }
     };
-    let r = engine::restore_disk(&repo, &m, disk, &t, &RestoreOptions { workers, zero_fill: zero_fill || t.is_block_device }, &JobControl::new(), &pr)?;
+    let r = engine::restore_disk(
+        &repo,
+        &m,
+        disk,
+        &t,
+        &RestoreOptions {
+            workers,
+            zero_fill: zero_fill || t.is_block_device,
+        },
+        &JobControl::new(),
+        &pr,
+    )?;
     if tty {
         eprintln!();
     }
-    let human = format!("Restored disk {} of image {} to {} ({} written).\n", disk, id, r.target, human_bytes(r.bytes_written));
+    let human = format!(
+        "Restored disk {} of image {} to {} ({} written).\n",
+        disk,
+        id,
+        r.target,
+        human_bytes(r.bytes_written)
+    );
     Ok(Outcome::new(&r, human))
 }
 

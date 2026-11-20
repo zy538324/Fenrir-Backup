@@ -13,8 +13,8 @@ use engine::{CapturePlan, DiskInfo, DiskSource, ImageMeta, PartitionPlan};
 use windows::Win32::Security::{SE_BACKUP_NAME, SE_SYSTEM_ENVIRONMENT_NAME};
 use windows::Win32::Storage::Vss::{VSS_BT_COPY, VSS_BT_FULL};
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoInitializeSecurity, COINIT_MULTITHREADED, EOAC_DYNAMIC_CLOAKING, RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
-    RPC_C_IMP_LEVEL_IDENTIFY,
+    CoInitializeEx, CoInitializeSecurity, COINIT_MULTITHREADED, EOAC_DYNAMIC_CLOAKING,
+    RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IDENTIFY,
 };
 
 use super::vss::{SnapshotSet, VssError};
@@ -129,10 +129,17 @@ fn map_volumes() -> Vec<VolumeInfo> {
     let mut out = Vec::new();
     for name in system::list_volumes() {
         let dev = name.trim_end_matches('\\');
-        let Ok(f) = ioctl::open_read(dev) else { continue };
+        let Ok(f) = ioctl::open_read(dev) else {
+            continue;
+        };
         if let Ok(ex) = ioctl::volume_disk_extents(&f) {
             if let [(disk, start, len)] = ex[..] {
-                out.push(VolumeInfo { name, disk, start, len });
+                out.push(VolumeInfo {
+                    name,
+                    disk,
+                    start,
+                    len,
+                });
             }
         }
     }
@@ -177,7 +184,14 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
         let table = partition::read_table(&*raw, size, ss)?;
         disks.push(Disk {
             number: n,
-            info: DiskInfo { size, logical_sector_size: ss, physical_sector_size: pss, model, serial, device: path },
+            info: DiskInfo {
+                size,
+                logical_sector_size: ss,
+                physical_sector_size: pss,
+                model,
+                serial,
+                device: path,
+            },
             raw,
             table,
         });
@@ -187,14 +201,24 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
     let mut to_snapshot = Vec::new();
     for d in &disks {
         for p in &d.table.partitions {
-            if let Some(v) = volumes.iter().find(|v| v.disk == d.number && v.start == p.start && v.len <= p.length) {
+            if let Some(v) = volumes
+                .iter()
+                .find(|v| v.disk == d.number && v.start == p.start && v.len <= p.length)
+            {
                 if SnapshotSet::is_supported(&v.name) {
                     to_snapshot.push(v.name.clone());
                 }
             }
         }
     }
-    let set = SnapshotSet::create(&to_snapshot, if opts.full_backup_type { VSS_BT_FULL } else { VSS_BT_COPY })?;
+    let set = SnapshotSet::create(
+        &to_snapshot,
+        if opts.full_backup_type {
+            VSS_BT_FULL
+        } else {
+            VSS_BT_COPY
+        },
+    )?;
     let consistency = if set.writer_issues.is_empty() {
         Consistency::Application
     } else {
@@ -213,17 +237,22 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
         let mut overlays = Vec::new();
         let mut plan = CapturePlan::default();
         for p in &d.table.partitions {
-            let vol = volumes.iter().find(|v| v.disk == d.number && v.start == p.start && v.len <= p.length);
+            let vol = volumes
+                .iter()
+                .find(|v| v.disk == d.number && v.start == p.start && v.len <= p.length);
             let snap = vol.and_then(|v| set.snapshots.iter().find(|s| s.volume == v.name));
             let mut first = [0u8; 512];
-            let bitlocker = d.raw.read_at(p.start, &mut first).is_ok() && &first[3..11] == b"-FVE-FS-";
+            let bitlocker =
+                d.raw.read_at(p.start, &mut first).is_ok() && &first[3..11] == b"-FVE-FS-";
             let mut pp = PartitionPlan {
                 number: p.number,
                 used: None,
                 capture: CaptureMethod::RawFull,
                 filesystem: None,
                 volume: vol.map(|v| v.name.clone()),
-                mount_points: vol.map(|v| system::mount_points(&v.name)).unwrap_or_default(),
+                mount_points: vol
+                    .map(|v| system::mount_points(&v.name))
+                    .unwrap_or_default(),
                 encryption: None,
             };
             if bitlocker {
@@ -250,8 +279,15 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
                             if let Ok(ex) = ioctl::file_extents(&f, cluster, p.start) {
                                 let bytes = extent::total_len(&ex);
                                 if bytes > 0 {
-                                    let mp = pp.mount_points.first().cloned().unwrap_or_else(|| s.volume.clone());
-                                    excluded_all.push(ExcludedFile { path: format!("{mp}{name}"), bytes });
+                                    let mp = pp
+                                        .mount_points
+                                        .first()
+                                        .cloned()
+                                        .unwrap_or_else(|| s.volume.clone());
+                                    excluded_all.push(ExcludedFile {
+                                        path: format!("{mp}{name}"),
+                                        bytes,
+                                    });
                                     holes.extend(ex);
                                 }
                             }
@@ -260,7 +296,11 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
                     pp.used = Some(extent::subtract(&used, &extent::normalize(holes)));
                     pp.capture = CaptureMethod::SnapshotBitmap;
                 }
-                overlays.push(Overlay { start: p.start, len: p.length, device: Arc::new(FileReader(dev)) });
+                overlays.push(Overlay {
+                    start: p.start,
+                    len: p.length,
+                    device: Arc::new(FileReader(dev)),
+                });
             }
             plan.partitions.push(pp);
         }
@@ -269,7 +309,8 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
 
     let mut boot = system::boot_config();
     if !can_read_firmware {
-        boot.notes.push("SeSystemEnvironmentPrivilege could not be enabled".into());
+        boot.notes
+            .push("SeSystemEnvironmentPrivilege could not be enabled".into());
     }
     // Locate the BCD store: ESP for UEFI, the active partition for BIOS.
     for v in &volumes {
@@ -281,7 +322,10 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
     }
 
     let meta = ImageMeta {
-        machine: MachineInfo { machine_id: system::machine_id(), hostname: system::hostname() },
+        machine: MachineInfo {
+            machine_id: system::machine_id(),
+            hostname: system::hostname(),
+        },
         consistency,
         os: system::os_info(),
         boot,
@@ -296,5 +340,9 @@ pub fn prepare_system_backup(opts: &VssOptions) -> Result<SystemBackup, PrepareE
     if let Some(first) = sources.first_mut() {
         first.plan.excluded = excluded_all;
     }
-    Ok(SystemBackup { disks: sources, meta, snapshots: Some(set) })
+    Ok(SystemBackup {
+        disks: sources,
+        meta,
+        snapshots: Some(set),
+    })
 }

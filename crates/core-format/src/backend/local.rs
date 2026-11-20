@@ -16,7 +16,10 @@ impl LocalBackend {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         if !root.is_dir() {
-            return Err(Error::NotARepository(format!("{} is not a directory", root.display())));
+            return Err(Error::NotARepository(format!(
+                "{} is not a directory",
+                root.display()
+            )));
         }
         Ok(LocalBackend { root })
     }
@@ -28,7 +31,10 @@ impl LocalBackend {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
         if fs::read_dir(&root)?.next().is_some() {
-            return Err(Error::InvalidArgument(format!("{} is not empty", root.display())));
+            return Err(Error::InvalidArgument(format!(
+                "{} is not empty",
+                root.display()
+            )));
         }
         Ok(LocalBackend { root })
     }
@@ -45,7 +51,10 @@ impl LocalBackend {
     fn tmp_path(&self) -> Result<PathBuf> {
         let mut r = [0u8; 12];
         crate::crypto::fill_random(&mut r)?;
-        Ok(self.root.join("tmp").join(format!("{}.tmp", hex::encode(r))))
+        Ok(self
+            .root
+            .join("tmp")
+            .join(format!("{}.tmp", hex::encode(r))))
     }
 }
 
@@ -69,7 +78,10 @@ impl Backend for LocalBackend {
         let tmp = self.tmp_path()?;
         fs::create_dir_all(tmp.parent().unwrap())?;
         {
-            let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
             f.write_all(data)?;
             f.sync_all()?;
         }
@@ -85,7 +97,9 @@ impl Backend for LocalBackend {
                 if dest.exists() {
                     Ok(PutOutcome::AlreadyExists)
                 } else {
-                    fs::rename(&tmp, &dest).map(|_| PutOutcome::Created).map_err(Error::from)
+                    fs::rename(&tmp, &dest)
+                        .map(|_| PutOutcome::Created)
+                        .map_err(Error::from)
                 }
             }
         };
@@ -98,7 +112,13 @@ impl Backend for LocalBackend {
 
     fn get(&self, key: &str) -> Result<Vec<u8>> {
         let p = self.path(key)?;
-        fs::read(&p).map_err(|e| if e.kind() == ErrorKind::NotFound { Error::NotFound(key.to_string()) } else { e.into() })
+        fs::read(&p).map_err(|e| {
+            if e.kind() == ErrorKind::NotFound {
+                Error::NotFound(key.to_string())
+            } else {
+                e.into()
+            }
+        })
     }
 
     fn exists(&self, key: &str) -> Result<bool> {
@@ -107,7 +127,11 @@ impl Backend for LocalBackend {
 
     fn list(&self, prefix: &str) -> Result<Vec<String>> {
         let prefix = prefix.trim_end_matches('/');
-        let base = if prefix.is_empty() { self.root.clone() } else { self.path(prefix)? };
+        let base = if prefix.is_empty() {
+            self.root.clone()
+        } else {
+            self.path(prefix)?
+        };
         let mut out = Vec::new();
         if !base.is_dir() {
             return Ok(out);
@@ -118,7 +142,11 @@ impl Backend for LocalBackend {
                 let ent = ent?;
                 let name = ent.file_name();
                 let Some(name) = name.to_str() else { continue };
-                let k = if key.is_empty() { name.to_string() } else { format!("{key}/{name}") };
+                let k = if key.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{key}/{name}")
+                };
                 let ft = ent.file_type()?;
                 if ft.is_dir() {
                     if k != "tmp" {
@@ -134,7 +162,13 @@ impl Backend for LocalBackend {
 
     fn delete(&self, key: &str) -> Result<()> {
         let p = self.path(key)?;
-        fs::remove_file(&p).map_err(|e| if e.kind() == ErrorKind::NotFound { Error::NotFound(key.to_string()) } else { e.into() })
+        fs::remove_file(&p).map_err(|e| {
+            if e.kind() == ErrorKind::NotFound {
+                Error::NotFound(key.to_string())
+            } else {
+                e.into()
+            }
+        })
     }
 
     fn describe(&self) -> String {

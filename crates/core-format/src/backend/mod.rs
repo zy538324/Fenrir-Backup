@@ -42,12 +42,18 @@ pub fn validate_key(key: &str) -> Result<()> {
         && key.len() <= 512
         && !key.starts_with('/')
         && !key.ends_with('/')
-        && key.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
-        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b));
+        && key
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b));
     if ok {
         Ok(())
     } else {
-        Err(Error::InvalidArgument(format!("invalid object key {key:?}")))
+        Err(Error::InvalidArgument(format!(
+            "invalid object key {key:?}"
+        )))
     }
 }
 
@@ -60,7 +66,17 @@ mod tests {
         for good in ["config.json", "chunks/ab/abcd", "keys/x-y_z.json"] {
             assert!(validate_key(good).is_ok(), "{good}");
         }
-        for bad in ["", "/etc/passwd", "../x", "a/../b", "a//b", "a/", "a\\b", "a b", "C:x"] {
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../b",
+            "a//b",
+            "a/",
+            "a\\b",
+            "a b",
+            "C:x",
+        ] {
             assert!(validate_key(bad).is_err(), "{bad}");
         }
     }

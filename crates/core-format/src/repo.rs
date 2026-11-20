@@ -41,10 +41,15 @@ pub struct RepoConfig {
 impl RepoConfig {
     fn check(&self) -> Result<()> {
         if self.format != REPO_FORMAT {
-            return Err(Error::NotARepository("config.json is not a Fenrir-Backup repository config".into()));
+            return Err(Error::NotARepository(
+                "config.json is not a Fenrir-Backup repository config".into(),
+            ));
         }
         if self.version != 1 {
-            return Err(Error::UnsupportedVersion { what: "repository", version: self.version });
+            return Err(Error::UnsupportedVersion {
+                what: "repository",
+                version: self.version,
+            });
         }
         chunk::check_chunk_size(self.chunk_size)?;
         if !(-7..=22).contains(&self.zstd_level) {
@@ -63,7 +68,11 @@ pub struct InitOptions {
 
 impl Default for InitOptions {
     fn default() -> Self {
-        InitOptions { chunk_size: DEFAULT_CHUNK_SIZE, zstd_level: 3, kdf: KdfParams::DEFAULT }
+        InitOptions {
+            chunk_size: DEFAULT_CHUNK_SIZE,
+            zstd_level: 3,
+            kdf: KdfParams::DEFAULT,
+        }
     }
 }
 
@@ -105,16 +114,25 @@ pub struct Repository {
 
 impl std::fmt::Debug for Repository {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Repository").field("backend", &self.backend.describe()).field("config", &self.config).finish()
+        f.debug_struct("Repository")
+            .field("backend", &self.backend.describe())
+            .field("config", &self.config)
+            .finish()
     }
 }
 
 impl Repository {
     /// Create a new repository. Returns it unlocked, plus a recovery key the
     /// caller must hand to the user (it is not stored anywhere else).
-    pub fn init(backend: Arc<dyn Backend>, passphrase: &[u8], opts: InitOptions) -> Result<(Repository, RecoveryKey)> {
+    pub fn init(
+        backend: Arc<dyn Backend>,
+        passphrase: &[u8],
+        opts: InitOptions,
+    ) -> Result<(Repository, RecoveryKey)> {
         if backend.exists(CONFIG_KEY)? {
-            return Err(Error::InvalidArgument("a repository already exists here".into()));
+            return Err(Error::InvalidArgument(
+                "a repository already exists here".into(),
+            ));
         }
         chunk::check_chunk_size(opts.chunk_size)?;
         let now = crate::timefmt::now_unix();
@@ -135,18 +153,36 @@ impl Repository {
         let rslot = KeySlot::wrap_with_recovery_key(&config.repo_id, &master, &recovery)?;
         // Key slots first, config last: a directory with config.json is
         // always a complete, openable repository.
-        put_new(&*backend, &format!("keys/{}.json", pslot.slot_id), &serde_json::to_vec_pretty(&pslot)?)?;
-        put_new(&*backend, &format!("keys/{}.json", rslot.slot_id), &serde_json::to_vec_pretty(&rslot)?)?;
+        put_new(
+            &*backend,
+            &format!("keys/{}.json", pslot.slot_id),
+            &serde_json::to_vec_pretty(&pslot)?,
+        )?;
+        put_new(
+            &*backend,
+            &format!("keys/{}.json", rslot.slot_id),
+            &serde_json::to_vec_pretty(&rslot)?,
+        )?;
         put_new(&*backend, CONFIG_KEY, &serde_json::to_vec_pretty(&config)?)?;
-        Ok((Repository { backend, config, keys: Arc::new(RepoKeys::from_master(master)) }, recovery))
+        Ok((
+            Repository {
+                backend,
+                config,
+                keys: Arc::new(RepoKeys::from_master(master)),
+            },
+            recovery,
+        ))
     }
 
     pub fn read_config(backend: &dyn Backend) -> Result<RepoConfig> {
         let raw = backend.get(CONFIG_KEY).map_err(|e| match e {
-            Error::NotFound(_) => Error::NotARepository(format!("no {CONFIG_KEY} at {}", backend.describe())),
+            Error::NotFound(_) => {
+                Error::NotARepository(format!("no {CONFIG_KEY} at {}", backend.describe()))
+            }
             e => e,
         })?;
-        let c: RepoConfig = serde_json::from_slice(&raw).map_err(|e| Error::NotARepository(format!("config.json: {e}")))?;
+        let c: RepoConfig = serde_json::from_slice(&raw)
+            .map_err(|e| Error::NotARepository(format!("config.json: {e}")))?;
         c.check()?;
         Ok(c)
     }
@@ -161,11 +197,23 @@ impl Repository {
         Ok(out)
     }
 
-    pub fn unlock_with_passphrase(backend: Arc<dyn Backend>, passphrase: &[u8]) -> Result<Repository> {
+    pub fn unlock_with_passphrase(
+        backend: Arc<dyn Backend>,
+        passphrase: &[u8],
+    ) -> Result<Repository> {
         let config = Self::read_config(&*backend)?;
-        for slot in Self::slots(&*backend)?.iter().filter(|s| s.kind == SlotKind::Passphrase) {
+        for slot in Self::slots(&*backend)?
+            .iter()
+            .filter(|s| s.kind == SlotKind::Passphrase)
+        {
             match slot.unwrap_with_passphrase(&config.repo_id, passphrase) {
-                Ok(master) => return Ok(Repository { backend, config, keys: Arc::new(RepoKeys::from_master(master)) }),
+                Ok(master) => {
+                    return Ok(Repository {
+                        backend,
+                        config,
+                        keys: Arc::new(RepoKeys::from_master(master)),
+                    })
+                }
                 Err(Error::WrongKey) => continue,
                 Err(e) => return Err(e),
             }
@@ -173,30 +221,52 @@ impl Repository {
         Err(Error::WrongKey)
     }
 
-    pub fn unlock_with_recovery_key(backend: Arc<dyn Backend>, rk: &RecoveryKey) -> Result<Repository> {
+    pub fn unlock_with_recovery_key(
+        backend: Arc<dyn Backend>,
+        rk: &RecoveryKey,
+    ) -> Result<Repository> {
         let config = Self::read_config(&*backend)?;
         if rk.repo_id != config.repo_id {
             return Err(Error::WrongKey);
         }
-        let raw = backend.get(&format!("keys/{}.json", rk.slot_id)).map_err(|e| match e {
-            Error::NotFound(_) => Error::WrongKey,
-            e => e,
-        })?;
+        let raw = backend
+            .get(&format!("keys/{}.json", rk.slot_id))
+            .map_err(|e| match e {
+                Error::NotFound(_) => Error::WrongKey,
+                e => e,
+            })?;
         let slot: KeySlot = serde_json::from_slice(&raw)?;
         let master = slot.unwrap_with_recovery_key(&config.repo_id, rk)?;
-        Ok(Repository { backend, config, keys: Arc::new(RepoKeys::from_master(master)) })
+        Ok(Repository {
+            backend,
+            config,
+            keys: Arc::new(RepoKeys::from_master(master)),
+        })
     }
 
     pub fn add_passphrase(&self, passphrase: &[u8], kdf: KdfParams) -> Result<Uuid> {
-        let slot = KeySlot::wrap_with_passphrase(&self.config.repo_id, &self.keys.master, passphrase, kdf)?;
-        put_new(&*self.backend, &format!("keys/{}.json", slot.slot_id), &serde_json::to_vec_pretty(&slot)?)?;
+        let slot = KeySlot::wrap_with_passphrase(
+            &self.config.repo_id,
+            &self.keys.master,
+            passphrase,
+            kdf,
+        )?;
+        put_new(
+            &*self.backend,
+            &format!("keys/{}.json", slot.slot_id),
+            &serde_json::to_vec_pretty(&slot)?,
+        )?;
         Ok(slot.slot_id)
     }
 
     pub fn add_recovery_key(&self) -> Result<RecoveryKey> {
         let rk = RecoveryKey::generate(self.config.repo_id)?;
         let slot = KeySlot::wrap_with_recovery_key(&self.config.repo_id, &self.keys.master, &rk)?;
-        put_new(&*self.backend, &format!("keys/{}.json", slot.slot_id), &serde_json::to_vec_pretty(&slot)?)?;
+        put_new(
+            &*self.backend,
+            &format!("keys/{}.json", slot.slot_id),
+            &serde_json::to_vec_pretty(&slot)?,
+        )?;
         Ok(rk)
     }
 
@@ -225,7 +295,12 @@ impl Repository {
     /// Encrypt and store. Returns whether it was new and its stored size.
     pub fn put_chunk(&self, id: &ChunkId, plaintext: &[u8]) -> Result<(PutOutcome, u64)> {
         debug_assert_eq!(*id, self.chunk_id(plaintext));
-        let obj = chunk::encode_chunk(&self.keys.chunk_enc, id, plaintext, Some(self.config.zstd_level))?;
+        let obj = chunk::encode_chunk(
+            &self.keys.chunk_enc,
+            id,
+            plaintext,
+            Some(self.config.zstd_level),
+        )?;
         let outcome = self.backend.put(&id.object_key(), &obj)?;
         Ok((outcome, obj.len() as u64))
     }
@@ -253,9 +328,18 @@ impl Repository {
         if rec.format != SIGNER_FORMAT || rec.version != 1 {
             return Err(Error::malformed("bad signer record"));
         }
-        let pt = crypto::open(&self.keys.signer_wrap, &rec.nonce, &signer_aad(&self.config.repo_id, &rec.public_key), &rec.sealed)?;
+        let pt = crypto::open(
+            &self.keys.signer_wrap,
+            &rec.nonce,
+            &signer_aad(&self.config.repo_id, &rec.public_key),
+            &rec.sealed,
+        )?;
         let sec: SignerSecret = serde_json::from_slice(&pt)?;
-        let seed: [u8; 32] = sec.seed.as_slice().try_into().map_err(|_| Error::malformed("signer seed length"))?;
+        let seed: [u8; 32] = sec
+            .seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::malformed("signer seed length"))?;
         let s = ManifestSigner::from_seed(seed);
         if s.verifying_key().as_bytes()[..] != rec.public_key[..] || s.key_id != rec.key_id {
             return Err(Error::integrity("signer record does not match its key"));
@@ -265,14 +349,26 @@ impl Repository {
 
     /// The signing key for `machine_id`, created on first use.
     pub fn signer_for_machine(&self, machine_id: &str) -> Result<ManifestSigner> {
-        if let Some((s, _)) = self.load_signers()?.into_iter().find(|(_, m)| m == machine_id) {
+        if let Some((s, _)) = self
+            .load_signers()?
+            .into_iter()
+            .find(|(_, m)| m == machine_id)
+        {
             return Ok(s);
         }
         let s = ManifestSigner::generate()?;
         let pk = s.verifying_key().as_bytes().to_vec();
-        let secret = SignerSecret { machine_id: machine_id.to_string(), seed: s.seed().to_vec() };
+        let secret = SignerSecret {
+            machine_id: machine_id.to_string(),
+            seed: s.seed().to_vec(),
+        };
         let nonce = crypto::random_nonce()?;
-        let sealed = crypto::seal(&self.keys.signer_wrap, &nonce, &signer_aad(&self.config.repo_id, &pk), &serde_json::to_vec(&secret)?)?;
+        let sealed = crypto::seal(
+            &self.keys.signer_wrap,
+            &nonce,
+            &signer_aad(&self.config.repo_id, &pk),
+            &serde_json::to_vec(&secret)?,
+        )?;
         let rec = SignerRecord {
             format: SIGNER_FORMAT.into(),
             version: 1,
@@ -281,7 +377,11 @@ impl Repository {
             nonce: nonce.to_vec(),
             sealed,
         };
-        put_new(&*self.backend, &format!("signers/{}.json", s.key_id), &serde_json::to_vec_pretty(&rec)?)?;
+        put_new(
+            &*self.backend,
+            &format!("signers/{}.json", s.key_id),
+            &serde_json::to_vec_pretty(&rec)?,
+        )?;
         Ok(s)
     }
 
@@ -289,14 +389,21 @@ impl Repository {
         if key_id.len() != 32 || !key_id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::malformed("bad signer key id"));
         }
-        let raw = self.backend.get(&format!("signers/{key_id}.json")).map_err(|e| match e {
-            Error::NotFound(_) => Error::integrity(format!("manifest signed by unknown key {key_id}")),
-            e => e,
-        })?;
+        let raw = self
+            .backend
+            .get(&format!("signers/{key_id}.json"))
+            .map_err(|e| match e {
+                Error::NotFound(_) => {
+                    Error::integrity(format!("manifest signed by unknown key {key_id}"))
+                }
+                e => e,
+            })?;
         let rec: SignerRecord = serde_json::from_slice(&raw)?;
         // Opening the sealed half authenticates the public key with the
         // master key: an attacker with storage access cannot plant a signer.
-        let (s, _) = self.open_signer(&rec).map_err(|_| Error::integrity(format!("signer {key_id} failed authentication")))?;
+        let (s, _) = self
+            .open_signer(&rec)
+            .map_err(|_| Error::integrity(format!("signer {key_id} failed authentication")))?;
         Ok(s.verifying_key())
     }
 
@@ -304,12 +411,25 @@ impl Repository {
 
     pub fn store_manifest(&self, body: &ManifestBody, signer: &ManifestSigner) -> Result<()> {
         if body.repo_id != self.config.repo_id {
-            return Err(Error::InvalidArgument("manifest is for another repository".into()));
+            return Err(Error::InvalidArgument(
+                "manifest is for another repository".into(),
+            ));
         }
-        let sealed = manifest::seal_manifest(body, signer, &self.keys.manifest_enc, self.config.zstd_level.max(1))?;
-        match self.backend.put(&format!("manifests/{}", body.image_id), &sealed)? {
+        let sealed = manifest::seal_manifest(
+            body,
+            signer,
+            &self.keys.manifest_enc,
+            self.config.zstd_level.max(1),
+        )?;
+        match self
+            .backend
+            .put(&format!("manifests/{}", body.image_id), &sealed)?
+        {
             PutOutcome::Created => Ok(()),
-            PutOutcome::AlreadyExists => Err(Error::InvalidArgument(format!("image {} already exists", body.image_id))),
+            PutOutcome::AlreadyExists => Err(Error::InvalidArgument(format!(
+                "image {} already exists",
+                body.image_id
+            ))),
         }
     }
 
@@ -318,7 +438,10 @@ impl Repository {
             .backend
             .list("manifests")?
             .iter()
-            .filter_map(|k| k.strip_prefix("manifests/").and_then(|s| Uuid::parse_str(s).ok()))
+            .filter_map(|k| {
+                k.strip_prefix("manifests/")
+                    .and_then(|s| Uuid::parse_str(s).ok())
+            })
             .collect();
         ids.sort();
         Ok(ids)
@@ -346,7 +469,11 @@ impl Repository {
                 Err(e) => bad.push((id, e)),
             }
         }
-        ok.sort_by(|a, b| a.created_unix.cmp(&b.created_unix).then(a.image_id.cmp(&b.image_id)));
+        ok.sort_by(|a, b| {
+            a.created_unix
+                .cmp(&b.created_unix)
+                .then(a.image_id.cmp(&b.image_id))
+        });
         Ok((ok, bad))
     }
 
@@ -356,11 +483,17 @@ impl Repository {
             return Ok(u);
         }
         let s = s.to_ascii_lowercase();
-        let matches: Vec<Uuid> = self.list_image_ids()?.into_iter().filter(|u| u.to_string().starts_with(&s)).collect();
+        let matches: Vec<Uuid> = self
+            .list_image_ids()?
+            .into_iter()
+            .filter(|u| u.to_string().starts_with(&s))
+            .collect();
         match matches.len() {
             1 => Ok(matches[0]),
             0 => Err(Error::NotFound(format!("image {s}"))),
-            _ => Err(Error::InvalidArgument(format!("image prefix {s} is ambiguous"))),
+            _ => Err(Error::InvalidArgument(format!(
+                "image prefix {s} is ambiguous"
+            ))),
         }
     }
 }
@@ -382,7 +515,10 @@ mod tests {
     use crate::manifest::tests::sample_body;
 
     fn fast() -> InitOptions {
-        InitOptions { kdf: KdfParams::INSECURE_FAST, ..Default::default() }
+        InitOptions {
+            kdf: KdfParams::INSECURE_FAST,
+            ..Default::default()
+        }
     }
 
     fn new_repo() -> (tempfile::TempDir, Repository, RecoveryKey) {
@@ -396,7 +532,10 @@ mod tests {
     fn init_unlock_and_reject_wrong_passphrase() {
         let (dir, r, rk) = new_repo();
         let b: Arc<dyn Backend> = Arc::new(LocalBackend::open(dir.path().join("r")).unwrap());
-        assert!(matches!(Repository::unlock_with_passphrase(b.clone(), b"nope"), Err(Error::WrongKey)));
+        assert!(matches!(
+            Repository::unlock_with_passphrase(b.clone(), b"nope"),
+            Err(Error::WrongKey)
+        ));
         let r2 = Repository::unlock_with_passphrase(b.clone(), b"pass").unwrap();
         let r3 = Repository::unlock_with_recovery_key(b.clone(), &rk).unwrap();
         assert_eq!(r.chunk_id(b"x"), r2.chunk_id(b"x"));
@@ -408,7 +547,8 @@ mod tests {
     #[test]
     fn added_passphrase_works() {
         let (_dir, r, _) = new_repo();
-        r.add_passphrase(b"second", KdfParams::INSECURE_FAST).unwrap();
+        r.add_passphrase(b"second", KdfParams::INSECURE_FAST)
+            .unwrap();
         let r2 = Repository::unlock_with_passphrase(r.backend().clone(), b"second").unwrap();
         assert_eq!(r.chunk_id(b"x"), r2.chunk_id(b"x"));
     }
@@ -420,7 +560,10 @@ mod tests {
         let id = r.chunk_id(&data);
         assert!(!r.has_chunk(&id).unwrap());
         assert_eq!(r.put_chunk(&id, &data).unwrap().0, PutOutcome::Created);
-        assert_eq!(r.put_chunk(&id, &data).unwrap().0, PutOutcome::AlreadyExists);
+        assert_eq!(
+            r.put_chunk(&id, &data).unwrap().0,
+            PutOutcome::AlreadyExists
+        );
         assert_eq!(r.get_chunk(&id).unwrap(), data);
         // Corrupt on disk.
         let h = id.to_hex();
@@ -466,7 +609,12 @@ mod tests {
             nonce: vec![0; 24],
             sealed: vec![0; 48],
         };
-        r.backend().put(&format!("signers/{}.json", fake.key_id), &serde_json::to_vec(&rec).unwrap()).unwrap();
+        r.backend()
+            .put(
+                &format!("signers/{}.json", fake.key_id),
+                &serde_json::to_vec(&rec).unwrap(),
+            )
+            .unwrap();
         assert!(r.verifying_key(&fake.key_id).is_err());
     }
 }

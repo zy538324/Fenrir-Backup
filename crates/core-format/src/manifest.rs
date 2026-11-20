@@ -254,7 +254,10 @@ impl ManifestBody {
             return Err(Error::malformed("not an image manifest"));
         }
         if self.version != BODY_VERSION {
-            return Err(Error::UnsupportedVersion { what: "manifest", version: self.version });
+            return Err(Error::UnsupportedVersion {
+                what: "manifest",
+                version: self.version,
+            });
         }
         crate::chunk::check_chunk_size(self.chunk_size)?;
         let cs = self.chunk_size as u64;
@@ -263,16 +266,25 @@ impl ManifestBody {
             let mut prev: Option<u64> = None;
             for c in &d.chunks {
                 if c.0 >= n_chunks {
-                    return Err(Error::malformed(format!("disk {}: chunk index {} beyond disk", d.index, c.0)));
+                    return Err(Error::malformed(format!(
+                        "disk {}: chunk index {} beyond disk",
+                        d.index, c.0
+                    )));
                 }
                 if prev.is_some_and(|p| c.0 <= p) {
-                    return Err(Error::malformed(format!("disk {}: chunk list not strictly ordered", d.index)));
+                    return Err(Error::malformed(format!(
+                        "disk {}: chunk list not strictly ordered",
+                        d.index
+                    )));
                 }
                 prev = Some(c.0);
             }
             for e in &d.used_extents {
                 if e.end() > d.size {
-                    return Err(Error::malformed(format!("disk {}: used extent beyond disk", d.index)));
+                    return Err(Error::malformed(format!(
+                        "disk {}: used extent beyond disk",
+                        d.index
+                    )));
                 }
             }
         }
@@ -281,7 +293,10 @@ impl ManifestBody {
 
     /// Every distinct chunk this image references.
     pub fn chunk_ids(&self) -> std::collections::BTreeSet<ChunkId> {
-        self.disks.iter().flat_map(|d| d.chunks.iter().map(|c| c.1)).collect()
+        self.disks
+            .iter()
+            .flat_map(|d| d.chunks.iter().map(|c| c.1))
+            .collect()
     }
 }
 
@@ -309,7 +324,10 @@ impl ManifestSigner {
 
     pub fn from_seed(seed: [u8; 32]) -> Self {
         let key = SigningKey::from_bytes(&seed);
-        ManifestSigner { key_id: key_id_for(&key.verifying_key()), key }
+        ManifestSigner {
+            key_id: key_id_for(&key.verifying_key()),
+            key,
+        }
     }
 
     pub fn seed(&self) -> [u8; 32] {
@@ -326,7 +344,12 @@ pub fn key_id_for(vk: &VerifyingKey) -> String {
     hex::encode(&blake3::hash(vk.as_bytes()).as_bytes()[..16])
 }
 
-pub fn seal_manifest(body: &ManifestBody, signer: &ManifestSigner, enc_key: &SecretKey, zstd_level: i32) -> Result<Vec<u8>> {
+pub fn seal_manifest(
+    body: &ManifestBody,
+    signer: &ManifestSigner,
+    enc_key: &SecretKey,
+    zstd_level: i32,
+) -> Result<Vec<u8>> {
     body.validate()?;
     let body_json = serde_json::to_string(body)?;
     let sig = signer.key.sign(body_json.as_bytes());
@@ -338,7 +361,15 @@ pub fn seal_manifest(body: &ManifestBody, signer: &ManifestSigner, enc_key: &Sec
         body: body_json,
     };
     let pt = serde_json::to_vec(&env)?;
-    object::seal_object(MAGIC_MANIFEST, enc_key, body.image_id.as_bytes(), &pt, &SealOptions { zstd_level: Some(zstd_level) })
+    object::seal_object(
+        MAGIC_MANIFEST,
+        enc_key,
+        body.image_id.as_bytes(),
+        &pt,
+        &SealOptions {
+            zstd_level: Some(zstd_level),
+        },
+    )
 }
 
 /// Decrypt a manifest object and return its envelope (signature not yet checked).
@@ -350,7 +381,10 @@ pub fn open_envelope(image_id: &Uuid, enc_key: &SecretKey, data: &[u8]) -> Resul
         return Err(Error::malformed("not a manifest envelope"));
     }
     if env.version != 1 {
-        return Err(Error::UnsupportedVersion { what: "manifest envelope", version: env.version });
+        return Err(Error::UnsupportedVersion {
+            what: "manifest envelope",
+            version: env.version,
+        });
     }
     Ok(env)
 }
@@ -367,7 +401,9 @@ pub fn verify_envelope(env: &Envelope, vk: &VerifyingKey, image_id: &Uuid) -> Re
         .map_err(|_| Error::integrity(format!("manifest {image_id}: bad signature")))?;
     let body: ManifestBody = serde_json::from_str(&env.body)?;
     if body.image_id != *image_id {
-        return Err(Error::integrity("manifest image id does not match its name"));
+        return Err(Error::integrity(
+            "manifest image id does not match its name",
+        ));
     }
     body.validate()?;
     Ok(body)
@@ -389,7 +425,10 @@ pub(crate) mod tests {
             kind: ImageKind::Full,
             parent: None,
             label: None,
-            machine: MachineInfo { machine_id: "m1".into(), hostname: "host".into() },
+            machine: MachineInfo {
+                machine_id: "m1".into(),
+                hostname: "host".into(),
+            },
             consistency: Consistency::Application,
             chunk_size: crate::chunk::DEFAULT_CHUNK_SIZE,
             hash: "blake3-keyed".into(),

@@ -28,14 +28,27 @@ pub struct CompositeDisk {
 }
 
 impl CompositeDisk {
-    pub fn new(info: DiskInfo, raw: SharedReader, mut overlays: Vec<Overlay>, plan: CapturePlan) -> io::Result<Self> {
+    pub fn new(
+        info: DiskInfo,
+        raw: SharedReader,
+        mut overlays: Vec<Overlay>,
+        plan: CapturePlan,
+    ) -> io::Result<Self> {
         overlays.sort_by_key(|o| o.start);
         for w in overlays.windows(2) {
             if w[0].start + w[0].len > w[1].start {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "overlapping snapshot overlays"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "overlapping snapshot overlays",
+                ));
             }
         }
-        Ok(CompositeDisk { info, raw, overlays, plan })
+        Ok(CompositeDisk {
+            info,
+            raw,
+            overlays,
+            plan,
+        })
     }
 }
 
@@ -50,11 +63,20 @@ impl DiskSource for CompositeDisk {
         while pos < end {
             let done = (pos - offset) as usize;
             // Overlay containing pos, or the next overlay after pos.
-            let cur = self.overlays.iter().find(|o| pos >= o.start && pos < o.start + o.len);
+            let cur = self
+                .overlays
+                .iter()
+                .find(|o| pos >= o.start && pos < o.start + o.len);
             let (stop, dev, dev_off): (u64, &SharedReader, u64) = match cur {
                 Some(o) => ((o.start + o.len).min(end), &o.device, pos - o.start),
                 None => {
-                    let next = self.overlays.iter().filter(|o| o.start > pos).map(|o| o.start).min().unwrap_or(u64::MAX);
+                    let next = self
+                        .overlays
+                        .iter()
+                        .filter(|o| o.start > pos)
+                        .map(|o| o.start)
+                        .min()
+                        .unwrap_or(u64::MAX);
                     (next.min(end), &self.raw, pos)
                 }
             };
@@ -80,9 +102,23 @@ mod tests {
         let snap_a: SharedReader = Arc::new((0..20u8).collect::<Vec<u8>>());
         let snap_b: SharedReader = Arc::new(vec![b'b'; 10]);
         let d = CompositeDisk::new(
-            DiskInfo { size: 100, ..Default::default() },
+            DiskInfo {
+                size: 100,
+                ..Default::default()
+            },
             raw,
-            vec![Overlay { start: 60, len: 10, device: snap_b }, Overlay { start: 10, len: 20, device: snap_a }],
+            vec![
+                Overlay {
+                    start: 60,
+                    len: 10,
+                    device: snap_b,
+                },
+                Overlay {
+                    start: 10,
+                    len: 20,
+                    device: snap_a,
+                },
+            ],
             CapturePlan::default(),
         )
         .unwrap();
@@ -101,7 +137,17 @@ mod tests {
     #[test]
     fn rejects_overlapping_overlays() {
         let r: SharedReader = Arc::new(vec![0u8; 10]);
-        let o = |s| Overlay { start: s, len: 5, device: r.clone() };
-        assert!(CompositeDisk::new(DiskInfo::default(), r.clone(), vec![o(0), o(3)], CapturePlan::default()).is_err());
+        let o = |s| Overlay {
+            start: s,
+            len: 5,
+            device: r.clone(),
+        };
+        assert!(CompositeDisk::new(
+            DiskInfo::default(),
+            r.clone(),
+            vec![o(0), o(3)],
+            CapturePlan::default()
+        )
+        .is_err());
     }
 }

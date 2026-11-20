@@ -51,7 +51,10 @@ pub(crate) struct Throttle {
 
 impl Throttle {
     pub fn new() -> Self {
-        Throttle { start: Instant::now(), bytes: 0 }
+        Throttle {
+            start: Instant::now(),
+            bytes: 0,
+        }
     }
 
     pub fn account(&mut self, n: u64, ctl: &JobControl) {

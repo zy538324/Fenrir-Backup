@@ -19,7 +19,9 @@ pub struct DestructiveConfirmation {
 
 impl DestructiveConfirmation {
     pub fn confirmed_by_user(target: impl AsRef<Path>) -> Self {
-        DestructiveConfirmation { target: target.as_ref().to_path_buf() }
+        DestructiveConfirmation {
+            target: target.as_ref().to_path_buf(),
+        }
     }
     pub fn target(&self) -> &Path {
         &self.target
@@ -51,7 +53,12 @@ impl FileTarget {
     ///   mounted partition / device-mapper child; must be >= `min_size`.
     /// * Windows raw devices are refused in Phase 1: physical-disk restore
     ///   runs from the recovery environment.
-    pub fn open(path: &Path, min_size: u64, create: bool, confirm: &DestructiveConfirmation) -> Result<FileTarget> {
+    pub fn open(
+        path: &Path,
+        min_size: u64,
+        create: bool,
+        confirm: &DestructiveConfirmation,
+    ) -> Result<FileTarget> {
         if confirm.target() != path {
             return Err(EngineError::Safety(format!(
                 "confirmation was given for {} but the target is {}",
@@ -72,7 +79,9 @@ impl FileTarget {
         let is_block = match &meta {
             Ok(m) => is_block_device(m),
             Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-            Err(e) => return Err(io::Error::new(e.kind(), format!("{}: {e}", path.display())).into()),
+            Err(e) => {
+                return Err(io::Error::new(e.kind(), format!("{}: {e}", path.display())).into())
+            }
         };
         if is_block {
             #[cfg(target_os = "linux")]
@@ -87,21 +96,44 @@ impl FileTarget {
                     min_size
                 )));
             }
-            return Ok(FileTarget { file: f, path: path.to_path_buf(), size, is_block_device: true });
+            return Ok(FileTarget {
+                file: f,
+                path: path.to_path_buf(),
+                size,
+                is_block_device: true,
+            });
         }
         match &meta {
             Ok(m) if !m.is_file() => {
-                return Err(EngineError::Safety(format!("{} is neither a regular file nor a block device", path.display())))
+                return Err(EngineError::Safety(format!(
+                    "{} is neither a regular file nor a block device",
+                    path.display()
+                )))
             }
-            Err(_) if !create => return Err(EngineError::InvalidInput(format!("{} does not exist", path.display()))),
+            Err(_) if !create => {
+                return Err(EngineError::InvalidInput(format!(
+                    "{} does not exist",
+                    path.display()
+                )))
+            }
             _ => {}
         }
-        let f = OpenOptions::new().read(true).write(true).create(create).truncate(false).open(path)?;
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(create)
+            .truncate(false)
+            .open(path)?;
         let cur = f.metadata()?.len();
         if cur < min_size {
             f.set_len(min_size)?; // sparse where supported
         }
-        Ok(FileTarget { file: f, path: path.to_path_buf(), size: cur.max(min_size), is_block_device: false })
+        Ok(FileTarget {
+            file: f,
+            path: path.to_path_buf(),
+            size: cur.max(min_size),
+            is_block_device: false,
+        })
     }
 }
 
@@ -129,7 +161,11 @@ impl WriteTarget for FileTarget {
         {
             let mut done = 0;
             while done < data.len() {
-                done += std::os::windows::fs::FileExt::seek_write(&self.file, &data[done..], offset + done as u64)?;
+                done += std::os::windows::fs::FileExt::seek_write(
+                    &self.file,
+                    &data[done..],
+                    offset + done as u64,
+                )?;
             }
             Ok(())
         }
@@ -159,7 +195,9 @@ pub mod linux {
     fn device_tree(major: u64, minor: u64) -> Vec<String> {
         let mut out = vec![format!("{major}:{minor}")];
         let base = format!("/sys/dev/block/{major}:{minor}");
-        let Ok(real) = std::fs::canonicalize(&base) else { return out };
+        let Ok(real) = std::fs::canonicalize(&base) else {
+            return out;
+        };
         let mut stack = vec![real];
         while let Some(dir) = stack.pop() {
             // Partitions are subdirectories with a `dev` file; holders are
@@ -201,7 +239,10 @@ pub mod linux {
                 if let Some(mm) = line.split_whitespace().nth(2) {
                     if devs.iter().any(|d| d == mm) {
                         let mp = line.split_whitespace().nth(4).unwrap_or("?");
-                        return Err(EngineError::Safety(format!("{} is in use: mounted at {mp}", path.display())));
+                        return Err(EngineError::Safety(format!(
+                            "{} is in use: mounted at {mp}",
+                            path.display()
+                        )));
                     }
                 }
             }
@@ -212,7 +253,10 @@ pub mod linux {
                     if let Ok(sm) = std::fs::metadata(dev) {
                         let (a, b) = major_minor(sm.rdev());
                         if devs.contains(&format!("{a}:{b}")) {
-                            return Err(EngineError::Safety(format!("{} is in use as swap", path.display())));
+                            return Err(EngineError::Safety(format!(
+                                "{} is in use as swap",
+                                path.display()
+                            )));
                         }
                     }
                 }
@@ -220,7 +264,9 @@ pub mod linux {
         }
         if devs.len() > 1 {
             // Holders (dm, md, LVM) that are not mounted may still be in use.
-            let holders = std::fs::read_dir(format!("/sys/dev/block/{maj}:{min}/holders")).map(|r| r.count()).unwrap_or(0);
+            let holders = std::fs::read_dir(format!("/sys/dev/block/{maj}:{min}/holders"))
+                .map(|r| r.count())
+                .unwrap_or(0);
             if holders > 0 {
                 return Err(EngineError::Safety(format!(
                     "{} is held by device-mapper/md (LVM, RAID or encryption); deactivate it first",
@@ -241,7 +287,8 @@ pub mod linux {
             assert_eq!(major_minor(0x801), (8, 1));
             let (maj, min) = (259u64, 65537u64);
             #[allow(clippy::identity_op)]
-            let dev = (maj & 0xfff) << 8 | (min & 0xff) | ((min & !0xff) << 12) | ((maj & !0xfff) << 32);
+            let dev =
+                (maj & 0xfff) << 8 | (min & 0xff) | ((min & !0xff) << 12) | ((maj & !0xfff) << 32);
             assert_eq!(major_minor(dev), (259, 65537));
         }
     }

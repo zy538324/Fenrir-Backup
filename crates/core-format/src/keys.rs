@@ -68,31 +68,56 @@ fn slot_aad(repo_id: &Uuid, slot_id: &Uuid, kind: SlotKind) -> Vec<u8> {
 }
 
 impl KeySlot {
-    pub fn wrap_with_passphrase(repo_id: &Uuid, master: &SecretKey, passphrase: &[u8], params: KdfParams) -> Result<Self> {
+    pub fn wrap_with_passphrase(
+        repo_id: &Uuid,
+        master: &SecretKey,
+        passphrase: &[u8],
+        params: KdfParams,
+    ) -> Result<Self> {
         if passphrase.is_empty() {
-            return Err(Error::InvalidArgument("passphrase must not be empty".into()));
+            return Err(Error::InvalidArgument(
+                "passphrase must not be empty".into(),
+            ));
         }
         let mut salt = vec![0u8; 16];
         crypto::fill_random(&mut salt)?;
         let kek = crypto::derive_from_passphrase(passphrase, &salt, params)?;
         let slot_id = Uuid::new_v4();
         let nonce = crypto::random_nonce()?;
-        let wrapped = crypto::seal(&kek, &nonce, &slot_aad(repo_id, &slot_id, SlotKind::Passphrase), master.as_bytes())?;
+        let wrapped = crypto::seal(
+            &kek,
+            &nonce,
+            &slot_aad(repo_id, &slot_id, SlotKind::Passphrase),
+            master.as_bytes(),
+        )?;
         Ok(KeySlot {
             format: KEY_SLOT_FORMAT.into(),
             version: 1,
             slot_id,
             kind: SlotKind::Passphrase,
-            kdf: Some(KdfRecord { alg: "argon2id".into(), params, salt }),
+            kdf: Some(KdfRecord {
+                alg: "argon2id".into(),
+                params,
+                salt,
+            }),
             nonce: nonce.to_vec(),
             wrapped,
         })
     }
 
-    pub fn wrap_with_recovery_key(repo_id: &Uuid, master: &SecretKey, recovery: &RecoveryKey) -> Result<Self> {
+    pub fn wrap_with_recovery_key(
+        repo_id: &Uuid,
+        master: &SecretKey,
+        recovery: &RecoveryKey,
+    ) -> Result<Self> {
         let slot_id = recovery.slot_id;
         let nonce = crypto::random_nonce()?;
-        let wrapped = crypto::seal(&recovery.key, &nonce, &slot_aad(repo_id, &slot_id, SlotKind::Recovery), master.as_bytes())?;
+        let wrapped = crypto::seal(
+            &recovery.key,
+            &nonce,
+            &slot_aad(repo_id, &slot_id, SlotKind::Recovery),
+            master.as_bytes(),
+        )?;
         Ok(KeySlot {
             format: KEY_SLOT_FORMAT.into(),
             version: 1,
@@ -109,7 +134,10 @@ impl KeySlot {
             return Err(Error::malformed("not a key slot"));
         }
         if self.version != 1 {
-            return Err(Error::UnsupportedVersion { what: "key slot", version: self.version });
+            return Err(Error::UnsupportedVersion {
+                what: "key slot",
+                version: self.version,
+            });
         }
         Ok(())
     }
@@ -119,7 +147,10 @@ impl KeySlot {
         if self.kind != SlotKind::Passphrase {
             return Err(Error::WrongKey);
         }
-        let kdf = self.kdf.as_ref().ok_or_else(|| Error::malformed("passphrase slot without kdf"))?;
+        let kdf = self
+            .kdf
+            .as_ref()
+            .ok_or_else(|| Error::malformed("passphrase slot without kdf"))?;
         if kdf.alg != "argon2id" {
             return Err(Error::malformed(format!("unknown kdf {}", kdf.alg)));
         }
@@ -127,7 +158,11 @@ impl KeySlot {
         self.unwrap_with(&kek, repo_id)
     }
 
-    pub fn unwrap_with_recovery_key(&self, repo_id: &Uuid, recovery: &RecoveryKey) -> Result<SecretKey> {
+    pub fn unwrap_with_recovery_key(
+        &self,
+        repo_id: &Uuid,
+        recovery: &RecoveryKey,
+    ) -> Result<SecretKey> {
         self.check_header()?;
         if self.kind != SlotKind::Recovery || self.slot_id != recovery.slot_id {
             return Err(Error::WrongKey);
@@ -136,9 +171,17 @@ impl KeySlot {
     }
 
     fn unwrap_with(&self, kek: &SecretKey, repo_id: &Uuid) -> Result<SecretKey> {
-        let pt = crypto::open(kek, &self.nonce, &slot_aad(repo_id, &self.slot_id, self.kind), &self.wrapped)
-            .map_err(|_| Error::WrongKey)?;
-        let bytes: [u8; KEY_LEN] = pt.as_slice().try_into().map_err(|_| Error::malformed("master key length"))?;
+        let pt = crypto::open(
+            kek,
+            &self.nonce,
+            &slot_aad(repo_id, &self.slot_id, self.kind),
+            &self.wrapped,
+        )
+        .map_err(|_| Error::WrongKey)?;
+        let bytes: [u8; KEY_LEN] = pt
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::malformed("master key length"))?;
         Ok(SecretKey::from_bytes(bytes))
     }
 }
@@ -164,7 +207,11 @@ struct RecoveryKeyFile {
 
 impl RecoveryKey {
     pub fn generate(repo_id: Uuid) -> Result<Self> {
-        Ok(RecoveryKey { repo_id, slot_id: Uuid::new_v4(), key: SecretKey::generate()? })
+        Ok(RecoveryKey {
+            repo_id,
+            slot_id: Uuid::new_v4(),
+            key: SecretKey::generate()?,
+        })
     }
 
     pub fn to_file_contents(&self) -> String {
@@ -186,11 +233,21 @@ impl RecoveryKey {
             return Err(Error::malformed("not a recovery key file"));
         }
         if f.version != 1 {
-            return Err(Error::UnsupportedVersion { what: "recovery key", version: f.version });
+            return Err(Error::UnsupportedVersion {
+                what: "recovery key",
+                version: f.version,
+            });
         }
         let raw = b64::decode(&f.key)?;
-        let bytes: [u8; KEY_LEN] = raw.as_slice().try_into().map_err(|_| Error::malformed("recovery key length"))?;
-        Ok(RecoveryKey { repo_id: f.repo_id, slot_id: f.slot_id, key: SecretKey::from_bytes(bytes) })
+        let bytes: [u8; KEY_LEN] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::malformed("recovery key length"))?;
+        Ok(RecoveryKey {
+            repo_id: f.repo_id,
+            slot_id: f.slot_id,
+            key: SecretKey::from_bytes(bytes),
+        })
     }
 }
 
@@ -224,13 +281,26 @@ mod tests {
     fn passphrase_slot_roundtrip() {
         let repo = Uuid::new_v4();
         let m = SecretKey::generate().unwrap();
-        let slot = KeySlot::wrap_with_passphrase(&repo, &m, b"correct horse", KdfParams::INSECURE_FAST).unwrap();
+        let slot =
+            KeySlot::wrap_with_passphrase(&repo, &m, b"correct horse", KdfParams::INSECURE_FAST)
+                .unwrap();
         let json = serde_json::to_string(&slot).unwrap();
         let slot: KeySlot = serde_json::from_str(&json).unwrap();
-        assert_eq!(slot.unwrap_with_passphrase(&repo, b"correct horse").unwrap().as_bytes(), m.as_bytes());
-        assert!(matches!(slot.unwrap_with_passphrase(&repo, b"wrong"), Err(Error::WrongKey)));
+        assert_eq!(
+            slot.unwrap_with_passphrase(&repo, b"correct horse")
+                .unwrap()
+                .as_bytes(),
+            m.as_bytes()
+        );
+        assert!(matches!(
+            slot.unwrap_with_passphrase(&repo, b"wrong"),
+            Err(Error::WrongKey)
+        ));
         // Slot bound to its repository.
-        assert!(matches!(slot.unwrap_with_passphrase(&Uuid::new_v4(), b"correct horse"), Err(Error::WrongKey)));
+        assert!(matches!(
+            slot.unwrap_with_passphrase(&Uuid::new_v4(), b"correct horse"),
+            Err(Error::WrongKey)
+        ));
     }
 
     #[test]
@@ -240,7 +310,12 @@ mod tests {
         let rk = RecoveryKey::generate(repo).unwrap();
         let slot = KeySlot::wrap_with_recovery_key(&repo, &m, &rk).unwrap();
         let rk2 = RecoveryKey::from_file_contents(&rk.to_file_contents()).unwrap();
-        assert_eq!(slot.unwrap_with_recovery_key(&repo, &rk2).unwrap().as_bytes(), m.as_bytes());
+        assert_eq!(
+            slot.unwrap_with_recovery_key(&repo, &rk2)
+                .unwrap()
+                .as_bytes(),
+            m.as_bytes()
+        );
         let other = RecoveryKey::generate(repo).unwrap();
         assert!(slot.unwrap_with_recovery_key(&repo, &other).is_err());
     }
@@ -248,6 +323,9 @@ mod tests {
     #[test]
     fn empty_passphrase_rejected() {
         let m = SecretKey::generate().unwrap();
-        assert!(KeySlot::wrap_with_passphrase(&Uuid::new_v4(), &m, b"", KdfParams::INSECURE_FAST).is_err());
+        assert!(
+            KeySlot::wrap_with_passphrase(&Uuid::new_v4(), &m, b"", KdfParams::INSECURE_FAST)
+                .is_err()
+        );
     }
 }

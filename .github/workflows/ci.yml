@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: fmt
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked
+      - name: test
+        run: cargo test --workspace --locked
+
+  # The VSS path needs real Windows with admin rights; GitHub's Windows
+  # runners have both. Imaging the whole runner disk would take too long,
+  # so this takes a real VSS snapshot set with writers, reads NTFS bitmaps,
+  # resolves pagefile extents, probe-reads every partition through the
+  # shadow devices, then aborts. It exercises all the hand-written FFI.
+  # Full backup/restore of Windows guests runs in the VM matrix
+  # (docs/TESTING.md).
+  windows-vss-smoke:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p cli --locked
+      - name: backup system --dry-run (VSS)
+        shell: pwsh
+        run: |
+          .\target\release\fenrir.exe --json backup system --dry-run | Tee-Object -FilePath plan.json
+          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 10) { exit 1 }
+          $p = Get-Content plan.json | ConvertFrom-Json
+          if (-not $p.ok) { exit 1 }
+          $snap = $p.result.disks.partitions | Where-Object { $_.capture -eq 'snapshot_bitmap' }
+          if (-not $snap) { Write-Error 'no partition was captured through a VSS snapshot'; exit 1 }
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: cargo audit
+        run: cargo audit
+      - name: cargo deny (licences, sources, advisories)
+        run: cargo deny check
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: fuzz each target briefly
+        working-directory: fuzz
+        run: |
+          for t in manifest_envelope sealed_object partition_table key_files; do
+            cargo +nightly fuzz run "$t" -- -max_total_time=60 -rss_limit_mb=2048
+          done

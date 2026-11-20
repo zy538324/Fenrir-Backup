@@ -19,16 +19,30 @@ pub struct DiskLayout {
 /// the start of the disk to the first partition (MBR boot code and the
 /// post-MBR gap some BIOS bootloaders use), and boot-critical partitions
 /// (ESP, MSR, recovery, BIOS boot).
-pub fn plan_disk(src: &dyn DiskSource, size: u64, table: &PartitionTable, plan: &CapturePlan) -> DiskLayout {
+pub fn plan_disk(
+    src: &dyn DiskSource,
+    size: u64,
+    table: &PartitionTable,
+    plan: &CapturePlan,
+) -> DiskLayout {
     let whole = Extent(0, size);
     let mut used = table.raw_extents();
     let mut records = Vec::new();
 
     if table.scheme == Scheme::None {
-        return DiskLayout { used: vec![whole], partitions: records };
+        return DiskLayout {
+            used: vec![whole],
+            partitions: records,
+        };
     }
 
-    let first_start = table.partitions.iter().filter(|p| p.role != PartitionRole::Extended).map(|p| p.start).min().unwrap_or(size);
+    let first_start = table
+        .partitions
+        .iter()
+        .filter(|p| p.role != PartitionRole::Extended)
+        .map(|p| p.start)
+        .min()
+        .unwrap_or(size);
     used.push(Extent(0, first_start.min(size)));
 
     for p in &table.partitions {
@@ -59,10 +73,20 @@ pub fn plan_disk(src: &dyn DiskSource, size: u64, table: &PartitionTable, plan: 
                 }
                 None => (vec![pext], pp.capture),
             },
-            Some(pp) => (vec![pext], if pp.capture == CaptureMethod::SnapshotBitmap { CaptureMethod::SnapshotFull } else { pp.capture }),
+            Some(pp) => (
+                vec![pext],
+                if pp.capture == CaptureMethod::SnapshotBitmap {
+                    CaptureMethod::SnapshotFull
+                } else {
+                    pp.capture
+                },
+            ),
             None => (vec![pext], CaptureMethod::RawFull),
         };
-        let fs = pp.and_then(|x| x.filesystem).filter(|f| *f != FsType::Unknown).unwrap_or(detected);
+        let fs = pp
+            .and_then(|x| x.filesystem)
+            .filter(|f| *f != FsType::Unknown)
+            .unwrap_or(detected);
         records.push(PartitionRecord {
             entry: p.clone(),
             filesystem: fs,
@@ -78,5 +102,8 @@ pub fn plan_disk(src: &dyn DiskSource, size: u64, table: &PartitionTable, plan: 
         });
         used.extend(captured);
     }
-    DiskLayout { used: extent::clip(&extent::normalize(used), whole), partitions: records }
+    DiskLayout {
+        used: extent::clip(&extent::normalize(used), whole),
+        partitions: records,
+    }
 }

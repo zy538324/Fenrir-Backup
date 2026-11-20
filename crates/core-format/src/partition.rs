@@ -39,7 +39,13 @@ pub enum PartitionRole {
 impl PartitionRole {
     /// Partitions that make a disk boot. Always imaged in full.
     pub fn is_boot_critical(&self) -> bool {
-        matches!(self, PartitionRole::Esp | PartitionRole::Msr | PartitionRole::Recovery | PartitionRole::BiosBoot)
+        matches!(
+            self,
+            PartitionRole::Esp
+                | PartitionRole::Msr
+                | PartitionRole::Recovery
+                | PartitionRole::BiosBoot
+        )
     }
 }
 
@@ -66,7 +72,9 @@ pub fn role_for_gpt_type(t: &Uuid) -> PartitionRole {
         x if x == BIOS_BOOT => PartitionRole::BiosBoot,
         x if x == LINUX_SWAP => PartitionRole::Swap,
         x if x == LINUX_LVM => PartitionRole::Lvm,
-        x if x == BASIC_DATA || x == LINUX_FS || x == LINUX_ROOT_X86_64 || x == LINUX_XBOOTLDR => PartitionRole::Data,
+        x if x == BASIC_DATA || x == LINUX_FS || x == LINUX_ROOT_X86_64 || x == LINUX_XBOOTLDR => {
+            PartitionRole::Data
+        }
         _ => PartitionRole::Unknown,
     }
 }
@@ -145,7 +153,10 @@ fn yes() -> bool {
 
 impl PartitionTable {
     pub fn raw_extents(&self) -> Vec<Extent> {
-        self.raw_regions.iter().map(|r| Extent(r.offset, r.data.len() as u64)).collect()
+        self.raw_regions
+            .iter()
+            .map(|r| Extent(r.offset, r.data.len() as u64))
+            .collect()
     }
 }
 
@@ -156,7 +167,10 @@ const MAX_EBR_CHAIN: usize = 256;
 pub fn detect_sector_size(src: &dyn ReadAt, disk_size: u64) -> u32 {
     for ss in [512u32, 4096] {
         let mut sig = [0u8; 8];
-        if disk_size >= 2 * ss as u64 && src.read_at(ss as u64, &mut sig).is_ok() && &sig == b"EFI PART" {
+        if disk_size >= 2 * ss as u64
+            && src.read_at(ss as u64, &mut sig).is_ok()
+            && &sig == b"EFI PART"
+        {
             return ss;
         }
     }
@@ -166,7 +180,9 @@ pub fn detect_sector_size(src: &dyn ReadAt, disk_size: u64) -> u32 {
 /// Parse the partition table of a disk.
 pub fn read_table(src: &dyn ReadAt, disk_size: u64, sector_size: u32) -> Result<PartitionTable> {
     if !(512..=65536).contains(&sector_size) || !sector_size.is_power_of_two() {
-        return Err(Error::InvalidArgument(format!("bad sector size {sector_size}")));
+        return Err(Error::InvalidArgument(format!(
+            "bad sector size {sector_size}"
+        )));
     }
     let ss = sector_size as u64;
     if disk_size < ss {
@@ -284,7 +300,10 @@ fn parse_gpt_header(sector: &[u8], expected_lba: u64) -> Result<GptHeader> {
 fn read_gpt_entries(src: &dyn ReadAt, hdr: &GptHeader, ss: u64, disk_size: u64) -> Result<Vec<u8>> {
     let bytes = hdr.num_entries as u64 * hdr.entry_size as u64;
     let padded = bytes.div_ceil(ss) * ss;
-    let off = hdr.entries_lba.checked_mul(ss).ok_or_else(|| Error::malformed("GPT entries LBA overflow"))?;
+    let off = hdr
+        .entries_lba
+        .checked_mul(ss)
+        .ok_or_else(|| Error::malformed("GPT entries LBA overflow"))?;
     if off.checked_add(padded).is_none_or(|e| e > disk_size) {
         return Err(Error::malformed("GPT entries beyond end of disk"));
     }
@@ -296,22 +315,33 @@ fn read_gpt_entries(src: &dyn ReadAt, hdr: &GptHeader, ss: u64, disk_size: u64) 
     Ok(buf)
 }
 
-fn read_gpt(src: &dyn ReadAt, disk_size: u64, sector_size: u32, mbr: Vec<u8>) -> Result<PartitionTable> {
+fn read_gpt(
+    src: &dyn ReadAt,
+    disk_size: u64,
+    sector_size: u32,
+    mbr: Vec<u8>,
+) -> Result<PartitionTable> {
     let ss = sector_size as u64;
     let last_lba = disk_size / ss - 1;
     let mut sec = vec![0u8; ss as usize];
     src.read_at(ss, &mut sec)?;
 
-    let mut regions = vec![RawRegion { offset: 0, data: mbr }];
+    let mut regions = vec![RawRegion {
+        offset: 0,
+        data: mbr,
+    }];
 
     // Prefer the primary header; fall back to the backup at the last LBA.
-    let primary = parse_gpt_header(&sec, 1).and_then(|h| read_gpt_entries(src, &h, ss, disk_size).map(|e| (h, e)));
+    let primary = parse_gpt_header(&sec, 1)
+        .and_then(|h| read_gpt_entries(src, &h, ss, disk_size).map(|e| (h, e)));
     let (hdr, entries, from_primary) = match primary {
         Ok((h, e)) => (h, e, true),
         Err(primary_err) => {
             let mut bsec = vec![0u8; ss as usize];
             src.read_at(last_lba * ss, &mut bsec)?;
-            match parse_gpt_header(&bsec, last_lba).and_then(|h| read_gpt_entries(src, &h, ss, disk_size).map(|e| (h, e))) {
+            match parse_gpt_header(&bsec, last_lba)
+                .and_then(|h| read_gpt_entries(src, &h, ss, disk_size).map(|e| (h, e)))
+            {
                 Ok((h, e)) => (h, e, false),
                 Err(_) => return Err(primary_err),
             }
@@ -320,20 +350,36 @@ fn read_gpt(src: &dyn ReadAt, disk_size: u64, sector_size: u32, mbr: Vec<u8>) ->
 
     if from_primary {
         // Primary: LBA1 header followed by entries (normally at LBA 2).
-        regions.push(RawRegion { offset: ss, data: sec.clone() });
-        regions.push(RawRegion { offset: hdr.entries_lba * ss, data: entries.clone() });
+        regions.push(RawRegion {
+            offset: ss,
+            data: sec.clone(),
+        });
+        regions.push(RawRegion {
+            offset: hdr.entries_lba * ss,
+            data: entries.clone(),
+        });
     }
 
     // Backup header and entries.
-    let alt_lba = if from_primary { hdr.alt_lba } else { hdr.my_lba };
+    let alt_lba = if from_primary {
+        hdr.alt_lba
+    } else {
+        hdr.my_lba
+    };
     let mut backup_valid = false;
     if alt_lba <= last_lba && alt_lba > 1 {
         let mut bsec = vec![0u8; ss as usize];
         src.read_at(alt_lba * ss, &mut bsec)?;
         if let Ok(bh) = parse_gpt_header(&bsec, alt_lba) {
             if let Ok(be) = read_gpt_entries(src, &bh, ss, disk_size) {
-                regions.push(RawRegion { offset: bh.entries_lba * ss, data: be });
-                regions.push(RawRegion { offset: alt_lba * ss, data: bsec });
+                regions.push(RawRegion {
+                    offset: bh.entries_lba * ss,
+                    data: be,
+                });
+                regions.push(RawRegion {
+                    offset: alt_lba * ss,
+                    data: bsec,
+                });
                 backup_valid = true;
             }
         }
@@ -349,9 +395,16 @@ fn read_gpt(src: &dyn ReadAt, disk_size: u64, sector_size: u32, mbr: Vec<u8>) ->
         let first = u64::from_le_bytes(e[32..40].try_into().unwrap());
         let last = u64::from_le_bytes(e[40..48].try_into().unwrap());
         if last < first || last > last_lba {
-            return Err(Error::malformed(format!("GPT entry {} has invalid LBA range", i + 1)));
+            return Err(Error::malformed(format!(
+                "GPT entry {} has invalid LBA range",
+                i + 1
+            )));
         }
-        let name_u16: Vec<u16> = e[56..128].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+        let name_u16: Vec<u16> = e[56..128]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&c| c != 0)
+            .collect();
         parts.push(PartitionEntry {
             number: i as u32 + 1,
             start: first * ss,
@@ -387,11 +440,19 @@ fn mbr_entry(e: &[u8]) -> (bool, u8, u64, u64) {
     )
 }
 
-fn read_mbr(src: &dyn ReadAt, disk_size: u64, sector_size: u32, mbr: Vec<u8>) -> Result<PartitionTable> {
+fn read_mbr(
+    src: &dyn ReadAt,
+    disk_size: u64,
+    sector_size: u32,
+    mbr: Vec<u8>,
+) -> Result<PartitionTable> {
     let ss = sector_size as u64;
     let sig = u32::from_le_bytes(mbr[440..444].try_into().unwrap());
     let mut parts = Vec::new();
-    let mut regions = vec![RawRegion { offset: 0, data: mbr.clone() }];
+    let mut regions = vec![RawRegion {
+        offset: 0,
+        data: mbr.clone(),
+    }];
     let mut extended_base = None;
     for i in 0..4 {
         let (boot, t, lba, count) = mbr_entry(&mbr[446 + i * 16..462 + i * 16]);
@@ -427,7 +488,10 @@ fn read_mbr(src: &dyn ReadAt, disk_size: u64, sector_size: u32, mbr: Vec<u8>) ->
             if ebr[510] != 0x55 || ebr[511] != 0xAA {
                 return Err(Error::malformed("EBR signature missing"));
             }
-            regions.push(RawRegion { offset: ebr_lba * ss, data: ebr.clone() });
+            regions.push(RawRegion {
+                offset: ebr_lba * ss,
+                data: ebr.clone(),
+            });
             let (boot, t, rel, count) = mbr_entry(&ebr[446..462]);
             if t != 0 && count != 0 {
                 parts.push(PartitionEntry {
@@ -453,7 +517,10 @@ fn read_mbr(src: &dyn ReadAt, disk_size: u64, sector_size: u32, mbr: Vec<u8>) ->
     }
     for p in &parts {
         if p.start + p.length > disk_size {
-            return Err(Error::malformed(format!("MBR partition {} extends beyond end of disk", p.number)));
+            return Err(Error::malformed(format!(
+                "MBR partition {} extends beyond end of disk",
+                p.number
+            )));
         }
     }
     Ok(PartitionTable {
@@ -526,7 +593,8 @@ pub mod testutil {
         m.fill(0);
         m[446 + 4] = 0xEE;
         m[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
-        m[446 + 12..446 + 16].copy_from_slice(&((total_lba - 1).min(u32::MAX as u64) as u32).to_le_bytes());
+        m[446 + 12..446 + 16]
+            .copy_from_slice(&((total_lba - 1).min(u32::MAX as u64) as u32).to_le_bytes());
         m[510] = 0x55;
         m[511] = 0xAA;
 
@@ -568,9 +636,24 @@ mod tests {
             ss,
             Uuid::from_u128(42),
             &[
-                GptPart { type_guid: gpt_types::ESP, first_lba: lba(1 << 20), last_lba: lba(9 << 20) - 1, name: "EFI system partition" },
-                GptPart { type_guid: gpt_types::MSR, first_lba: lba(9 << 20), last_lba: lba(10 << 20) - 1, name: "Microsoft reserved partition" },
-                GptPart { type_guid: gpt_types::BASIC_DATA, first_lba: lba(10 << 20), last_lba: lba(60 << 20) - 1, name: "Basic data partition" },
+                GptPart {
+                    type_guid: gpt_types::ESP,
+                    first_lba: lba(1 << 20),
+                    last_lba: lba(9 << 20) - 1,
+                    name: "EFI system partition",
+                },
+                GptPart {
+                    type_guid: gpt_types::MSR,
+                    first_lba: lba(9 << 20),
+                    last_lba: lba(10 << 20) - 1,
+                    name: "Microsoft reserved partition",
+                },
+                GptPart {
+                    type_guid: gpt_types::BASIC_DATA,
+                    first_lba: lba(10 << 20),
+                    last_lba: lba(60 << 20) - 1,
+                    name: "Basic data partition",
+                },
             ],
         );
         d
@@ -593,7 +676,12 @@ mod tests {
             assert_eq!(t.partitions[2].length, 50 << 20);
             // MBR + primary header + entries + backup entries + backup header.
             assert_eq!(t.raw_regions.len(), 5);
-            let last = t.raw_regions.iter().map(|r| r.offset + r.data.len() as u64).max().unwrap();
+            let last = t
+                .raw_regions
+                .iter()
+                .map(|r| r.offset + r.data.len() as u64)
+                .max()
+                .unwrap();
             assert_eq!(last, d.len() as u64);
         }
     }
@@ -619,7 +707,11 @@ mod tests {
     #[test]
     fn parses_mbr() {
         let mut d = vec![0u8; 16 * 1024 * 1024];
-        write_mbr(&mut d, 0xDEADBEEF, &[(0x07, 2048, 4096, true), (0x83, 8192, 8192, false)]);
+        write_mbr(
+            &mut d,
+            0xDEADBEEF,
+            &[(0x07, 2048, 4096, true), (0x83, 8192, 8192, false)],
+        );
         let t = read_table(&d, d.len() as u64, 512).unwrap();
         assert_eq!(t.scheme, Scheme::Mbr);
         assert_eq!(t.mbr_signature, Some(0xDEADBEEF));
@@ -631,7 +723,11 @@ mod tests {
     #[test]
     fn parses_mbr_logical_partitions() {
         let mut d = vec![0u8; 16 * 1024 * 1024];
-        write_mbr(&mut d, 1, &[(0x07, 2048, 2048, false), (0x05, 4096, 20000, false)]);
+        write_mbr(
+            &mut d,
+            1,
+            &[(0x07, 2048, 2048, false), (0x05, 4096, 20000, false)],
+        );
         // EBR 1 at 4096: logical at +2048, next EBR at base+8192.
         let mut ebr = |at: usize, rel: u32, cnt: u32, next: u32| {
             let o = at * 512;
@@ -668,9 +764,38 @@ mod tests {
     }
 
     #[test]
+    fn random_and_mutated_input_never_panics() {
+        let mut x = 0x2545F4914F6CDD1Du64;
+        let mut rnd = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let base = gpt_disk(512);
+        for i in 0..400 {
+            let mut d = if i % 50 != 0 {
+                base[..(1 << 20)].to_vec()
+            } else {
+                base.clone()
+            };
+            for _ in 0..(1 + rnd() % 64) {
+                let pos = (rnd() % 40_000) as usize;
+                let len = d.len();
+                d[pos % len] = rnd() as u8;
+            }
+            let _ = read_table(&d, d.len() as u64, 512);
+            let _ = read_table(&d, d.len() as u64 * 4, 4096); // claims larger than data
+        }
+    }
+
+    #[test]
     fn unpartitioned_disk() {
         let d = vec![0u8; 1024 * 1024];
-        assert_eq!(read_table(&d, d.len() as u64, 512).unwrap().scheme, Scheme::None);
+        assert_eq!(
+            read_table(&d, d.len() as u64, 512).unwrap().scheme,
+            Scheme::None
+        );
     }
 
     #[test]
@@ -682,6 +807,9 @@ mod tests {
         d[446..510].fill(0x41);
         d[510] = 0x55;
         d[511] = 0xAA;
-        assert_eq!(read_table(&d, d.len() as u64, 512).unwrap().scheme, Scheme::None);
+        assert_eq!(
+            read_table(&d, d.len() as u64, 512).unwrap().scheme,
+            Scheme::None
+        );
     }
 }

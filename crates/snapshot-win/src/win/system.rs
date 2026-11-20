@@ -7,19 +7,19 @@ use core_format::manifest::{BootConfig, DriverInfo, Firmware, OsInfo, UefiBootEn
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID};
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
-    TOKEN_PRIVILEGES, TOKEN_QUERY,
+    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows::Win32::Storage::FileSystem::{
-    FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
-    GetVolumePathNamesForVolumeNameW,
+    FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeNameForVolumeMountPointW,
+    GetVolumePathNameW, GetVolumePathNamesForVolumeNameW,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_DWORD,
-    RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
+    RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::SystemInformation::{
-    GetFirmwareType, GetSystemWindowsDirectoryW, FIRMWARE_TYPE, FirmwareTypeBios, FirmwareTypeUefi,
+    FirmwareTypeBios, FirmwareTypeUefi, GetFirmwareType, GetSystemWindowsDirectoryW, FIRMWARE_TYPE,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::Win32::System::WindowsProgramming::GetFirmwareEnvironmentVariableW;
@@ -38,12 +38,24 @@ fn from_wide(buf: &[u16]) -> String {
 pub fn enable_privilege(name: PCWSTR) -> bool {
     unsafe {
         let mut token = HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token).is_err() {
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
+        .is_err()
+        {
             return false;
         }
         let mut luid = LUID::default();
         let ok = LookupPrivilegeValueW(PCWSTR::null(), name, &mut luid).is_ok() && {
-            let tp = TOKEN_PRIVILEGES { PrivilegeCount: 1, Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: SE_PRIVILEGE_ENABLED }] };
+            let tp = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_ENABLED,
+                }],
+            };
             AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None).is_ok()
                 && windows::Win32::Foundation::GetLastError().is_ok()
         };
@@ -75,7 +87,15 @@ pub fn reg_dword(subkey: &str, value: &str) -> Option<u32> {
     let mut d = 0u32;
     let mut len = 4u32;
     let r = unsafe {
-        RegGetValueW(HKEY_LOCAL_MACHINE, PCWSTR(k.as_ptr()), PCWSTR(v.as_ptr()), RRF_RT_REG_DWORD, None, Some(&mut d as *mut u32 as *mut c_void), Some(&mut len))
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(k.as_ptr()),
+            PCWSTR(v.as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut d as *mut u32 as *mut c_void),
+            Some(&mut len),
+        )
     };
     r.is_ok().then_some(d)
 }
@@ -91,7 +111,9 @@ pub fn hostname() -> String {
 pub fn os_info() -> OsInfo {
     let k = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
     let build = reg_string(k, "CurrentBuild").unwrap_or_default();
-    let ubr = reg_dword(k, "UBR").map(|u| format!(".{u}")).unwrap_or_default();
+    let ubr = reg_dword(k, "UBR")
+        .map(|u| format!(".{u}"))
+        .unwrap_or_default();
     OsInfo {
         family: "windows".into(),
         name: reg_string(k, "ProductName").unwrap_or_default(),
@@ -104,7 +126,14 @@ pub fn os_info() -> OsInfo {
 fn firmware_var(name: &str) -> Option<Vec<u8>> {
     let (n, g) = (wide(name), wide(EFI_GLOBAL_VARIABLE));
     let mut buf = vec![0u8; 8192];
-    let len = unsafe { GetFirmwareEnvironmentVariableW(PCWSTR(n.as_ptr()), PCWSTR(g.as_ptr()), Some(buf.as_mut_ptr().cast()), buf.len() as u32) };
+    let len = unsafe {
+        GetFirmwareEnvironmentVariableW(
+            PCWSTR(n.as_ptr()),
+            PCWSTR(g.as_ptr()),
+            Some(buf.as_mut_ptr().cast()),
+            buf.len() as u32,
+        )
+    };
     (len > 0).then(|| {
         buf.truncate(len as usize);
         buf
@@ -127,17 +156,30 @@ pub fn boot_config() -> BootConfig {
         };
     }
     if b.firmware == Firmware::Uefi {
-        b.secure_boot = reg_dword(r"SYSTEM\CurrentControlSet\Control\SecureBoot\State", "UEFISecureBootEnabled").map(|v| v != 0);
+        b.secure_boot = reg_dword(
+            r"SYSTEM\CurrentControlSet\Control\SecureBoot\State",
+            "UEFISecureBootEnabled",
+        )
+        .map(|v| v != 0);
         match firmware_var("BootOrder") {
             Some(order) => {
                 b.boot_order = parse::parse_boot_order(&order);
                 for name in b.boot_order.clone() {
-                    if let Some(o) = firmware_var(&name).as_deref().and_then(parse::parse_load_option) {
-                        b.uefi_entries.push(UefiBootEntry { name, description: o.description, path: o.device_path_hex });
+                    if let Some(o) = firmware_var(&name)
+                        .as_deref()
+                        .and_then(parse::parse_load_option)
+                    {
+                        b.uefi_entries.push(UefiBootEntry {
+                            name,
+                            description: o.description,
+                            path: o.device_path_hex,
+                        });
                     }
                 }
             }
-            None => b.notes.push("UEFI boot entries not read (SeSystemEnvironmentPrivilege unavailable)".into()),
+            None => b.notes.push(
+                "UEFI boot entries not read (SeSystemEnvironmentPrivilege unavailable)".into(),
+            ),
         }
     }
     b
@@ -150,13 +192,34 @@ pub fn boot_start_drivers() -> Vec<DriverInfo> {
     let base = r"SYSTEM\CurrentControlSet\Services";
     let wb = wide(base);
     let mut key = HKEY::default();
-    if unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(wb.as_ptr()), Some(0), KEY_READ, &mut key) }.is_err() {
+    if unsafe {
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(wb.as_ptr()),
+            Some(0),
+            KEY_READ,
+            &mut key,
+        )
+    }
+    .is_err()
+    {
         return out;
     }
     for i in 0.. {
         let mut name = vec![0u16; 256];
         let mut len = name.len() as u32;
-        let r = unsafe { RegEnumKeyExW(key, i, Some(windows::core::PWSTR(name.as_mut_ptr())), &mut len, None, None, None, None) };
+        let r = unsafe {
+            RegEnumKeyExW(
+                key,
+                i,
+                Some(windows::core::PWSTR(name.as_mut_ptr())),
+                &mut len,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
         if r.is_err() {
             break;
         }
@@ -186,9 +249,11 @@ pub fn system_volume() -> std::io::Result<String> {
         return Err(std::io::Error::other("GetSystemWindowsDirectory failed"));
     }
     let mut mount = vec![0u16; 512];
-    unsafe { GetVolumePathNameW(PCWSTR(win.as_ptr()), &mut mount) }.map_err(|e| std::io::Error::other(e.to_string()))?;
+    unsafe { GetVolumePathNameW(PCWSTR(win.as_ptr()), &mut mount) }
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut vol = vec![0u16; 64];
-    unsafe { GetVolumeNameForVolumeMountPointW(PCWSTR(mount.as_ptr()), &mut vol) }.map_err(|e| std::io::Error::other(e.to_string()))?;
+    unsafe { GetVolumeNameForVolumeMountPointW(PCWSTR(mount.as_ptr()), &mut vol) }
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(from_wide(&vol))
 }
 
@@ -196,7 +261,9 @@ pub fn system_volume() -> std::io::Result<String> {
 pub fn list_volumes() -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = vec![0u16; 64];
-    let Ok(h) = (unsafe { FindFirstVolumeW(&mut buf) }) else { return out };
+    let Ok(h) = (unsafe { FindFirstVolumeW(&mut buf) }) else {
+        return out;
+    };
     loop {
         out.push(from_wide(&buf));
         buf.fill(0);
@@ -214,8 +281,14 @@ pub fn mount_points(volume: &str) -> Vec<String> {
     let w = wide(volume);
     let mut buf = vec![0u16; 4096];
     let mut len = 0u32;
-    if unsafe { GetVolumePathNamesForVolumeNameW(PCWSTR(w.as_ptr()), Some(&mut buf), &mut len) }.is_err() {
+    if unsafe { GetVolumePathNamesForVolumeNameW(PCWSTR(w.as_ptr()), Some(&mut buf), &mut len) }
+        .is_err()
+    {
         return vec![];
     }
-    buf[..len as usize].split(|&c| c == 0).filter(|s| !s.is_empty()).map(String::from_utf16_lossy).collect()
+    buf[..len as usize]
+        .split(|&c| c == 0)
+        .filter(|s| !s.is_empty())
+        .map(String::from_utf16_lossy)
+        .collect()
 }

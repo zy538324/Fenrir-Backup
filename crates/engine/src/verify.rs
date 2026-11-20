@@ -48,7 +48,13 @@ pub struct VerifyReport {
 }
 
 /// Verify `images` (all images if `None`).
-pub fn verify(repo: &Repository, images: Option<&[Uuid]>, level: VerifyLevel, ctl: &JobControl, workers: usize) -> Result<VerifyReport> {
+pub fn verify(
+    repo: &Repository,
+    images: Option<&[Uuid]>,
+    level: VerifyLevel,
+    ctl: &JobControl,
+    workers: usize,
+) -> Result<VerifyReport> {
     let ids: Vec<Uuid> = match images {
         Some(v) => v.to_vec(),
         None => repo.list_image_ids()?,
@@ -62,7 +68,10 @@ pub fn verify(repo: &Repository, images: Option<&[Uuid]>, level: VerifyLevel, ct
                     refs.entry(c).or_default().push(*id);
                 }
             }
-            Err(e) => bad_manifests.push(ManifestProblem { image_id: *id, problem: e.to_string() }),
+            Err(e) => bad_manifests.push(ManifestProblem {
+                image_id: *id,
+                problem: e.to_string(),
+            }),
         }
     }
 
@@ -71,12 +80,19 @@ pub fn verify(repo: &Repository, images: Option<&[Uuid]>, level: VerifyLevel, ct
     let mut missing = Vec::new();
     for (c, imgs) in &refs {
         if !stored.contains(&c.object_key()) {
-            missing.push(ChunkProblem { chunk: c.to_hex(), problem: "missing".into(), images: imgs.clone() });
+            missing.push(ChunkProblem {
+                chunk: c.to_hex(),
+                problem: "missing".into(),
+                images: imgs.clone(),
+            });
         }
     }
     let missing_set: BTreeSet<String> = missing.iter().map(|m| m.chunk.clone()).collect();
 
-    let candidates: Vec<&ChunkId> = refs.keys().filter(|c| !missing_set.contains(&c.to_hex())).collect();
+    let candidates: Vec<&ChunkId> = refs
+        .keys()
+        .filter(|c| !missing_set.contains(&c.to_hex()))
+        .collect();
     let to_read: Vec<&ChunkId> = match level {
         VerifyLevel::Quick => vec![],
         VerifyLevel::Full => candidates,
@@ -91,7 +107,9 @@ pub fn verify(repo: &Repository, images: Option<&[Uuid]>, level: VerifyLevel, ct
                 if !ctl.checkpoint() {
                     break;
                 }
-                let Some(c) = queue.lock().unwrap().next().copied() else { break };
+                let Some(c) = queue.lock().unwrap().next().copied() else {
+                    break;
+                };
                 match repo.get_chunk(c) {
                     Ok(_) => {}
                     Err(e) => {
@@ -99,7 +117,11 @@ pub fn verify(repo: &Repository, images: Option<&[Uuid]>, level: VerifyLevel, ct
                             FormatError::NotFound(_) => "missing".to_string(),
                             e => e.to_string(),
                         };
-                        corrupt.lock().unwrap().push(ChunkProblem { chunk: c.to_hex(), problem, images: refs[c].clone() });
+                        corrupt.lock().unwrap().push(ChunkProblem {
+                            chunk: c.to_hex(),
+                            problem,
+                            images: refs[c].clone(),
+                        });
                     }
                 }
             });
@@ -149,7 +171,8 @@ mod tests {
         assert_eq!(sample((0..100).collect(), 0.0).len(), 0);
         assert_eq!(sample((0..3).collect(), 1.0).len(), 1);
         assert_eq!(sample((0..3).collect(), 100.0).len(), 3);
-        let s: std::collections::HashSet<i32> = sample((0..50).collect(), 100.0).into_iter().collect();
+        let s: std::collections::HashSet<i32> =
+            sample((0..50).collect(), 100.0).into_iter().collect();
         assert_eq!(s.len(), 50);
     }
 }

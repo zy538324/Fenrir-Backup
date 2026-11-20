@@ -9,10 +9,11 @@
 use std::ffi::c_void;
 use std::ptr::null_mut;
 
-use windows::core::{Interface, BSTR, GUID, HRESULT, PCWSTR};
 use windows::core::BOOL;
+use windows::core::{Interface, BSTR, GUID, HRESULT, PCWSTR};
 use windows::Win32::Storage::Vss::{
-    IVssAsync, VSS_BACKUP_TYPE, VSS_CTX_BACKUP, VSS_SNAPSHOT_PROP, VSS_S_ASYNC_CANCELLED, VSS_S_ASYNC_FINISHED,
+    IVssAsync, VSS_BACKUP_TYPE, VSS_CTX_BACKUP, VSS_SNAPSHOT_PROP, VSS_S_ASYNC_CANCELLED,
+    VSS_S_ASYNC_FINISHED,
 };
 use windows::Win32::System::Threading::INFINITE;
 
@@ -41,7 +42,15 @@ struct IVssBackupComponentsVtbl {
     GatherWriterStatus: unsafe extern "system" fn(This, *mut *mut c_void) -> HRESULT,
     GetWriterStatusCount: unsafe extern "system" fn(This, *mut u32) -> HRESULT,
     FreeWriterStatus: unsafe extern "system" fn(This) -> HRESULT,
-    GetWriterStatus: unsafe extern "system" fn(This, u32, *mut GUID, *mut GUID, *mut *mut u16, *mut i32, *mut HRESULT) -> HRESULT,
+    GetWriterStatus: unsafe extern "system" fn(
+        This,
+        u32,
+        *mut GUID,
+        *mut GUID,
+        *mut *mut u16,
+        *mut i32,
+        *mut HRESULT,
+    ) -> HRESULT,
     SetBackupSucceeded: Slot,
     SetBackupOptions: Slot,
     SetSelectedForRestore: Slot,
@@ -106,7 +115,13 @@ pub struct VssError {
 
 impl std::fmt::Display for VssError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "VSS {} failed: 0x{:08X} ({})", self.step, self.hr.0 as u32, self.hr.message())
+        write!(
+            f,
+            "VSS {} failed: 0x{:08X} ({})",
+            self.step,
+            self.hr.0 as u32,
+            self.hr.message()
+        )
     }
 }
 
@@ -127,7 +142,8 @@ fn wait(step: &'static str, f: impl FnOnce(*mut *mut c_void) -> HRESULT) -> Resu
     let a = unsafe { IVssAsync::from_raw(p) };
     unsafe { a.Wait(INFINITE) }.map_err(|e| VssError { step, hr: e.code() })?;
     let mut status = HRESULT(0);
-    unsafe { a.QueryStatus(&mut status, null_mut()) }.map_err(|e| VssError { step, hr: e.code() })?;
+    unsafe { a.QueryStatus(&mut status, null_mut()) }
+        .map_err(|e| VssError { step, hr: e.code() })?;
     if status == VSS_S_ASYNC_CANCELLED {
         return Err(VssError { step, hr: status });
     }
@@ -180,30 +196,54 @@ impl SnapshotSet {
     /// `backup_type`: `VSS_BT_COPY` leaves application log chains alone
     /// (default); `VSS_BT_FULL` lets writers such as SQL Server and
     /// Exchange truncate logs after `complete(true)`.
-    pub fn create(volumes: &[String], backup_type: VSS_BACKUP_TYPE) -> Result<SnapshotSet, VssError> {
+    pub fn create(
+        volumes: &[String],
+        backup_type: VSS_BACKUP_TYPE,
+    ) -> Result<SnapshotSet, VssError> {
         let mut raw: This = null_mut();
-        check("CreateVssBackupComponents", unsafe { CreateVssBackupComponentsInternal(&mut raw) })?;
+        check("CreateVssBackupComponents", unsafe {
+            CreateVssBackupComponentsInternal(&mut raw)
+        })?;
         let comp = Components(raw);
         let v = comp.vtbl();
         unsafe {
-            check("InitializeForBackup", (v.InitializeForBackup)(comp.0, null_mut()))?;
+            check(
+                "InitializeForBackup",
+                (v.InitializeForBackup)(comp.0, null_mut()),
+            )?;
             check("SetContext", (v.SetContext)(comp.0, VSS_CTX_BACKUP.0))?;
             // Whole-volume image: no component selection (all writers'
             // components are implicitly included), bootable system state.
-            check("SetBackupState", (v.SetBackupState)(comp.0, false, true, backup_type, false))?;
-            wait("GatherWriterMetadata", |p| (v.GatherWriterMetadata)(comp.0, p))?;
+            check(
+                "SetBackupState",
+                (v.SetBackupState)(comp.0, false, true, backup_type, false),
+            )?;
+            wait("GatherWriterMetadata", |p| {
+                (v.GatherWriterMetadata)(comp.0, p)
+            })?;
             check("FreeWriterMetadata", (v.FreeWriterMetadata)(comp.0))?;
 
             let mut set_id = GUID::zeroed();
-            check("StartSnapshotSet", (v.StartSnapshotSet)(comp.0, &mut set_id))?;
+            check(
+                "StartSnapshotSet",
+                (v.StartSnapshotSet)(comp.0, &mut set_id),
+            )?;
             let mut ids = Vec::new();
             for vol in volumes {
                 let w = wide(vol);
                 let mut sid = GUID::zeroed();
-                check("AddToSnapshotSet", (v.AddToSnapshotSet)(comp.0, w.as_ptr(), GUID::zeroed(), &mut sid))?;
+                check(
+                    "AddToSnapshotSet",
+                    (v.AddToSnapshotSet)(comp.0, w.as_ptr(), GUID::zeroed(), &mut sid),
+                )?;
                 ids.push((vol.clone(), sid));
             }
-            let mut set = SnapshotSet { comp, snapshots: vec![], writer_issues: vec![], finished: false };
+            let mut set = SnapshotSet {
+                comp,
+                snapshots: vec![],
+                writer_issues: vec![],
+                finished: false,
+            };
             let v = set.comp.vtbl();
             let c = set.comp.0;
             wait("PrepareForBackup", |p| (v.PrepareForBackup)(c, p))?;
@@ -212,10 +252,16 @@ impl SnapshotSet {
             set.collect_writer_status()?;
             for (vol, sid) in ids {
                 let mut prop = VSS_SNAPSHOT_PROP::default();
-                check("GetSnapshotProperties", (v.GetSnapshotProperties)(c, sid, &mut prop))?;
+                check(
+                    "GetSnapshotProperties",
+                    (v.GetSnapshotProperties)(c, sid, &mut prop),
+                )?;
                 let device = from_wide_ptr(prop.m_pwszSnapshotDeviceObject);
                 VssFreeSnapshotPropertiesInternal(&mut prop);
-                set.snapshots.push(Snapshot { volume: vol, device });
+                set.snapshots.push(Snapshot {
+                    volume: vol,
+                    device,
+                });
             }
             Ok(set)
         }
@@ -233,10 +279,13 @@ impl SnapshotSet {
         let w = wide(volume);
         let mut ok = BOOL(0);
         unsafe {
-            if (v.InitializeForBackup)(comp.0, null_mut()).is_err() || (v.SetContext)(comp.0, VSS_CTX_BACKUP.0).is_err() {
+            if (v.InitializeForBackup)(comp.0, null_mut()).is_err()
+                || (v.SetContext)(comp.0, VSS_CTX_BACKUP.0).is_err()
+            {
                 return false;
             }
-            (v.IsVolumeSupported)(comp.0, GUID::zeroed(), w.as_ptr(), &mut ok).is_ok() && ok.as_bool()
+            (v.IsVolumeSupported)(comp.0, GUID::zeroed(), w.as_ptr(), &mut ok).is_ok()
+                && ok.as_bool()
         }
     }
 
@@ -253,10 +302,30 @@ impl SnapshotSet {
                 let mut name: *mut u16 = null_mut();
                 let mut state = 0i32;
                 let mut failure = HRESULT(0);
-                if (v.GetWriterStatus)(c, i, &mut inst, &mut wid, &mut name, &mut state, &mut failure).is_ok() {
-                    let writer = if name.is_null() { String::new() } else { BSTR::from_raw(name).to_string() };
-                    if state >= FIRST_FAILED_STATE && !self.writer_issues.iter().any(|w| w.writer == writer) {
-                        self.writer_issues.push(WriterIssue { writer, state, failure });
+                if (v.GetWriterStatus)(
+                    c,
+                    i,
+                    &mut inst,
+                    &mut wid,
+                    &mut name,
+                    &mut state,
+                    &mut failure,
+                )
+                .is_ok()
+                {
+                    let writer = if name.is_null() {
+                        String::new()
+                    } else {
+                        BSTR::from_raw(name).to_string()
+                    };
+                    if state >= FIRST_FAILED_STATE
+                        && !self.writer_issues.iter().any(|w| w.writer == writer)
+                    {
+                        self.writer_issues.push(WriterIssue {
+                            writer,
+                            state,
+                            failure,
+                        });
                     }
                 }
             }

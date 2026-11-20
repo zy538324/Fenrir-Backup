@@ -50,7 +50,10 @@ impl FromStr for ChunkId {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self> {
         let v = hex::decode(s).map_err(|_| Error::malformed("chunk id is not hex"))?;
-        Ok(ChunkId(v.try_into().map_err(|_| Error::malformed("chunk id length"))?))
+        Ok(ChunkId(
+            v.try_into()
+                .map_err(|_| Error::malformed("chunk id length"))?,
+        ))
     }
 }
 
@@ -68,23 +71,43 @@ impl<'de> Deserialize<'de> for ChunkId {
 }
 
 /// Encrypt a chunk for storage.
-pub fn encode_chunk(enc_key: &SecretKey, id: &ChunkId, plaintext: &[u8], zstd_level: Option<i32>) -> Result<Vec<u8>> {
-    object::seal_object(MAGIC_CHUNK, enc_key, &id.0, plaintext, &SealOptions { zstd_level })
+pub fn encode_chunk(
+    enc_key: &SecretKey,
+    id: &ChunkId,
+    plaintext: &[u8],
+    zstd_level: Option<i32>,
+) -> Result<Vec<u8>> {
+    object::seal_object(
+        MAGIC_CHUNK,
+        enc_key,
+        &id.0,
+        plaintext,
+        &SealOptions { zstd_level },
+    )
 }
 
 /// Decrypt a stored chunk and check that its content hashes to `id`.
-pub fn decode_chunk(enc_key: &SecretKey, id_key: &SecretKey, id: &ChunkId, data: &[u8]) -> Result<Vec<u8>> {
+pub fn decode_chunk(
+    enc_key: &SecretKey,
+    id_key: &SecretKey,
+    id: &ChunkId,
+    data: &[u8],
+) -> Result<Vec<u8>> {
     let plain = object::open_object(MAGIC_CHUNK, enc_key, &id.0, data)
         .map_err(|e| Error::integrity(format!("chunk {id}: {e}")))?;
     if ChunkId::compute(id_key, &plain) != *id {
-        return Err(Error::integrity(format!("chunk {id}: content hash mismatch")));
+        return Err(Error::integrity(format!(
+            "chunk {id}: content hash mismatch"
+        )));
     }
     Ok(plain)
 }
 
 pub fn check_chunk_size(size: u32) -> Result<()> {
     if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&size) || !size.is_power_of_two() {
-        return Err(Error::InvalidArgument(format!("chunk size {size} must be a power of two between 64 KiB and 64 MiB")));
+        return Err(Error::InvalidArgument(format!(
+            "chunk size {size} must be a power of two between 64 KiB and 64 MiB"
+        )));
     }
     Ok(())
 }

@@ -8,12 +8,12 @@ use core_format::extent::{self, Extent};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{ERROR_MORE_DATA, GENERIC_READ, HANDLE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, OPEN_EXISTING,
+    CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, OPEN_EXISTING,
 };
 use windows::Win32::System::Ioctl::{
-    FSCTL_GET_NTFS_VOLUME_DATA, FSCTL_GET_RETRIEVAL_POINTERS, FSCTL_GET_VOLUME_BITMAP, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
-    IOCTL_STORAGE_QUERY_PROPERTY,
+    FSCTL_GET_NTFS_VOLUME_DATA, FSCTL_GET_RETRIEVAL_POINTERS, FSCTL_GET_VOLUME_BITMAP,
+    IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_STORAGE_QUERY_PROPERTY,
 };
 use windows::Win32::System::IO::DeviceIoControl;
 
@@ -119,14 +119,17 @@ pub fn volume_disk_extents(f: &File) -> io::Result<Vec<(u32, u64, u64)>> {
     if more {
         return Err(io::Error::other("volume spans more than 32 extents"));
     }
-    parse::parse_disk_extents(&out[..n]).ok_or_else(|| io::Error::other("malformed VOLUME_DISK_EXTENTS"))
+    parse::parse_disk_extents(&out[..n])
+        .ok_or_else(|| io::Error::other("malformed VOLUME_DISK_EXTENTS"))
 }
 
 /// NTFS cluster size, or None if the volume is not NTFS.
 pub fn ntfs_cluster_size(f: &File) -> Option<u64> {
     let mut out = vec![0u8; 512];
     let (n, _) = ioctl(f, FSCTL_GET_NTFS_VOLUME_DATA, &[], &mut out).ok()?;
-    (n >= 48).then(|| u32::from_le_bytes(out[44..48].try_into().unwrap()) as u64).filter(|c| *c > 0)
+    (n >= 48)
+        .then(|| u32::from_le_bytes(out[44..48].try_into().unwrap()) as u64)
+        .filter(|c| *c > 0)
 }
 
 /// Used clusters of a volume as absolute disk extents.
@@ -136,11 +139,18 @@ pub fn volume_bitmap(f: &File, cluster: u64, volume_offset: u64) -> io::Result<V
     let mut used = Vec::new();
     loop {
         let (n, more) = ioctl(f, FSCTL_GET_VOLUME_BITMAP, &lcn.to_le_bytes(), &mut out)?;
-        let (start, total) = parse::parse_bitmap_header(&out[..n]).ok_or_else(|| io::Error::other("short VOLUME_BITMAP_BUFFER"))?;
+        let (start, total) = parse::parse_bitmap_header(&out[..n])
+            .ok_or_else(|| io::Error::other("short VOLUME_BITMAP_BUFFER"))?;
         // BitmapSize counts clusters from `start` to the end of the volume;
         // this call returned as many of them as fit in the buffer.
         let clusters = (n.saturating_sub(16) as u64 * 8).min(total.max(0) as u64);
-        used.extend(parse::bitmap_to_extents(&out[16..n], start as u64, clusters, cluster, volume_offset));
+        used.extend(parse::bitmap_to_extents(
+            &out[16..n],
+            start as u64,
+            clusters,
+            cluster,
+            volume_offset,
+        ));
         if !more || clusters == 0 {
             break;
         }
@@ -155,8 +165,14 @@ pub fn file_extents(f: &File, cluster: u64, volume_offset: u64) -> io::Result<Ve
     let mut vcn: i64 = 0;
     let mut v = Vec::new();
     loop {
-        let (n, more) = ioctl(f, FSCTL_GET_RETRIEVAL_POINTERS, &vcn.to_le_bytes(), &mut out)?;
-        let (start, runs) = parse::parse_retrieval_pointers(&out, n).ok_or_else(|| io::Error::other("short RETRIEVAL_POINTERS_BUFFER"))?;
+        let (n, more) = ioctl(
+            f,
+            FSCTL_GET_RETRIEVAL_POINTERS,
+            &vcn.to_le_bytes(),
+            &mut out,
+        )?;
+        let (start, runs) = parse::parse_retrieval_pointers(&out, n)
+            .ok_or_else(|| io::Error::other("short RETRIEVAL_POINTERS_BUFFER"))?;
         v.extend(parse::runs_to_extents(start, &runs, cluster, volume_offset));
         match (more, runs.last()) {
             (true, Some(&(next, _))) => vcn = next,

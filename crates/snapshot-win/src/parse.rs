@@ -6,7 +6,13 @@ use core_format::extent::{self, Extent};
 /// Convert an NTFS volume bitmap (bit set = cluster in use, LSB first) into
 /// absolute disk byte extents. `volume_offset` is the partition's start on
 /// the disk.
-pub fn bitmap_to_extents(bits: &[u8], start_lcn: u64, clusters: u64, cluster_size: u64, volume_offset: u64) -> Vec<Extent> {
+pub fn bitmap_to_extents(
+    bits: &[u8],
+    start_lcn: u64,
+    clusters: u64,
+    cluster_size: u64,
+    volume_offset: u64,
+) -> Vec<Extent> {
     let mut out = Vec::new();
     let mut run_start: Option<u64> = None;
     for i in 0..clusters {
@@ -15,25 +21,37 @@ pub fn bitmap_to_extents(bits: &[u8], start_lcn: u64, clusters: u64, cluster_siz
         match (used, run_start) {
             (true, None) => run_start = Some(i),
             (false, Some(s)) => {
-                out.push(Extent(volume_offset + (start_lcn + s) * cluster_size, (i - s) * cluster_size));
+                out.push(Extent(
+                    volume_offset + (start_lcn + s) * cluster_size,
+                    (i - s) * cluster_size,
+                ));
                 run_start = None;
             }
             _ => {}
         }
     }
     if let Some(s) = run_start {
-        out.push(Extent(volume_offset + (start_lcn + s) * cluster_size, (clusters - s) * cluster_size));
+        out.push(Extent(
+            volume_offset + (start_lcn + s) * cluster_size,
+            (clusters - s) * cluster_size,
+        ));
     }
     extent::normalize(out)
 }
 
 /// Parse the header of a VOLUME_BITMAP_BUFFER: (StartingLcn, BitmapSize).
 pub fn parse_bitmap_header(buf: &[u8]) -> Option<(i64, i64)> {
-    Some((i64::from_le_bytes(buf.get(0..8)?.try_into().ok()?), i64::from_le_bytes(buf.get(8..16)?.try_into().ok()?)))
+    Some((
+        i64::from_le_bytes(buf.get(0..8)?.try_into().ok()?),
+        i64::from_le_bytes(buf.get(8..16)?.try_into().ok()?),
+    ))
 }
 
 /// Parse a RETRIEVAL_POINTERS_BUFFER into (starting VCN, [(next_vcn, lcn)]).
-pub fn parse_retrieval_pointers(buf: &[u8], bytes_returned: usize) -> Option<(i64, Vec<(i64, i64)>)> {
+pub fn parse_retrieval_pointers(
+    buf: &[u8],
+    bytes_returned: usize,
+) -> Option<(i64, Vec<(i64, i64)>)> {
     let buf = buf.get(..bytes_returned)?;
     let count = u32::from_le_bytes(buf.get(0..4)?.try_into().ok()?) as usize;
     let start_vcn = i64::from_le_bytes(buf.get(8..16)?.try_into().ok()?);
@@ -49,12 +67,20 @@ pub fn parse_retrieval_pointers(buf: &[u8], bytes_returned: usize) -> Option<(i6
 
 /// File runs (from retrieval pointers) to absolute disk extents. LCN -1
 /// marks a sparse/compressed run with no clusters on disk.
-pub fn runs_to_extents(start_vcn: i64, runs: &[(i64, i64)], cluster_size: u64, volume_offset: u64) -> Vec<Extent> {
+pub fn runs_to_extents(
+    start_vcn: i64,
+    runs: &[(i64, i64)],
+    cluster_size: u64,
+    volume_offset: u64,
+) -> Vec<Extent> {
     let mut out = Vec::new();
     let mut vcn = start_vcn;
     for &(next, lcn) in runs {
         if lcn >= 0 && next > vcn {
-            out.push(Extent(volume_offset + lcn as u64 * cluster_size, (next - vcn) as u64 * cluster_size));
+            out.push(Extent(
+                volume_offset + lcn as u64 * cluster_size,
+                (next - vcn) as u64 * cluster_size,
+            ));
         }
         vcn = next;
     }
@@ -110,12 +136,18 @@ pub fn parse_load_option(buf: &[u8]) -> Option<LoadOption> {
         desc.push(c);
     }
     let dp = buf.get(i..i + dp_len)?;
-    Some(LoadOption { attributes, description: String::from_utf16_lossy(&desc), device_path_hex: hex_encode(dp) })
+    Some(LoadOption {
+        attributes,
+        description: String::from_utf16_lossy(&desc),
+        device_path_hex: hex_encode(dp),
+    })
 }
 
 /// UEFI `BootOrder`: array of u16 → "Boot0001" names.
 pub fn parse_boot_order(buf: &[u8]) -> Vec<String> {
-    buf.chunks_exact(2).map(|c| format!("Boot{:04X}", u16::from_le_bytes([c[0], c[1]]))).collect()
+    buf.chunks_exact(2)
+        .map(|c| format!("Boot{:04X}", u16::from_le_bytes([c[0], c[1]])))
+        .collect()
 }
 
 fn hex_encode(b: &[u8]) -> String {
@@ -131,11 +163,24 @@ mod tests {
         // clusters 0,1 used; 2..8 free; 8..12 used; 12 free; 13..16 used
         let bits = [0b0000_0011u8, 0b1110_1111];
         let e = bitmap_to_extents(&bits, 0, 16, 4096, 1 << 20);
-        assert_eq!(e, vec![Extent(1 << 20, 8192), Extent((1 << 20) + 8 * 4096, 4 * 4096), Extent((1 << 20) + 13 * 4096, 3 * 4096)]);
+        assert_eq!(
+            e,
+            vec![
+                Extent(1 << 20, 8192),
+                Extent((1 << 20) + 8 * 4096, 4 * 4096),
+                Extent((1 << 20) + 13 * 4096, 3 * 4096)
+            ]
+        );
         // Bits past `clusters` are ignored.
-        assert_eq!(bitmap_to_extents(&[0xFF], 0, 3, 512, 0), vec![Extent(0, 1536)]);
+        assert_eq!(
+            bitmap_to_extents(&[0xFF], 0, 3, 512, 0),
+            vec![Extent(0, 1536)]
+        );
         // Non-zero starting LCN.
-        assert_eq!(bitmap_to_extents(&[0x01], 100, 8, 512, 0), vec![Extent(51200, 512)]);
+        assert_eq!(
+            bitmap_to_extents(&[0x01], 100, 8, 512, 0),
+            vec![Extent(51200, 512)]
+        );
     }
 
     #[test]
@@ -150,7 +195,10 @@ mod tests {
         }
         let (vcn, r) = parse_retrieval_pointers(&b, b.len()).unwrap();
         assert_eq!(r, runs.to_vec());
-        assert_eq!(runs_to_extents(vcn, &r, 4096, 0), vec![Extent(100 * 4096, 4 * 4096), Extent(200 * 4096, 4 * 4096)]);
+        assert_eq!(
+            runs_to_extents(vcn, &r, 4096, 0),
+            vec![Extent(100 * 4096, 4 * 4096), Extent(200 * 4096, 4 * 4096)]
+        );
         assert!(parse_retrieval_pointers(&b, 20).is_none());
     }
 
@@ -176,7 +224,10 @@ mod tests {
         assert_eq!(o.description, "Windows Boot Manager");
         assert_eq!(o.device_path_hex, "7fff0400");
         assert!(parse_load_option(&b[..10]).is_none());
-        assert_eq!(parse_boot_order(&[1, 0, 0x10, 0]), vec!["Boot0001", "Boot0010"]);
+        assert_eq!(
+            parse_boot_order(&[1, 0, 0x10, 0]),
+            vec!["Boot0001", "Boot0010"]
+        );
     }
 
     #[test]

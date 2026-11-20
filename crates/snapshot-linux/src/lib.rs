@@ -33,10 +33,17 @@ impl std::error::Error for InUse {}
 /// A block device that is mounted (or holds mounted partitions) is refused
 /// unless `allow_in_use` is set, in which case the image is marked
 /// `Consistency::Inconsistent`.
-pub fn open_disk(path: &Path, allow_in_use: bool) -> Result<OpenedDisk, Box<dyn std::error::Error + Send + Sync>> {
+pub fn open_disk(
+    path: &Path,
+    allow_in_use: bool,
+) -> Result<OpenedDisk, Box<dyn std::error::Error + Send + Sync>> {
     let mut f = File::open(path)?;
     let size = f.seek(SeekFrom::End(0))?;
-    let mut info = DiskInfo { size, device: path.display().to_string(), ..Default::default() };
+    let mut info = DiskInfo {
+        size,
+        device: path.display().to_string(),
+        ..Default::default()
+    };
     let mut warnings = Vec::new();
     let mut consistency = Consistency::Offline;
     if is_block(&f.metadata()?) {
@@ -47,23 +54,39 @@ pub fn open_disk(path: &Path, allow_in_use: bool) -> Result<OpenedDisk, Box<dyn 
                      unmount it, boot the recovery environment, or pass --allow-inconsistent"
                 ))));
             }
-            warnings.push(format!("{}: imaged while in use without a snapshot; the image may be inconsistent", path.display()));
+            warnings.push(format!(
+                "{}: imaged while in use without a snapshot; the image may be inconsistent",
+                path.display()
+            ));
             consistency = Consistency::Inconsistent;
         }
     }
-    Ok(OpenedDisk { source: ReadAtSource { inner: f, info }, consistency, warnings })
+    Ok(OpenedDisk {
+        source: ReadAtSource { inner: f, info },
+        consistency,
+        warnings,
+    })
 }
 
 /// Fill in sector sizes and identity; Err if the device is in use.
 #[cfg(target_os = "linux")]
-fn describe_block_device(path: &Path, f: &File, info: &mut DiskInfo) -> Result<(), engine::EngineError> {
-    (info.logical_sector_size, info.physical_sector_size) = linux::sector_sizes(f).unwrap_or((512, 512));
+fn describe_block_device(
+    path: &Path,
+    f: &File,
+    info: &mut DiskInfo,
+) -> Result<(), engine::EngineError> {
+    (info.logical_sector_size, info.physical_sector_size) =
+        linux::sector_sizes(f).unwrap_or((512, 512));
     (info.model, info.serial) = linux::model_serial(path);
     engine::target::linux::check_block_device_unused(path)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn describe_block_device(_path: &Path, _f: &File, _info: &mut DiskInfo) -> Result<(), engine::EngineError> {
+fn describe_block_device(
+    _path: &Path,
+    _f: &File,
+    _info: &mut DiskInfo,
+) -> Result<(), engine::EngineError> {
     Ok(())
 }
 
@@ -118,8 +141,15 @@ mod linux {
     }
 
     pub fn model_serial(path: &Path) -> (String, String) {
-        let name = std::fs::canonicalize(path).ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
-        let rd = |f: &str| std::fs::read_to_string(format!("/sys/block/{name}/{f}")).map(|s| s.trim().to_string()).unwrap_or_default();
+        let name = std::fs::canonicalize(path)
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        let rd = |f: &str| {
+            std::fs::read_to_string(format!("/sys/block/{name}/{f}"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        };
         (rd("device/model"), rd("device/serial"))
     }
 }

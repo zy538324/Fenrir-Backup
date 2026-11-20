@@ -47,8 +47,11 @@ impl std::fmt::Debug for SecretKey {
 }
 
 pub fn fill_random(buf: &mut [u8]) -> Result<()> {
-    getrandom::getrandom(buf)
-        .map_err(|e| Error::Io(std::io::Error::other(format!("OS random source failed: {e}"))))
+    getrandom::getrandom(buf).map_err(|e| {
+        Error::Io(std::io::Error::other(format!(
+            "OS random source failed: {e}"
+        )))
+    })
 }
 
 pub fn random_nonce() -> Result<[u8; NONCE_LEN]> {
@@ -57,10 +60,21 @@ pub fn random_nonce() -> Result<[u8; NONCE_LEN]> {
     Ok(n)
 }
 
-pub fn seal(key: &SecretKey, nonce: &[u8; NONCE_LEN], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+pub fn seal(
+    key: &SecretKey,
+    nonce: &[u8; NONCE_LEN],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(key.as_bytes().into());
     cipher
-        .encrypt(XNonce::from_slice(nonce), Payload { msg: plaintext, aad })
+        .encrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| Error::integrity("encryption failed"))
 }
 
@@ -72,7 +86,13 @@ pub fn open(key: &SecretKey, nonce: &[u8], aad: &[u8], ciphertext: &[u8]) -> Res
     }
     let cipher = XChaCha20Poly1305::new(key.as_bytes().into());
     cipher
-        .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad })
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .map_err(|_| Error::integrity("authentication failed"))
 }
 
@@ -91,10 +111,18 @@ impl KdfParams {
     /// Default for new repositories: 64 MiB, 3 passes, 1 lane (the OWASP
     /// and RFC 9106 "second recommended option" ballpark). Runs well inside
     /// the recovery environment's memory budget.
-    pub const DEFAULT: KdfParams = KdfParams { m_cost_kib: 64 * 1024, t_cost: 3, p_cost: 1 };
+    pub const DEFAULT: KdfParams = KdfParams {
+        m_cost_kib: 64 * 1024,
+        t_cost: 3,
+        p_cost: 1,
+    };
 
     /// Cheap parameters for tests only.
-    pub const INSECURE_FAST: KdfParams = KdfParams { m_cost_kib: 64, t_cost: 1, p_cost: 1 };
+    pub const INSECURE_FAST: KdfParams = KdfParams {
+        m_cost_kib: 64,
+        t_cost: 1,
+        p_cost: 1,
+    };
 
     /// Bounds a reader enforces before running the KDF so a hostile key
     /// file cannot exhaust memory or time.
@@ -109,10 +137,19 @@ impl KdfParams {
     }
 }
 
-pub fn derive_from_passphrase(passphrase: &[u8], salt: &[u8], params: KdfParams) -> Result<SecretKey> {
+pub fn derive_from_passphrase(
+    passphrase: &[u8],
+    salt: &[u8],
+    params: KdfParams,
+) -> Result<SecretKey> {
     params.check_bounds()?;
-    let p = argon2::Params::new(params.m_cost_kib, params.t_cost, params.p_cost, Some(KEY_LEN))
-        .map_err(|e| Error::InvalidArgument(format!("argon2 params: {e}")))?;
+    let p = argon2::Params::new(
+        params.m_cost_kib,
+        params.t_cost,
+        params.p_cost,
+        Some(KEY_LEN),
+    )
+    .map_err(|e| Error::InvalidArgument(format!("argon2 params: {e}")))?;
     let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, p);
     let mut out = [0u8; KEY_LEN];
     a.hash_password_into(passphrase, salt, &mut out)
@@ -131,7 +168,9 @@ pub mod b64 {
     }
 
     pub fn decode(s: &str) -> crate::Result<Vec<u8>> {
-        STANDARD.decode(s).map_err(|e| crate::Error::malformed(format!("base64: {e}")))
+        STANDARD
+            .decode(s)
+            .map_err(|e| crate::Error::malformed(format!("base64: {e}")))
     }
 
     /// serde helper for `Vec<u8>` fields stored as base64 strings.
@@ -169,16 +208,23 @@ mod tests {
 
     #[test]
     fn kdf_is_deterministic_and_salted() {
-        let a = derive_from_passphrase(b"pw", b"saltsaltsaltsalt", KdfParams::INSECURE_FAST).unwrap();
-        let b = derive_from_passphrase(b"pw", b"saltsaltsaltsalt", KdfParams::INSECURE_FAST).unwrap();
-        let c = derive_from_passphrase(b"pw", b"SALTSALTSALTSALT", KdfParams::INSECURE_FAST).unwrap();
+        let a =
+            derive_from_passphrase(b"pw", b"saltsaltsaltsalt", KdfParams::INSECURE_FAST).unwrap();
+        let b =
+            derive_from_passphrase(b"pw", b"saltsaltsaltsalt", KdfParams::INSECURE_FAST).unwrap();
+        let c =
+            derive_from_passphrase(b"pw", b"SALTSALTSALTSALT", KdfParams::INSECURE_FAST).unwrap();
         assert_eq!(a.as_bytes(), b.as_bytes());
         assert_ne!(a.as_bytes(), c.as_bytes());
     }
 
     #[test]
     fn kdf_bounds_rejected() {
-        let p = KdfParams { m_cost_kib: u32::MAX, t_cost: 1, p_cost: 1 };
+        let p = KdfParams {
+            m_cost_kib: u32::MAX,
+            t_cost: 1,
+            p_cost: 1,
+        };
         assert!(derive_from_passphrase(b"pw", b"saltsaltsaltsalt", p).is_err());
     }
 

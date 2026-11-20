@@ -89,7 +89,13 @@ mod tests {
 
     #[test]
     fn normalize_merges() {
-        let v = normalize(vec![Extent(10, 5), Extent(0, 5), Extent(5, 5), Extent(30, 0), Extent(12, 10)]);
+        let v = normalize(vec![
+            Extent(10, 5),
+            Extent(0, 5),
+            Extent(5, 5),
+            Extent(30, 0),
+            Extent(12, 10),
+        ]);
         assert_eq!(v, vec![Extent(0, 22)]);
     }
 
@@ -97,7 +103,10 @@ mod tests {
     fn subtract_holes() {
         let v = vec![Extent(0, 100), Extent(200, 100)];
         let h = vec![Extent(10, 10), Extent(90, 120), Extent(290, 50)];
-        assert_eq!(subtract(&v, &h), vec![Extent(0, 10), Extent(20, 70), Extent(210, 80)]);
+        assert_eq!(
+            subtract(&v, &h),
+            vec![Extent(0, 10), Extent(20, 70), Extent(210, 80)]
+        );
         assert_eq!(subtract(&v, &[]), v);
     }
 

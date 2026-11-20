@@ -32,7 +32,13 @@ pub struct SealOptions {
     pub zstd_level: Option<i32>,
 }
 
-pub fn seal_object(magic: [u8; 4], key: &SecretKey, binding: &[u8], plaintext: &[u8], opts: &SealOptions) -> Result<Vec<u8>> {
+pub fn seal_object(
+    magic: [u8; 4],
+    key: &SecretKey,
+    binding: &[u8],
+    plaintext: &[u8],
+    opts: &SealOptions,
+) -> Result<Vec<u8>> {
     if plaintext.len() > MAX_PLAINTEXT {
         return Err(Error::InvalidArgument("object too large".into()));
     }
@@ -67,7 +73,12 @@ pub fn seal_object(magic: [u8; 4], key: &SecretKey, binding: &[u8], plaintext: &
     Ok(out)
 }
 
-pub fn open_object(magic: [u8; 4], key: &SecretKey, binding: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+pub fn open_object(
+    magic: [u8; 4],
+    key: &SecretKey,
+    binding: &[u8],
+    data: &[u8],
+) -> Result<Vec<u8>> {
     if data.len() < HEADER_LEN + TAG_LEN {
         return Err(Error::integrity("object truncated"));
     }
@@ -76,7 +87,10 @@ pub fn open_object(magic: [u8; 4], key: &SecretKey, binding: &[u8], data: &[u8])
         return Err(Error::integrity("bad object magic"));
     }
     if header[4] != 1 {
-        return Err(Error::UnsupportedVersion { what: "object container", version: header[4] as u32 });
+        return Err(Error::UnsupportedVersion {
+            what: "object container",
+            version: header[4] as u32,
+        });
     }
     let flags = header[5];
     if flags & !FLAG_ZSTD != 0 || header[6] != 0 || header[7] != 0 {
@@ -93,7 +107,8 @@ pub fn open_object(magic: [u8; 4], key: &SecretKey, binding: &[u8], data: &[u8])
     let plain = if flags & FLAG_ZSTD != 0 {
         // Capacity bounds decompression: a payload expanding beyond the
         // declared length is an error, not an allocation.
-        zstd::bulk::decompress(&payload, plain_len).map_err(|e| Error::integrity(format!("decompression: {e}")))?
+        zstd::bulk::decompress(&payload, plain_len)
+            .map_err(|e| Error::integrity(format!("decompression: {e}")))?
     } else {
         payload
     };
@@ -108,7 +123,9 @@ mod tests {
     use super::*;
 
     fn opts() -> SealOptions {
-        SealOptions { zstd_level: Some(3) }
+        SealOptions {
+            zstd_level: Some(3),
+        }
     }
 
     #[test]
@@ -135,7 +152,10 @@ mod tests {
         for i in 0..o.len() {
             let mut t = o.clone();
             t[i] ^= 0x40;
-            assert!(open_object(MAGIC_CHUNK, &k, b"id", &t).is_err(), "flip at {i} not detected");
+            assert!(
+                open_object(MAGIC_CHUNK, &k, b"id", &t).is_err(),
+                "flip at {i} not detected"
+            );
         }
         assert!(open_object(MAGIC_CHUNK, &k, b"other-id", &o).is_err());
         assert!(open_object(MAGIC_MANIFEST, &k, b"id", &o).is_err());

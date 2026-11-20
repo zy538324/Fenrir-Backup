@@ -5,7 +5,9 @@ use std::sync::{Arc, RwLock};
 use core_format::backend::{Backend, LocalBackend, PutOutcome};
 use core_format::crypto::KdfParams;
 use core_format::extent::Extent;
-use core_format::manifest::{BootConfig, CaptureMethod, Consistency, ImageKind, MachineInfo, OsInfo};
+use core_format::manifest::{
+    BootConfig, CaptureMethod, Consistency, ImageKind, MachineInfo, OsInfo,
+};
 use core_format::partition::testutil::{write_gpt, write_mbr, GptPart};
 use core_format::partition::{gpt_types, PartitionTable};
 use core_format::{InitOptions, Repository};
@@ -24,7 +26,12 @@ struct MemDisk {
 
 impl DiskSource for MemDisk {
     fn info(&self) -> DiskInfo {
-        DiskInfo { size: self.data.read().unwrap().len() as u64, logical_sector_size: 512, physical_sector_size: 4096, ..Default::default() }
+        DiskInfo {
+            size: self.data.read().unwrap().len() as u64,
+            logical_sector_size: 512,
+            physical_sector_size: 4096,
+            ..Default::default()
+        }
     }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         core_format::io::ReadAt::read_at(&*self.data.read().unwrap(), offset, buf)
@@ -68,20 +75,47 @@ fn make_disk() -> MemDisk {
         512,
         Uuid::from_u128(7),
         &[
-            GptPart { type_guid: gpt_types::ESP, first_lba: lba(MIB), last_lba: lba(5 * MIB) - 1, name: "EFI" },
-            GptPart { type_guid: gpt_types::MSR, first_lba: lba(5 * MIB), last_lba: lba(6 * MIB) - 1, name: "MSR" },
-            GptPart { type_guid: gpt_types::BASIC_DATA, first_lba: lba(6 * MIB), last_lba: lba(30 * MIB) - 1, name: "Windows" },
+            GptPart {
+                type_guid: gpt_types::ESP,
+                first_lba: lba(MIB),
+                last_lba: lba(5 * MIB) - 1,
+                name: "EFI",
+            },
+            GptPart {
+                type_guid: gpt_types::MSR,
+                first_lba: lba(5 * MIB),
+                last_lba: lba(6 * MIB) - 1,
+                name: "MSR",
+            },
+            GptPart {
+                type_guid: gpt_types::BASIC_DATA,
+                first_lba: lba(6 * MIB),
+                last_lba: lba(30 * MIB) - 1,
+                name: "Windows",
+            },
         ],
     );
     d[(6 * MIB) as usize + 3..(6 * MIB) as usize + 11].copy_from_slice(b"NTFS    ");
-    MemDisk { data: RwLock::new(d), used_in_data: Some(vec![Extent(6 * MIB, 4 * MIB), Extent(20 * MIB, 3 * MIB / 2)]) }
+    MemDisk {
+        data: RwLock::new(d),
+        used_in_data: Some(vec![
+            Extent(6 * MIB, 4 * MIB),
+            Extent(20 * MIB, 3 * MIB / 2),
+        ]),
+    }
 }
 
 fn meta() -> ImageMeta {
     ImageMeta {
-        machine: MachineInfo { machine_id: "test-machine".into(), hostname: "t".into() },
+        machine: MachineInfo {
+            machine_id: "test-machine".into(),
+            hostname: "t".into(),
+        },
         consistency: Consistency::Application,
-        os: OsInfo { family: "windows".into(), ..Default::default() },
+        os: OsInfo {
+            family: "windows".into(),
+            ..Default::default()
+        },
         boot: BootConfig::default(),
         drivers: vec![],
         label: None,
@@ -91,18 +125,47 @@ fn meta() -> ImageMeta {
 
 fn new_repo(dir: &std::path::Path) -> Repository {
     let b: Arc<dyn Backend> = Arc::new(LocalBackend::create(dir.join("repo")).unwrap());
-    Repository::init(b, b"pw", InitOptions { chunk_size: CS, kdf: KdfParams::INSECURE_FAST, ..Default::default() }).unwrap().0
+    Repository::init(
+        b,
+        b"pw",
+        InitOptions {
+            chunk_size: CS,
+            kdf: KdfParams::INSECURE_FAST,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .0
 }
 
 fn run_backup(repo: &Repository, disk: &MemDisk) -> engine::Result<BackupReport> {
-    backup(repo, &[disk as &dyn DiskSource], meta(), &BackupOptions { workers: 3, rate_limit: 0 }, &JobControl::new(), &|_| {})
+    backup(
+        repo,
+        &[disk as &dyn DiskSource],
+        meta(),
+        &BackupOptions {
+            workers: 3,
+            rate_limit: 0,
+        },
+        &JobControl::new(),
+        &|_| {},
+    )
 }
 
 fn restore_to(repo: &Repository, id: Uuid, path: &std::path::Path) -> RestoreReport {
     let m = repo.load_manifest(&id).unwrap();
     let c = DestructiveConfirmation::confirmed_by_user(path);
     let t = FileTarget::open(path, m.disks[0].size, true, &c).unwrap();
-    restore_disk(repo, &m, 0, &t, &RestoreOptions::default(), &JobControl::new(), &|_, _| {}).unwrap()
+    restore_disk(
+        repo,
+        &m,
+        0,
+        &t,
+        &RestoreOptions::default(),
+        &JobControl::new(),
+        &|_, _| {},
+    )
+    .unwrap()
 }
 
 fn in_extents(off: u64, ex: &[Extent]) -> bool {
@@ -121,7 +184,10 @@ fn backup_restore_roundtrip_is_exact_on_used_ranges() {
     let d0 = &m.disks[0];
     assert_eq!(d0.partition_table.partitions.len(), 3);
     assert_eq!(d0.partitions[2].capture, CaptureMethod::SnapshotBitmap);
-    assert_eq!(d0.partitions[2].filesystem, core_format::fsdetect::FsType::Ntfs);
+    assert_eq!(
+        d0.partitions[2].filesystem,
+        core_format::fsdetect::FsType::Ntfs
+    );
     // ESP and MSR captured in full even though the source offered no plan.
     assert_eq!(d0.partitions[0].captured_bytes, 4 * MIB);
     assert_eq!(d0.partitions[1].captured_bytes, MIB);
@@ -170,13 +236,21 @@ fn second_backup_stores_only_changed_chunks() {
     let out = dir.path().join("r2.img");
     restore_to(&repo, second.image_id, &out);
     let restored = std::fs::read(&out).unwrap();
-    assert!(restored[(7 * MIB) as usize..(7 * MIB) as usize + 4096].iter().all(|&b| b == 0xAB));
-    assert!(restored[(15 * MIB) as usize..(16 * MIB) as usize].iter().all(|&b| b == 0));
+    assert!(restored[(7 * MIB) as usize..(7 * MIB) as usize + 4096]
+        .iter()
+        .all(|&b| b == 0xAB));
+    assert!(restored[(15 * MIB) as usize..(16 * MIB) as usize]
+        .iter()
+        .all(|&b| b == 0));
 
     // The first image still restores to its own content.
     let out1 = dir.path().join("r1.img");
     restore_to(&repo, first.image_id, &out1);
-    assert!(!std::fs::read(&out1).unwrap()[(7 * MIB) as usize..(7 * MIB) as usize + 4096].iter().all(|&b| b == 0xAB));
+    assert!(
+        !std::fs::read(&out1).unwrap()[(7 * MIB) as usize..(7 * MIB) as usize + 4096]
+            .iter()
+            .all(|&b| b == 0xAB)
+    );
 }
 
 #[test]
@@ -193,7 +267,9 @@ fn zero_chunks_are_not_stored() {
     std::fs::write(&out, vec![0xEEu8; (32 * MIB) as usize]).unwrap();
     restore_to(&repo, r.image_id, &out);
     let restored = std::fs::read(&out).unwrap();
-    assert!(restored[(20 * MIB) as usize..(21 * MIB + MIB / 2) as usize].iter().all(|&b| b == 0));
+    assert!(restored[(20 * MIB) as usize..(21 * MIB + MIB / 2) as usize]
+        .iter()
+        .all(|&b| b == 0));
 }
 
 #[test]
@@ -225,7 +301,16 @@ fn verify_detects_corrupt_and_missing_chunks() {
     let out = dir.path().join("x.img");
     let c = DestructiveConfirmation::confirmed_by_user(&out);
     let t = FileTarget::open(&out, m.disks[0].size, true, &c).unwrap();
-    assert!(restore_disk(&repo, &m, 0, &t, &RestoreOptions::default(), &JobControl::new(), &|_, _| {}).is_err());
+    assert!(restore_disk(
+        &repo,
+        &m,
+        0,
+        &t,
+        &RestoreOptions::default(),
+        &JobControl::new(),
+        &|_, _| {}
+    )
+    .is_err());
 
     std::fs::remove_file(&path).unwrap();
     let quick = verify(&repo, None, VerifyLevel::Quick, &ctl, 2).unwrap();
@@ -243,8 +328,12 @@ struct FlakyBackend {
 
 impl Backend for FlakyBackend {
     fn put(&self, key: &str, data: &[u8]) -> core_format::Result<PutOutcome> {
-        if key.starts_with("chunks/") && self.puts.fetch_add(1, Ordering::SeqCst) >= self.fail_after {
-            return Err(core_format::Error::Io(io::Error::new(io::ErrorKind::ConnectionReset, "injected network failure")));
+        if key.starts_with("chunks/") && self.puts.fetch_add(1, Ordering::SeqCst) >= self.fail_after
+        {
+            return Err(core_format::Error::Io(io::Error::new(
+                io::ErrorKind::ConnectionReset,
+                "injected network failure",
+            )));
         }
         self.inner.put(key, data)
     }
@@ -270,18 +359,31 @@ fn interrupted_backup_leaves_no_manifest_and_resumes() {
     let dir = tempfile::tempdir().unwrap();
     let repo = new_repo(dir.path());
     let disk = make_disk();
-    let flaky: Arc<dyn Backend> =
-        Arc::new(FlakyBackend { inner: LocalBackend::open(dir.path().join("repo")).unwrap(), puts: AtomicUsize::new(0), fail_after: 4 });
+    let flaky: Arc<dyn Backend> = Arc::new(FlakyBackend {
+        inner: LocalBackend::open(dir.path().join("repo")).unwrap(),
+        puts: AtomicUsize::new(0),
+        fail_after: 4,
+    });
     let flaky_repo = Repository::unlock_with_passphrase(flaky, b"pw").unwrap();
     let err = run_backup(&flaky_repo, &disk).unwrap_err();
     assert!(err.to_string().contains("injected"), "{err}");
-    assert!(repo.list_image_ids().unwrap().is_empty(), "no manifest after failure");
+    assert!(
+        repo.list_image_ids().unwrap().is_empty(),
+        "no manifest after failure"
+    );
     let stored_before = repo.backend().list("chunks").unwrap().len();
     assert!(stored_before >= 4);
 
     let r = run_backup(&repo, &disk).unwrap();
-    assert_eq!(r.stats.chunks_new as usize + stored_before, r.stats.chunks_total as usize);
-    assert!(verify(&repo, None, VerifyLevel::Full, &JobControl::new(), 2).unwrap().ok);
+    assert_eq!(
+        r.stats.chunks_new as usize + stored_before,
+        r.stats.chunks_total as usize
+    );
+    assert!(
+        verify(&repo, None, VerifyLevel::Full, &JobControl::new(), 2)
+            .unwrap()
+            .ok
+    );
 }
 
 #[test]
@@ -291,7 +393,15 @@ fn cancelled_backup_writes_no_manifest() {
     let disk = make_disk();
     let ctl = JobControl::new();
     ctl.cancel();
-    let e = backup(&repo, &[&disk as &dyn DiskSource], meta(), &BackupOptions::default(), &ctl, &|_| {}).unwrap_err();
+    let e = backup(
+        &repo,
+        &[&disk as &dyn DiskSource],
+        meta(),
+        &BackupOptions::default(),
+        &ctl,
+        &|_| {},
+    )
+    .unwrap_err();
     assert!(matches!(e, EngineError::Cancelled));
     assert!(repo.list_image_ids().unwrap().is_empty());
 }
@@ -307,7 +417,10 @@ fn restore_refuses_mismatched_confirmation_and_small_target() {
     let a = dir.path().join("a.img");
     let b = dir.path().join("b.img");
     let c = DestructiveConfirmation::confirmed_by_user(&a);
-    assert!(matches!(FileTarget::open(&b, 1, true, &c), Err(EngineError::Safety(_))));
+    assert!(matches!(
+        FileTarget::open(&b, 1, true, &c),
+        Err(EngineError::Safety(_))
+    ));
     assert!(!b.exists(), "nothing created on refusal");
 
     struct Small;
@@ -325,7 +438,16 @@ fn restore_refuses_mismatched_confirmation_and_small_target() {
             "small".into()
         }
     }
-    let e = restore_disk(&repo, &m, 0, &Small, &RestoreOptions::default(), &JobControl::new(), &|_, _| {}).unwrap_err();
+    let e = restore_disk(
+        &repo,
+        &m,
+        0,
+        &Small,
+        &RestoreOptions::default(),
+        &JobControl::new(),
+        &|_, _| {},
+    )
+    .unwrap_err();
     assert!(matches!(e, EngineError::Safety(_)));
 }
 
@@ -336,13 +458,35 @@ fn mbr_disk_without_plan_is_captured_in_full() {
     let mut d = pattern(9, (16 * MIB) as usize);
     // Sectors 2048.. : one partition 1–9 MiB; 9–16 MiB unpartitioned.
     write_mbr(&mut d, 0x1234_5678, &[(0x83, 2048, 16384, true)]);
-    let src = ReadAtSource { inner: d.clone(), info: DiskInfo { size: d.len() as u64, logical_sector_size: 512, ..Default::default() } };
-    let r = backup(&repo, &[&src as &dyn DiskSource], meta(), &BackupOptions::default(), &JobControl::new(), &|_| {}).unwrap();
+    let src = ReadAtSource {
+        inner: d.clone(),
+        info: DiskInfo {
+            size: d.len() as u64,
+            logical_sector_size: 512,
+            ..Default::default()
+        },
+    };
+    let r = backup(
+        &repo,
+        &[&src as &dyn DiskSource],
+        meta(),
+        &BackupOptions::default(),
+        &JobControl::new(),
+        &|_| {},
+    )
+    .unwrap();
     let m = repo.load_manifest(&r.image_id).unwrap();
-    assert_eq!(m.disks[0].used_extents, vec![Extent(0, 9 * MIB)], "MBR gap + partition, not the unpartitioned tail");
+    assert_eq!(
+        m.disks[0].used_extents,
+        vec![Extent(0, 9 * MIB)],
+        "MBR gap + partition, not the unpartitioned tail"
+    );
     let out = dir.path().join("mbr.img");
     restore_to(&repo, r.image_id, &out);
-    assert_eq!(&std::fs::read(&out).unwrap()[..(9 * MIB) as usize], &d[..(9 * MIB) as usize]);
+    assert_eq!(
+        &std::fs::read(&out).unwrap()[..(9 * MIB) as usize],
+        &d[..(9 * MIB) as usize]
+    );
 }
 
 #[test]
@@ -350,9 +494,28 @@ fn image_with_two_disks() {
     let dir = tempfile::tempdir().unwrap();
     let repo = new_repo(dir.path());
     let a = make_disk();
-    let b = ReadAtSource { inner: pattern(3, (4 * MIB) as usize), info: DiskInfo { size: 4 * MIB, logical_sector_size: 512, ..Default::default() } };
-    let r = backup(&repo, &[&a as &dyn DiskSource, &b], meta(), &BackupOptions::default(), &JobControl::new(), &|_| {}).unwrap();
+    let b = ReadAtSource {
+        inner: pattern(3, (4 * MIB) as usize),
+        info: DiskInfo {
+            size: 4 * MIB,
+            logical_sector_size: 512,
+            ..Default::default()
+        },
+    };
+    let r = backup(
+        &repo,
+        &[&a as &dyn DiskSource, &b],
+        meta(),
+        &BackupOptions::default(),
+        &JobControl::new(),
+        &|_| {},
+    )
+    .unwrap();
     let m = repo.load_manifest(&r.image_id).unwrap();
     assert_eq!(m.disks.len(), 2);
-    assert_eq!(m.disks[1].used_extents, vec![Extent(0, 4 * MIB)], "unpartitioned disk captured whole");
+    assert_eq!(
+        m.disks[1].used_extents,
+        vec![Extent(0, 4 * MIB)],
+        "unpartitioned disk captured whole"
+    );
 }

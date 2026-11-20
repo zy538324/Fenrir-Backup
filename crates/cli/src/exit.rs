@@ -53,7 +53,10 @@ pub struct CliError {
 
 impl CliError {
     pub fn new(code: ExitCode, message: impl Into<String>) -> Self {
-        CliError { code, message: message.into() }
+        CliError {
+            code,
+            message: message.into(),
+        }
     }
     pub fn usage(message: impl Into<String>) -> Self {
         Self::new(ExitCode::Usage, message)

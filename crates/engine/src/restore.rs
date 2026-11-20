@@ -23,7 +23,10 @@ pub struct RestoreOptions {
 
 impl Default for RestoreOptions {
     fn default() -> Self {
-        RestoreOptions { workers: 4, zero_fill: true }
+        RestoreOptions {
+            workers: 4,
+            zero_fill: true,
+        }
     }
 }
 
@@ -52,7 +55,11 @@ pub fn restore_disk(
         .find(|d| d.index == disk_index)
         .ok_or_else(|| EngineError::InvalidInput(format!("image has no disk {disk_index}")))?;
     if target.size() < disk.size {
-        return Err(EngineError::Safety(format!("target is {} bytes, image disk is {} bytes", target.size(), disk.size)));
+        return Err(EngineError::Safety(format!(
+            "target is {} bytes, image disk is {} bytes",
+            target.size(),
+            disk.size
+        )));
     }
     let cs = image.chunk_size as u64;
     let total = extent::total_len(&disk.used_extents);
@@ -68,7 +75,9 @@ pub fn restore_disk(
                     break;
                 }
                 let next = queue.lock().unwrap().next().copied();
-                let Some(ChunkRef(index, id)) = next else { break };
+                let Some(ChunkRef(index, id)) = next else {
+                    break;
+                };
                 let r = (|| -> Result<u64> {
                     let data = repo.get_chunk(&id)?;
                     let off = index * cs;

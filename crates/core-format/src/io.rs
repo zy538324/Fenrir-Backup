@@ -9,8 +9,11 @@ pub trait ReadAt {
 
 impl ReadAt for [u8] {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        let start = usize::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::UnexpectedEof))?;
-        let end = start.checked_add(buf.len()).ok_or(io::ErrorKind::UnexpectedEof)?;
+        let start =
+            usize::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::UnexpectedEof))?;
+        let end = start
+            .checked_add(buf.len())
+            .ok_or(io::ErrorKind::UnexpectedEof)?;
         let src = self.get(start..end).ok_or(io::ErrorKind::UnexpectedEof)?;
         buf.copy_from_slice(src);
         Ok(())
@@ -33,7 +36,11 @@ impl ReadAt for std::fs::File {
         {
             let mut done = 0usize;
             while done < buf.len() {
-                let n = std::os::windows::fs::FileExt::seek_read(self, &mut buf[done..], offset + done as u64)?;
+                let n = std::os::windows::fs::FileExt::seek_read(
+                    self,
+                    &mut buf[done..],
+                    offset + done as u64,
+                )?;
                 if n == 0 {
                     return Err(io::ErrorKind::UnexpectedEof.into());
                 }

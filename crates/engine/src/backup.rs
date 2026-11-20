@@ -8,8 +8,8 @@ use core_format::backend::PutOutcome;
 use core_format::chunk::ChunkId;
 use core_format::extent::{self, Extent};
 use core_format::manifest::{
-    BootConfig, ChunkRef, Consistency, DiskImage, DriverInfo, ImageKind, ImageStats, MachineInfo, ManifestBody, OsInfo,
-    BODY_FORMAT, BODY_VERSION,
+    BootConfig, ChunkRef, Consistency, DiskImage, DriverInfo, ImageKind, ImageStats, MachineInfo,
+    ManifestBody, OsInfo, BODY_FORMAT, BODY_VERSION,
 };
 use core_format::partition;
 use core_format::{timefmt, Repository};
@@ -17,7 +17,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::control::{JobControl, Throttle};
-use crate::layout::plan_disk;
+use crate::layout::{plan_disk, DiskLayout};
 use crate::source::SourceReader;
 use crate::{DiskSource, EngineError, Result};
 
@@ -43,7 +43,13 @@ pub struct BackupOptions {
 
 impl Default for BackupOptions {
     fn default() -> Self {
-        BackupOptions { workers: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 8), rate_limit: 0 }
+        BackupOptions {
+            workers: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(2)
+                .clamp(1, 8),
+            rate_limit: 0,
+        }
     }
 }
 
@@ -70,7 +76,12 @@ struct Work {
 }
 
 enum Done {
-    Stored { index: u64, id: ChunkId, new: bool, stored: u64 },
+    Stored {
+        index: u64,
+        id: ChunkId,
+        new: bool,
+        stored: u64,
+    },
     Zero,
 }
 
@@ -99,32 +110,45 @@ pub fn backup(
     let mut excluded = Vec::new();
 
     for (di, src) in sources.iter().enumerate() {
-        let info = src.info();
-        if info.size == 0 {
-            return Err(EngineError::InvalidInput(format!("disk {di} has size 0")));
-        }
-        let ss = if info.logical_sector_size == 0 {
-            partition::detect_sector_size(&SourceReader(*src), info.size)
-        } else {
-            info.logical_sector_size
-        };
-        let table = partition::read_table(&SourceReader(*src), info.size, ss)?;
+        let PlannedDisk {
+            info,
+            sector_size: ss,
+            table,
+            layout,
+            plan,
+        } = plan_one(*src, di)?;
         if table.scheme == partition::Scheme::Gpt && !table.backup_table_valid {
-            warnings.push(format!("disk {di}: GPT backup header or entries are damaged; image keeps them as found"));
+            warnings.push(format!(
+                "disk {di}: GPT backup header or entries are damaged; image keeps them as found"
+            ));
         }
-        let plan = src.capture_plan(&table)?;
         warnings.extend(plan.warnings.iter().cloned());
         excluded.extend(plan.excluded.iter().cloned());
-        let layout = plan_disk(*src, info.size, &table, &plan);
         let total = extent::total_len(&layout.used);
 
-        let chunks = run_pipeline(repo, *src, di as u32, info.size, cs, &layout.used, total, opts, ctl, progress, &mut stats)?;
+        let chunks = run_pipeline(
+            repo,
+            *src,
+            di as u32,
+            info.size,
+            cs,
+            &layout.used,
+            total,
+            opts,
+            ctl,
+            progress,
+            &mut stats,
+        )?;
 
         disks.push(DiskImage {
             index: di as u32,
             size: info.size,
             logical_sector_size: ss,
-            physical_sector_size: if info.physical_sector_size == 0 { ss } else { info.physical_sector_size },
+            physical_sector_size: if info.physical_sector_size == 0 {
+                ss
+            } else {
+                info.physical_sector_size
+            },
             model: info.model,
             serial: info.serial,
             device: info.device,
@@ -148,7 +172,11 @@ pub fn backup(
         repo_id: repo.config().repo_id,
         created: timefmt::rfc3339_utc(now),
         created_unix: now,
-        kind: if parent.is_some() { ImageKind::Incremental } else { ImageKind::Full },
+        kind: if parent.is_some() {
+            ImageKind::Incremental
+        } else {
+            ImageKind::Full
+        },
         parent,
         label: meta.label,
         machine: meta.machine.clone(),
@@ -170,12 +198,90 @@ pub fn backup(
     }
     let signer = repo.signer_for_machine(&meta.machine.machine_id)?;
     repo.store_manifest(&body, &signer)?;
-    Ok(BackupReport { image_id: body.image_id, parent, kind: body.kind, stats, warnings })
+    Ok(BackupReport {
+        image_id: body.image_id,
+        parent,
+        kind: body.kind,
+        stats,
+        warnings,
+    })
+}
+
+/// What a backup of one disk would capture.
+pub struct PlannedDisk {
+    pub info: crate::DiskInfo,
+    pub sector_size: u32,
+    pub table: partition::PartitionTable,
+    pub layout: DiskLayout,
+    pub plan: crate::CapturePlan,
+}
+
+fn plan_one(src: &dyn DiskSource, di: usize) -> Result<PlannedDisk> {
+    let info = src.info();
+    if info.size == 0 {
+        return Err(EngineError::InvalidInput(format!("disk {di} has size 0")));
+    }
+    let ss = if info.logical_sector_size == 0 {
+        partition::detect_sector_size(&SourceReader(src), info.size)
+    } else {
+        info.logical_sector_size
+    };
+    let table = partition::read_table(&SourceReader(src), info.size, ss)?;
+    let plan = src.capture_plan(&table)?;
+    let layout = plan_disk(src, info.size, &table, &plan);
+    Ok(PlannedDisk {
+        info,
+        sector_size: ss,
+        table,
+        layout,
+        plan,
+    })
+}
+
+/// Plan a backup without reading data or touching a repository: partition
+/// tables, capture methods and the bytes each partition would contribute.
+pub fn plan_image(sources: &[&dyn DiskSource]) -> Result<Vec<PlannedDisk>> {
+    sources
+        .iter()
+        .enumerate()
+        .map(|(i, s)| plan_one(*s, i))
+        .collect()
+}
+
+/// Read the first 1 MiB and last 64 KiB of every captured partition range,
+/// to check that a source (e.g. a VSS shadow device) is readable before a
+/// long backup. Returns bytes read.
+pub fn probe_reads(src: &dyn DiskSource, planned: &PlannedDisk) -> Result<u64> {
+    let mut total = 0u64;
+    for p in &planned.layout.partitions {
+        let ranges = extent::clip(&planned.layout.used, p.entry.extent());
+        let (Some(first), Some(last)) = (ranges.first(), ranges.last()) else {
+            continue;
+        };
+        for (off, len) in [
+            (first.0, first.1.min(1 << 20)),
+            (last.end() - last.1.min(64 << 10), last.1.min(64 << 10)),
+        ] {
+            let mut buf = vec![0u8; len as usize];
+            src.read_at(off, &mut buf).map_err(|e| {
+                EngineError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("probe read of partition {} at {off}: {e}", p.entry.number),
+                ))
+            })?;
+            total += len;
+        }
+    }
+    Ok(total)
 }
 
 fn latest_image_for_machine(repo: &Repository, machine_id: &str) -> Result<Option<Uuid>> {
     let (all, _bad) = repo.load_all_manifests()?;
-    Ok(all.iter().rev().find(|m| m.machine.machine_id == machine_id).map(|m| m.image_id))
+    Ok(all
+        .iter()
+        .rev()
+        .find(|m| m.machine.machine_id == machine_id)
+        .map(|m| m.image_id))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -237,9 +343,13 @@ fn run_pipeline(
                 let mut data = vec![0u8; range.1 as usize];
                 for e in &parts {
                     let o = (e.0 - start) as usize;
-                    src.read_at(e.0, &mut data[o..o + e.1 as usize]).map_err(|err| {
-                        EngineError::Io(std::io::Error::new(err.kind(), format!("reading disk {disk_index} at offset {}: {err}", e.0)))
-                    })?;
+                    src.read_at(e.0, &mut data[o..o + e.1 as usize])
+                        .map_err(|err| {
+                            EngineError::Io(std::io::Error::new(
+                                err.kind(),
+                                format!("reading disk {disk_index} at offset {}: {err}", e.0),
+                            ))
+                        })?;
                     throttle.account(e.1, ctl);
                 }
                 if work_tx.send(Work { index, data }).is_err() {
@@ -253,7 +363,12 @@ fn run_pipeline(
         // Collector (this thread).
         for r in done_rx.iter() {
             match r {
-                Ok(Done::Stored { index, id, new, stored }) => {
+                Ok(Done::Stored {
+                    index,
+                    id,
+                    new,
+                    stored,
+                }) => {
                     refs.push(ChunkRef(index, id));
                     stats.chunks_total += 1;
                     if new {
@@ -274,7 +389,12 @@ fn run_pipeline(
                     continue;
                 }
             }
-            progress(&Progress { disk: disk_index, bytes_done: bytes_done.min(total), bytes_total: total, chunks_new: stats.chunks_new });
+            progress(&Progress {
+                disk: disk_index,
+                bytes_done: bytes_done.min(total),
+                bytes_total: total,
+                chunks_new: stats.chunks_new,
+            });
         }
         let reader_result = reader.join().expect("reader thread panicked");
         if let Some(e) = first_error.lock().unwrap().take() {
@@ -293,8 +413,18 @@ fn process_chunk(repo: &Repository, job: Work) -> Result<Done> {
     }
     let id = repo.chunk_id(&job.data);
     if repo.has_chunk(&id)? {
-        return Ok(Done::Stored { index: job.index, id, new: false, stored: 0 });
+        return Ok(Done::Stored {
+            index: job.index,
+            id,
+            new: false,
+            stored: 0,
+        });
     }
     let (outcome, stored) = repo.put_chunk(&id, &job.data)?;
-    Ok(Done::Stored { index: job.index, id, new: outcome == PutOutcome::Created, stored })
+    Ok(Done::Stored {
+        index: job.index,
+        id,
+        new: outcome == PutOutcome::Created,
+        stored,
+    })
 }
