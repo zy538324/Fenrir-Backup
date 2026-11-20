@@ -1,4 +1,4 @@
-import type { Agent, JobKind, JobState, Schedule } from "./api";
+import type { Agent, JobKind, JobState, Retention, Schedule } from "./api";
 
 export function bytes(n: number | null | undefined): string {
   if (n == null) return "—";
@@ -82,6 +82,16 @@ export function jobWhat(k: JobKind): string {
       return "Create repository";
     case "list_images":
       return "Refresh image list";
+    case "apply_retention":
+      return `Retention: ${retentionText(k.retention)}`;
+    case "prune":
+      return k.dry_run ? "Check reclaimable space" : "Delete data no backup uses";
+    case "restore":
+      return k.target.type === "vhdx"
+        ? `As virtual disk to ${k.target.directory}`
+        : k.target.type === "hyperv_vm"
+          ? `As Hyper-V VM “${k.target.name}”`
+          : `To ${k.target.device}`;
   }
 }
 
@@ -150,4 +160,22 @@ export function consistencyLabel(c: string): { tone: Tone; text: string } {
     default:
       return { tone: "bad", text: "Inconsistent" };
   }
+}
+
+export const RETENTION_PRESETS: { id: string; label: string; r: Retention | null; text: string }[] = [
+  { id: "all", label: "Keep everything", r: null, text: "Never delete backups automatically" },
+  { id: "standard", label: "Standard", r: { keep_daily: 14, keep_weekly: 8, keep_monthly: 12, keep_yearly: 3 }, text: "14 daily, 8 weekly, 12 monthly, 3 yearly" },
+  { id: "short", label: "Short", r: { keep_daily: 7, keep_weekly: 4 }, text: "7 daily, 4 weekly" },
+  { id: "long", label: "Long", r: { keep_daily: 30, keep_weekly: 12, keep_monthly: 24, keep_yearly: 7 }, text: "30 daily, 12 weekly, 24 monthly, 7 yearly" },
+];
+
+export function retentionText(r: Retention | null | undefined): string {
+  if (!r) return "keep everything";
+  const parts: string[] = [];
+  if (r.keep_last) parts.push(`last ${r.keep_last}`);
+  if (r.keep_daily) parts.push(`${r.keep_daily} daily`);
+  if (r.keep_weekly) parts.push(`${r.keep_weekly} weekly`);
+  if (r.keep_monthly) parts.push(`${r.keep_monthly} monthly`);
+  if (r.keep_yearly) parts.push(`${r.keep_yearly} yearly`);
+  return parts.length ? parts.join(", ") : "keep everything";
 }

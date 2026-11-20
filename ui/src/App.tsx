@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Activity, CalendarClock, Database, LayoutDashboard, LogOut, Menu, Moon, MonitorSmartphone, PlusCircle, ShieldCheck, Sun, Lock, Server } from "lucide-react";
+import { Activity, Settings2, CalendarClock, Database, LayoutDashboard, LogOut, Menu, Moon, MonitorSmartphone, PlusCircle, ShieldCheck, Sun, Lock, Server } from "lucide-react";
 import { api, type Overview, type Status } from "./api";
 import { Field, Link, Logo, Notice, useApi, useRoute } from "./ui";
 import { passwordStrength } from "./format";
@@ -10,6 +10,7 @@ import RepositoriesPage from "./pages/Repositories";
 import PlansPage from "./pages/Plans";
 import ActivityPage from "./pages/Activity";
 import AddMachinePage from "./pages/AddMachine";
+import SettingsPage from "./pages/Settings";
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -157,6 +158,7 @@ function Shell({ user, version, onSignOut }: { user: string; version: string; on
   else if (path.startsWith("/plans")) page = <PlansPage />;
   else if (path.startsWith("/activity")) page = <ActivityPage />;
   else if (path.startsWith("/add")) page = <AddMachinePage />;
+  else if (path.startsWith("/settings")) page = <SettingsPage />;
   else page = <OverviewPage />;
 
   return (
@@ -176,6 +178,7 @@ function Shell({ user, version, onSignOut }: { user: string; version: string; on
         <NavItem to="/activity" icon={<Activity size={17} />}>Activity</NavItem>
         <div className="nav-sep" />
         <NavItem to="/add" icon={<PlusCircle size={17} />}>Add machines</NavItem>
+        <NavItem to="/settings" icon={<Settings2 size={17} />}>Settings</NavItem>
         <div className="side-foot">
           <ThemeToggle />
           <button

@@ -26,6 +26,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 export const api = {
+  req: <T,>(method: string, p: string, b?: unknown) => call<T>(method, p, b),
   get: <T,>(p: string) => call<T>("GET", p),
   post: <T,>(p: string, b: unknown = {}) => call<T>("POST", p, b),
   patch: <T,>(p: string, b: unknown) => call<T>("PATCH", p, b),
@@ -70,7 +71,17 @@ export type JobKind =
   | { type: "backup_disks"; paths: string[]; settings?: BackupSettings }
   | { type: "backup_hyperv"; vm_ids: string[]; settings?: BackupSettings }
   | { type: "verify"; level: "quick" | "sample" | "full"; sample_percent?: number }
-  | { type: "list_images" };
+  | { type: "list_images" }
+  | { type: "apply_retention"; machine_ids: string[]; retention: Retention; dry_run?: boolean }
+  | { type: "prune"; dry_run?: boolean }
+  | { type: "restore"; image_id: string; disks: number[]; target: RestoreTarget };
+
+export interface Retention { keep_last?: number; keep_daily?: number; keep_weekly?: number; keep_monthly?: number; keep_yearly?: number }
+
+export type RestoreTarget =
+  | { type: "vhdx"; directory: string }
+  | { type: "hyperv_vm"; name: string; directory: string; switch?: string | null; start: boolean }
+  | { type: "disk"; device: string; disk: number; confirm: string };
 
 export interface BackupSettings { label?: string | null; rate_limit_mib?: number; vss_full?: boolean; verify_sample_percent?: number | null }
 
@@ -111,6 +122,9 @@ export interface Image {
   disks: number[];
   label: string | null;
   vm_name: string | null;
+  anomaly: string | null;
+  chunks_total: number;
+  chunks_new: number;
 }
 
 export interface Repository {
@@ -125,6 +139,13 @@ export interface Repository {
   stored_bytes: number;
   last_image: number | null;
   agents: { id: string; name: string }[];
+  hold: boolean;
+  hold_reason: string | null;
+  hold_since: number | null;
+  maintenance_agent_id: string | null;
+  prune_every_days: number;
+  last_prune: number | null;
+  anomalies: number;
 }
 
 export type Schedule =
@@ -144,6 +165,7 @@ export interface Plan {
   enabled: boolean;
   last_run: number | null;
   next_run: number | null;
+  retention: Retention | null;
 }
 
 export interface Overview {
@@ -181,3 +203,9 @@ export interface Platform {
 export interface Downloads { server_url: string; pinned: boolean; cert_sha256: string | null; platforms: Platform[] }
 export interface EnrollmentToken { id: string; token: string; label: string; role: string; expires: number }
 export interface AuditEntry { at: number; actor: string; action: string; detail: string }
+
+export interface EmailSettings { host: string; port: number; security: "starttls" | "tls" | "none"; username: string; password: string; from: string; to: string[]; has_password?: boolean }
+export interface WebhookSettings { url: string; format: "generic" | "slack" | "teams" }
+export interface NotifySettings { email: EmailSettings | null; webhook: WebhookSettings | null; on_warning: boolean; offline_hours: number; overdue_days: number }
+export interface Settings { notifications: NotifySettings; auto_update: boolean }
+export interface Delivery { at: number; channel: string; subject: string; ok: boolean; error: string | null }

@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowRight, CalendarClock, CheckCircle2, Database, HardDrive, MonitorSmartphone, PlusCircle, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
-import type { Agent, Job, Overview } from "../api";
+import type { Agent, Job, Overview, Repository } from "../api";
 import { ago, bytes, health, jobTone, jobWhat, osLabel } from "../format";
 import { Empty, Link, Loading, Notice, OsBadge, Pill, ProgressBar, StatePill, useApi, useRoute } from "../ui";
 
@@ -21,6 +21,7 @@ export default function OverviewPage() {
         </Link>
       </div>
 
+      <Holds />
       {firstRun ? <GettingStarted ov={data} /> : <Hero ov={data} />}
 
       <div className="grid cols-4">
@@ -170,5 +171,25 @@ function RecentCard({ jobs }: { jobs: Job[] }) {
         </div>
       )}
     </div>
+  );
+}
+
+function Holds() {
+  const { data } = useApi<Repository[]>("/api/repositories", 15000);
+  const held = (data ?? []).filter((r) => r.hold);
+  if (held.length === 0) return null;
+  return (
+    <>
+      {held.map((r) => (
+        <Link key={r.id} to="/repositories" className="hero" >
+          <div className="hero-icon bad"><ShieldAlert size={26} /></div>
+          <div className="grow">
+            <h2 style={{ color: "var(--text)" }}>{r.name}: deletions on hold</h2>
+            <div className="muted" style={{ marginTop: 4 }}>{r.hold_reason}</div>
+          </div>
+          <span className="btn">Review</span>
+        </Link>
+      ))}
+    </>
   );
 }

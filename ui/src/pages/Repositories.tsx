@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Database, Download, KeyRound, Lock, Plus, ShieldCheck, Trash2, UserPlus, X } from "lucide-react";
+import { Database, Download, KeyRound, Lock, PauseCircle, Plus, ShieldAlert, ShieldCheck, Sparkles, Trash2, UserPlus, X } from "lucide-react";
 import { api, type Agent, type Repository } from "../api";
-import { ago, bytes, passwordStrength } from "../format";
+import { ago, bytes, passwordStrength, when } from "../format";
 import { newRecoveryKey, seal, sealSupported } from "../seal";
 import { Empty, Field, Loading, Modal, Notice, Pill, useApi, useToast } from "../ui";
 
@@ -50,6 +50,7 @@ export default function RepositoriesPage() {
               </div>
               <div className="card-body stack">
                 {r.status === "failed" && <Notice tone="bad">{r.status_message ?? "The machine could not create the repository."}</Notice>}
+                {r.hold && <HoldBanner repo={r} onChange={repos.reload} />}
                 <div className="grid cols-3" style={{ gap: 10 }}>
                   <div><div className="faint small">Images</div><div style={{ fontWeight: 650, fontSize: 18 }}>{r.images}</div></div>
                   <div><div className="faint small">Stored</div><div style={{ fontWeight: 650, fontSize: 18 }}>{bytes(r.stored_bytes)}</div></div>
@@ -79,7 +80,24 @@ export default function RepositoriesPage() {
                   </div>
                 </div>
                 <div className="row">
+                  {r.status === "ready" && <Maintenance repo={r} agents={agents.data!} onChange={repos.reload} />}
+                </div>
+                <div className="row">
                   <span className="faint small mono">ID {r.repo_uuid.slice(0, 8)}</span>
+                  {!r.hold && r.status === "ready" && (
+                    <button
+                      className="btn sm ghost"
+                      title="Stop all automatic deletion in this repository, e.g. during an investigation or for legal reasons"
+                      onClick={async () => {
+                        const reason = prompt("Why is this repository being placed on hold? (shown to other administrators)", "Legal hold");
+                        if (reason === null) return;
+                        await api.post(`/api/repositories/${r.id}/hold`, { hold: true, reason });
+                        repos.reload();
+                      }}
+                    >
+                      <PauseCircle size={13} /> Hold deletions
+                    </button>
+                  )}
                   <button
                     className="btn sm ghost danger right"
                     onClick={async () => {
@@ -298,5 +316,108 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
         </>
       )}
     </Modal>
+  );
+}
+
+function HoldBanner({ repo, onChange }: { repo: Repository; onChange: () => void }) {
+  const [typed, setTyped] = useState("");
+  const [open, setOpen] = useState(false);
+  const ransomware = (repo.hold_reason ?? "").toLowerCase().includes("ransomware");
+  return (
+    <div className="notice bad" style={{ flexDirection: "column", gap: 10 }}>
+      <div className="row" style={{ alignItems: "flex-start" }}>
+        <ShieldAlert size={18} style={{ flex: "none", color: "var(--bad)" }} />
+        <div className="grow">
+          <strong>{ransomware ? "Deletions on hold: possible ransomware" : "Deletions on hold"}</strong>
+          <div className="small" style={{ marginTop: 2 }}>{repo.hold_reason}</div>
+          <div className="small muted" style={{ marginTop: 4 }}>
+            Since {when(repo.hold_since)}. Backups keep running; no backup is deleted and no space is reclaimed until the hold is released.
+            {ransomware && " Check the machine before releasing: the images from before the event are your clean copies."}
+          </div>
+        </div>
+        {!open && <button className="btn sm" onClick={() => setOpen(true)}>Release…</button>}
+      </div>
+      {open && (
+        <div className="row wrap">
+          <span className="small">Type <strong>release</strong> to allow deletions again:</span>
+          <input className="input" style={{ width: 140, height: 32 }} value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+          <button
+            className="btn sm danger solid"
+            disabled={typed.trim().toLowerCase() !== "release"}
+            onClick={async () => {
+              await api.post(`/api/repositories/${repo.id}/hold`, { hold: false });
+              onChange();
+            }}
+          >
+            Release hold
+          </button>
+          <button className="btn sm ghost" onClick={() => setOpen(false)}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Maintenance({ repo, agents, onChange }: { repo: Repository; agents: Agent[]; onChange: () => void }) {
+  const toast = useToast();
+  const members = agents.filter((a) => repo.agents.some((x) => x.id === a.id) && a.capabilities.includes("maintenance"));
+  return (
+    <details className="small" style={{ marginTop: 4 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+        Space reclamation · {repo.prune_every_days ? `every ${repo.prune_every_days} days` : "off"} · last {ago(repo.last_prune)}
+      </summary>
+      <div className="stack" style={{ marginTop: 10 }}>
+        <div className="muted">Removes data that no kept backup uses any more. It locks the repository briefly; backups wait until it finishes.</div>
+        <div className="row wrap" style={{ gap: 12 }}>
+          <label className="field">
+            <span className="faint small">Run on</span>
+            <select
+              className="input"
+              style={{ width: 200 }}
+              value={repo.maintenance_agent_id ?? ""}
+              onChange={async (e) => {
+                await api.post(`/api/repositories/${repo.id}/maintenance`, { agent_id: e.target.value });
+                onChange();
+              }}
+            >
+              {!repo.maintenance_agent_id && <option value="">Choose a machine</option>}
+              {members.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </label>
+          <label className="field">
+            <span className="faint small">Every</span>
+            <select
+              className="input"
+              style={{ width: 130 }}
+              value={repo.prune_every_days}
+              onChange={async (e) => {
+                await api.post(`/api/repositories/${repo.id}/maintenance`, { prune_every_days: Number(e.target.value) });
+                onChange();
+              }}
+            >
+              <option value={1}>day</option>
+              <option value={7}>week</option>
+              <option value={30}>month</option>
+              <option value={0}>never</option>
+            </select>
+          </label>
+          <button
+            className="btn sm"
+            style={{ alignSelf: "flex-end" }}
+            disabled={repo.hold || !repo.maintenance_agent_id}
+            onClick={async () => {
+              try {
+                await api.post(`/api/repositories/${repo.id}/prune`, { dry_run: false });
+                toast("ok", "Space reclamation queued");
+              } catch (e) {
+                toast("bad", (e as Error).message);
+              }
+            }}
+          >
+            <Sparkles size={13} /> Reclaim now
+          </button>
+        </div>
+      </div>
+    </details>
   );
 }

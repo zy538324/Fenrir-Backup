@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, CalendarClock, Database, HardDrive, Layers, Pencil, Play, ShieldCheck, Trash2, XCircle } from "lucide-react";
-import { api, type Agent, type AgentDetail, type BackupSettings, type Inventory, type JobKind, type Repository, type Vm } from "../api";
+import { ArrowLeft, CalendarClock, Database, HardDrive, Layers, Pencil, Play, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import { RestoreDialog } from "./Restore";
+import { api, type Agent, type AgentDetail, type BackupSettings, type Image, type Inventory, type JobKind, type Repository, type Vm } from "../api";
 import { ago, bytes, consistencyLabel, duration, health, jobWhat, osLabel, scheduleText, until, when } from "../format";
 import { Empty, Field, Link, Loading, Modal, Notice, OsBadge, Pill, ProgressBar, StatePill, useApi, useRoute, useToast } from "../ui";
 
@@ -219,13 +220,14 @@ function PlansCard({ plans }: { plans: AgentDetail["plans"] }) {
 }
 
 function ImagesTable({ detail }: { detail: AgentDetail }) {
+  const [restoring, setRestoring] = useState<Image | null>(null);
   if (detail.images.length === 0)
     return <div className="card"><Empty icon={<Database size={24} />} title="No backups yet">Images appear here after the first backup finishes.</Empty></div>;
   return (
     <div className="card table-wrap">
       <table className="table">
         <thead>
-          <tr><th>Taken</th>{detail.agent.role === "hyperv" && <th>VM</th>}<th>Type</th><th>Consistency</th><th style={{ textAlign: "right" }}>Captured</th><th style={{ textAlign: "right" }}>New data</th><th>Repository</th></tr>
+          <tr><th>Taken</th>{detail.agent.role === "hyperv" && <th>VM</th>}<th>Type</th><th>Consistency</th><th style={{ textAlign: "right" }}>Captured</th><th style={{ textAlign: "right" }}>New data</th><th>Repository</th><th /></tr>
         </thead>
         <tbody>
           {detail.images.map((i) => (
@@ -233,14 +235,19 @@ function ImagesTable({ detail }: { detail: AgentDetail }) {
               <td className="nowrap"><div>{when(i.created)}</div><div className="faint small mono">{i.image_id.slice(0, 8)}</div></td>
               {detail.agent.role === "hyperv" && <td><strong>{i.vm_name}</strong></td>}
               <td>{i.kind === "full" ? "Full" : "Incremental"}{i.label && <div className="faint small">{i.label}</div>}</td>
-              <td><Pill tone={consistencyLabel(i.consistency).tone}>{consistencyLabel(i.consistency).text}</Pill></td>
+              <td>
+                <Pill tone={consistencyLabel(i.consistency).tone}>{consistencyLabel(i.consistency).text}</Pill>
+                {i.anomaly && <div style={{ marginTop: 4 }} title={i.anomaly}><Pill tone="bad">Possible ransomware</Pill></div>}
+              </td>
               <td style={{ textAlign: "right" }}>{bytes(i.captured_bytes)}</td>
               <td style={{ textAlign: "right" }}>{bytes(i.stored_new_bytes)}</td>
               <td>{i.repository_name}</td>
+              <td style={{ textAlign: "right" }}><button className="btn sm" onClick={() => setRestoring(i)}><RotateCcw size={13} /> Restore</button></td>
             </tr>
           ))}
         </tbody>
       </table>
+      {restoring && <RestoreDialog image={restoring} onClose={() => setRestoring(null)} />}
     </div>
   );
 }

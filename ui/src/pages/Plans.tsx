@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { CalendarClock, Play, Plus, Trash2 } from "lucide-react";
-import { api, type Agent, type AgentDetail, type BackupSettings, type JobKind, type Plan, type Schedule } from "../api";
-import { DAY_NAMES, ago, jobWhat, scheduleText, until } from "../format";
+import { api, type Agent, type AgentDetail, type BackupSettings, type JobKind, type Plan, type Retention, type Schedule } from "../api";
+import { DAY_NAMES, RETENTION_PRESETS, ago, jobWhat, retentionText, scheduleText, until } from "../format";
 import { Empty, Field, Link, Loading, Modal, Notice, Switch, useApi, useToast } from "../ui";
 import { OptionsPicker, WhatPicker, defaultWhat, useRepos, withSettings } from "./Machine";
 
@@ -30,13 +30,31 @@ export default function PlansPage() {
       ) : (
         <div className="card table-wrap">
           <table className="table">
-            <thead><tr><th>Plan</th><th>Machine</th><th>Schedule</th><th>Last run</th><th>Next run</th><th>On</th><th /></tr></thead>
+            <thead><tr><th>Plan</th><th>Machine</th><th>Schedule</th><th>Keeps</th><th>Last run</th><th>Next run</th><th>On</th><th /></tr></thead>
             <tbody>
               {plans.data.map((p) => (
                 <tr key={p.id}>
                   <td><strong>{p.name}</strong><div className="faint small">{jobWhat(p.job)} → {p.repository_name}</div></td>
                   <td><Link to={`/machines/${p.agent_id}`}>{p.agent_name}</Link></td>
                   <td>{scheduleText(p.schedule)}</td>
+                  <td>
+                    <select
+                      className="input"
+                      style={{ height: 30, fontSize: 12.5, width: "auto", maxWidth: 190 }}
+                      value={presetOf(p.retention)}
+                      title={retentionText(p.retention)}
+                      onChange={async (e) => {
+                        const pr = RETENTION_PRESETS.find((x) => x.id === e.target.value);
+                        if (!pr) return;
+                        await api.patch(`/api/plans/${p.id}`, { retention: pr.r });
+                        toast("ok", `${p.name}: ${pr.text.toLowerCase()}`);
+                        plans.reload();
+                      }}
+                    >
+                      {RETENTION_PRESETS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                      {presetOf(p.retention) === "custom" && <option value="custom">{retentionText(p.retention)}</option>}
+                    </select>
+                  </td>
                   <td className="nowrap">{ago(p.last_run)}</td>
                   <td className="nowrap">{p.enabled ? until(p.next_run) : <span className="faint">paused</span>}</td>
                   <td><Switch on={p.enabled} label={`Enable ${p.name}`} onChange={async (v) => { await api.patch(`/api/plans/${p.id}`, { enabled: v }); plans.reload(); }} /></td>
@@ -68,6 +86,7 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
   const [days, setDays] = useState<number[]>([]);
   const [hours, setHours] = useState(6);
   const [s, setS] = useState<BackupSettings>({ rate_limit_mib: 0, verify_sample_percent: 5 });
+  const [retention, setRetention] = useState<Retention | null>(RETENTION_PRESETS[1].r);
   const [err, setErr] = useState<string | null>(null);
   const repoId = repo || usable[0]?.id || "";
 
@@ -78,7 +97,7 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
     if (!what) return;
     setErr(null);
     try {
-      await api.post("/api/plans", { name, agent_id: agentId, repository_id: repoId, job: withSettings(what, s), schedule, enabled: true });
+      await api.post("/api/plans", { name, agent_id: agentId, repository_id: repoId, job: withSettings(what, s), schedule, enabled: true, retention });
       onDone();
     } catch (e) {
       setErr((e as Error).message);
@@ -135,8 +154,56 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
         </Field>
       )}
       <div className="muted small">{scheduleText(schedule)} (your local time).</div>
+      <RetentionPicker value={retention} onChange={setRetention} />
       <Field label="Plan name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} /></Field>
       {agent && <OptionsPicker s={s} onChange={setS} windows={agent.os.family === "windows"} />}
     </Modal>
+  );
+}
+
+function presetOf(r: Retention | null): string {
+  if (!r) return "all";
+  const same = (a: Retention, b: Retention) =>
+    (["keep_last", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"] as const).every((k) => (a[k] ?? 0) === (b[k] ?? 0));
+  return RETENTION_PRESETS.find((p) => p.r && same(p.r, r))?.id ?? "custom";
+}
+
+export function RetentionPicker({ value, onChange }: { value: Retention | null; onChange: (r: Retention | null) => void }) {
+  const current = presetOf(value);
+  const [custom, setCustom] = useState(current === "custom");
+  const num = (k: keyof Retention, label: string) => (
+    <label className="field" style={{ width: 92 }}>
+      <span className="faint small">{label}</span>
+      <input
+        className="input"
+        type="number"
+        min={0}
+        max={999}
+        value={value?.[k] ?? 0}
+        onChange={(e) => onChange({ ...(value ?? {}), [k]: Math.max(0, Number(e.target.value)) })}
+      />
+    </label>
+  );
+  return (
+    <Field label="Keep backups" hint={value ? `Older images are deleted after each backup; space is reclaimed weekly. Never runs while a repository is on hold.` : "Nothing is ever deleted automatically. The repository will keep growing."}>
+      <div className="chips">
+        {RETENTION_PRESETS.map((p) => (
+          <button key={p.id} className={`chip${!custom && current === p.id ? " on" : ""}`} title={p.text} onClick={() => { setCustom(false); onChange(p.r); }}>
+            {p.label}
+          </button>
+        ))}
+        <button className={`chip${custom ? " on" : ""}`} onClick={() => { setCustom(true); onChange(value ?? { keep_daily: 7 }); }}>Custom</button>
+      </div>
+      {!custom && <div className="muted small">{RETENTION_PRESETS.find((p) => p.id === current)?.text ?? retentionText(value)}</div>}
+      {custom && (
+        <div className="row wrap" style={{ gap: 10, marginTop: 4 }}>
+          {num("keep_last", "Last")}
+          {num("keep_daily", "Daily")}
+          {num("keep_weekly", "Weekly")}
+          {num("keep_monthly", "Monthly")}
+          {num("keep_yearly", "Yearly")}
+        </div>
+      )}
+    </Field>
   );
 }
