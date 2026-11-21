@@ -95,7 +95,7 @@ jobs:
       - name: backup system --dry-run (VSS)
         shell: pwsh
         run: |
-          .\target\release\fenrir.exe --json backup system --dry-run | Tee-Object -FilePath plan.json
+          .\target\release\fenrir-backup.exe --json backup system --dry-run | Tee-Object -FilePath plan.json
           if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 10) { exit 1 }
           $p = Get-Content plan.json | ConvertFrom-Json
           if (-not $p.ok) { exit 1 }

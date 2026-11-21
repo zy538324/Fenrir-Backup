@@ -486,8 +486,9 @@ $exe = Join-Path $dir 'fenrir-backup-agent.exe'
 $tmp = "$exe.download"
 
 # A service with our name that runs something else is not ours: leave it.
-$svc = Get-Service $Svc -ErrorAction SilentlyContinue
-if ($svc) {{
+# (PowerShell variable names ignore case: $existing must not be called $svc.)
+$existing = Get-Service $Svc -ErrorAction SilentlyContinue
+if ($existing) {{
   $runs = (Get-CimInstance Win32_Service -Filter "Name='$Svc'").PathName
   if ($runs -notlike "*$exe*") {{ throw "A service named $Svc already exists but runs $runs; it is not Fenrir-Backup's and was left untouched." }}
 }}
@@ -498,14 +499,14 @@ Write-Host 'Downloading the Fenrir-Backup agent...'
 $got = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash
 if ($got -ne $Sha256.ToUpper()) {{ Remove-Item $tmp -Force; throw "Downloaded agent failed its integrity check ($got)." }}
 
-if ($svc) {{ Stop-Service $Svc -Force; Start-Sleep -Seconds 2 }}
+if ($existing) {{ Stop-Service $Svc -Force; Start-Sleep -Seconds 2 }}
 Move-Item -Force $tmp $exe
 
 Write-Host 'Enrolling with the server...'
 & $exe enroll --server $Server --pin $Pin --token $Token --role $Role
 if ($LASTEXITCODE -ne 0) {{ throw "Enrollment failed (exit code $LASTEXITCODE)." }}
 
-if (-not $svc) {{
+if (-not $existing) {{
   New-Service -Name $Svc -DisplayName 'Fenrir-Backup Agent' -BinaryPathName ('"' + $exe + '" service') `
     -StartupType Automatic -Description 'Backs up this machine for Fenrir-Backup.' | Out-Null
   sc.exe failure $Svc reset= 86400 actions= restart/60000/restart/60000/restart/300000 | Out-Null
