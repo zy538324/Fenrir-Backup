@@ -239,14 +239,13 @@ mod win {
         // detached helper once we have exited.
         use std::os::windows::process::CommandExt;
         let dir = install_dir();
+        // raw_arg: cmd.exe does not understand the \" escaping Rust would
+        // apply to the quoted path.
         let _ = std::process::Command::new("cmd.exe")
-            .args([
-                "/C",
-                &format!(
-                    "ping -n 3 127.0.0.1 >NUL & rmdir /S /Q \"{}\"",
-                    dir.display()
-                ),
-            ])
+            .raw_arg(format!(
+                "/C ping -n 3 127.0.0.1 >NUL & rmdir /S /Q \"{}\"",
+                dir.display()
+            ))
             .creation_flags(0x0000_0008 | 0x0000_0200)
             .spawn();
         println!("Fenrir-Backup agent removed. Backups already stored are kept; remove the machine in the web UI as well.");
