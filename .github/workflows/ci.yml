@@ -265,20 +265,24 @@ jobs:
         with:
           name: image-windows-agent
           path: agents/x86_64-pc-windows-msvc
-      - name: start the server
+      - name: installers, setup program and network share, end to end
         shell: pwsh
         run: |
           $env:FENRIR_LISTEN = '127.0.0.1:8443'
           $env:FENRIR_DATA_DIR = "$PWD\srv"
           $env:FENRIR_AGENTS_DIR = "$PWD\agents"
           $env:FENRIR_PUBLIC_URL = 'https://127.0.0.1:8443'
-          Start-Process -FilePath .\target\release\fenrir-server.exe -RedirectStandardError server.log -RedirectStandardOutput server.out
-          for ($i = 0; $i -lt 60; $i++) {
-            try { Invoke-RestMethod -SkipCertificateCheck https://127.0.0.1:8443/healthz | Out-Null; break } catch { Start-Sleep 1 }
+          $srv = Start-Process -FilePath .\target\release\fenrir-server.exe -RedirectStandardError server.err -RedirectStandardOutput server.out -PassThru
+          $up = $false
+          for ($i = 0; $i -lt 60 -and -not $up; $i++) {
+            if ($srv.HasExited) { break }
+            try { Invoke-RestMethod -SkipCertificateCheck https://127.0.0.1:8443/healthz | Out-Null; $up = $true } catch { Start-Sleep 1 }
           }
-      - name: one-line command in Windows PowerShell 5.1
-        shell: pwsh
-        run: |
+          if (-not $up) {
+            Write-Host "server exited: $($srv.HasExited) code: $($srv.ExitCode)"
+            Get-Content server.out, server.err -ErrorAction SilentlyContinue
+            throw 'the server did not start'
+          }
           $b = 'https://127.0.0.1:8443'
           $h = @{ 'X-Fenrir-Csrf' = '1' }
           Invoke-RestMethod -SkipCertificateCheck -Method Post "$b/api/setup" -ContentType application/json `
@@ -371,7 +375,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          Get-Content server.log -Tail 30 -ErrorAction SilentlyContinue
+          Get-Content server.out, server.err -Tail 40 -ErrorAction SilentlyContinue
           Get-Content C:\ProgramData\Fenrir\agent\agent.log -Tail 30 -ErrorAction SilentlyContinue
 
   supply-chain:
