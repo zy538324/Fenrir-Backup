@@ -237,6 +237,80 @@ jobs:
           for i in $(seq 1 30); do curl -fsk https://127.0.0.1:8443/healthz && break; sleep 1; done
           curl -fsk https://127.0.0.1:8443/api/status | grep -q '"setup_required":true'
           docker stop -t 15 fenrir
+      - name: export the Windows agent built into the image
+        run: |
+          id=$(docker create fenrir-server:ci)
+          mkdir -p win-agent
+          docker cp "$id:/opt/fenrir/agents/x86_64-pc-windows-msvc/fenrir-agent.exe" win-agent/
+          docker rm "$id"
+          sha256sum win-agent/fenrir-agent.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-windows-agent
+          path: win-agent
+
+  # The Windows installer, end to end on a real Windows machine: server with
+  # a self-signed certificate, the agent build the Docker image serves, the
+  # exact one-line command the UI shows run in Windows PowerShell 5.1, then
+  # the downloadable script (reinstall). Expect a running service and the
+  # machine online in the server.
+  windows-installer:
+    needs: docker
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p server --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-windows-agent
+          path: agents/x86_64-pc-windows-msvc
+      - name: start the server
+        shell: pwsh
+        run: |
+          $env:FENRIR_LISTEN = '127.0.0.1:8443'
+          $env:FENRIR_DATA_DIR = "$PWD\srv"
+          $env:FENRIR_AGENTS_DIR = "$PWD\agents"
+          $env:FENRIR_PUBLIC_URL = 'https://127.0.0.1:8443'
+          Start-Process -FilePath .\target\release\fenrir-server.exe -RedirectStandardError server.log -RedirectStandardOutput server.out
+          for ($i = 0; $i -lt 60; $i++) {
+            try { Invoke-RestMethod -SkipCertificateCheck https://127.0.0.1:8443/healthz | Out-Null; break } catch { Start-Sleep 1 }
+          }
+      - name: one-line command in Windows PowerShell 5.1
+        shell: pwsh
+        run: |
+          $b = 'https://127.0.0.1:8443'
+          $h = @{ 'X-Fenrir-Csrf' = '1' }
+          Invoke-RestMethod -SkipCertificateCheck -Method Post "$b/api/setup" -ContentType application/json `
+            -Body (@{ username = 'admin'; password = 'ci password for the installer test' } | ConvertTo-Json) -SessionVariable s | Out-Null
+          $tok = (Invoke-RestMethod -SkipCertificateCheck -WebSession $s -Headers $h -Method Post "$b/api/enrollment-tokens" `
+            -ContentType application/json -Body (@{ label = 'ci'; role = 'workstation' } | ConvertTo-Json)).token
+          $cat = Invoke-RestMethod -SkipCertificateCheck -WebSession $s "$b/api/downloads?token=$tok"
+          $win = $cat.platforms | Where-Object id -eq 'windows'
+          if (-not $win.available) { throw 'the Windows agent is not offered' }
+          Write-Host "command: $($win.command)"
+          # As pasted into a PowerShell window.
+          Set-Content -Encoding ascii one-liner.ps1 $win.command
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\one-liner.ps1
+          if ($LASTEXITCODE -ne 0) { throw "installer exited with $LASTEXITCODE" }
+          if ((Get-Service FenrirAgent).Status -ne 'Running') { throw 'service not running' }
+          for ($i = 0; $i -lt 60; $i++) {
+            $a = Invoke-RestMethod -SkipCertificateCheck -WebSession $s "$b/api/agents"
+            if (@($a | Where-Object online).Count -ge 1) { Write-Host "online: $($a[0].name) $($a[0].os.name)"; break }
+            Start-Sleep 2
+          }
+          if (@($a | Where-Object online).Count -lt 1) { Get-Content C:\ProgramData\Fenrir\agent\agent.log -ErrorAction SilentlyContinue; throw 'agent did not come online' }
+          # The downloadable script, run as the UI instructs (reinstall over the running agent).
+          Invoke-WebRequest -SkipCertificateCheck "$b/install/$tok/windows" -OutFile install-fenrir.ps1
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-fenrir.ps1
+          if ($LASTEXITCODE -ne 0) { throw "script installer exited with $LASTEXITCODE" }
+          if ((Get-Service FenrirAgent).Status -ne 'Running') { throw 'service not running after reinstall' }
+      - name: logs
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Content server.log -Tail 30 -ErrorAction SilentlyContinue
+          Get-Content C:\ProgramData\Fenrir\agent\agent.log -Tail 30 -ErrorAction SilentlyContinue
 
   supply-chain:
     runs-on: ubuntu-latest

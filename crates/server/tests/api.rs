@@ -281,7 +281,7 @@ async fn downloads_and_installers() {
     assert!(p("hyperv")["command"]
         .as_str()
         .unwrap()
-        .contains(&"AB".repeat(32)));
+        .contains(&format!("[FenrirDl]::Pin = '{}'", "ab".repeat(32))));
 
     // Installer scripts: public by token, carry everything needed.
     t.cookie = None;

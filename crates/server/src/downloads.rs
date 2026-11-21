@@ -261,14 +261,7 @@ async fn catalogue(
                 Some(tok) => {
                     let su = format!("{url}/install/{tok}/{}", p.id);
                     let cmd = if p.targets[0].triple.contains("windows") {
-                        let cb = match pin {
-                            Some(t) => format!(
-                                "[Net.ServicePointManager]::ServerCertificateValidationCallback={{param($s,$c)$c.GetCertHashString('SHA256') -eq '{}'}}; ",
-                                t.cert_sha256.to_uppercase()
-                            ),
-                            None => String::new(),
-                        };
-                        format!("powershell -NoProfile -ExecutionPolicy Bypass -Command \"{cb}iex (iwr -UseBasicParsing '{su}').Content\"")
+                        windows_one_liner(&su, pin.map(|t| t.cert_sha256.as_str()).unwrap_or(""))
                     } else {
                         let pinarg = pin.map(|t| format!("-k --pinnedpubkey 'sha256//{}' ", t.spki_sha256_b64)).unwrap_or_default();
                         format!("curl -fsSL {pinarg}'{su}' | sudo sh")
@@ -413,20 +406,19 @@ $Role   = '{role}'
 $Sha256 = '{sha}'
 
 if (-not $Sha256) {{ throw 'The server has no Windows agent build installed yet.' }}
-{hyperv_check}[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$web = @{{ UseBasicParsing = $true }}
-if ($Pin) {{
-  # Self-signed server certificate: accept only the pinned one.
-  if ($PSVersionTable.PSVersion.Major -ge 6) {{ $web.SkipCertificateCheck = $true }}
-  else {{ [Net.ServicePointManager]::ServerCertificateValidationCallback = {{ param($s, $c) $c.GetCertHashString('SHA256') -eq $Pin.ToUpper() }} }}
-}}
+{hyperv_check}# Downloads go through a small compiled helper: with a self-signed server
+# certificate it accepts only the pinned one (SHA-256 of the certificate),
+# otherwise normal certificate validation applies. Works in Windows
+# PowerShell 5.1 and PowerShell 7.
+if (-not ('FenrirDl' -as [type])) {{ Add-Type -IgnoreWarnings -TypeDefinition '{cs}' }}
+[FenrirDl]::Pin = $Pin
 
 $dir = Join-Path $env:ProgramFiles 'Fenrir'
 $exe = Join-Path $dir 'fenrir-agent.exe'
 $tmp = "$exe.download"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Write-Host 'Downloading the Fenrir-Backup agent...'
-Invoke-WebRequest @web -Uri "$Server/agent/x86_64-pc-windows-msvc/fenrir-agent.exe" -OutFile $tmp
+[IO.File]::WriteAllBytes($tmp, [FenrirDl]::Get("$Server/agent/x86_64-pc-windows-msvc/fenrir-agent.exe"))
 $got = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash
 if ($got -ne $Sha256.ToUpper()) {{ Remove-Item $tmp -Force; throw "Downloaded agent failed its integrity check ($got)." }}
 
@@ -448,6 +440,30 @@ Write-Host 'Fenrir-Backup agent installed and running. This machine will appear 
 "#,
         kind = if hyperv { " (Hyper-V host)" } else { "" },
         suffix = if hyperv { "-hyperv" } else { "" },
+        cs = WIN_DOWNLOADER_CS,
+    )
+}
+
+/// C# (5, so the compiler built into .NET Framework accepts it) for
+/// downloads from the server: pins the certificate's SHA-256 when one is
+/// given, otherwise validates normally. A compiled delegate, because a
+/// PowerShell scriptblock as certificate callback can be invoked on a
+/// thread without a runspace (Windows PowerShell 5.1 then fails with "The
+/// underlying connection was closed: An unexpected error occurred on a
+/// send"). Must not contain single quotes: it is embedded in a PowerShell
+/// single-quoted string.
+pub const WIN_DOWNLOADER_CS: &str = "using System;using System.IO;using System.Net;using System.Net.Security;using System.Security.Cryptography;using System.Security.Cryptography.X509Certificates;\
+public static class FenrirDl{public static string Pin=\"\";\
+static bool Ok(object s,X509Certificate c,X509Chain h,SslPolicyErrors e){if(String.IsNullOrEmpty(Pin))return e==SslPolicyErrors.None;\
+using(SHA256 x=SHA256.Create()){return BitConverter.ToString(x.ComputeHash(c.GetRawCertData())).Replace(\"-\",\"\").Equals(Pin,StringComparison.OrdinalIgnoreCase);}}\
+public static byte[] Get(string u){ServicePointManager.SecurityProtocol=ServicePointManager.SecurityProtocol|SecurityProtocolType.Tls12;\
+HttpWebRequest r=(HttpWebRequest)WebRequest.Create(u);r.ServerCertificateValidationCallback=Ok;\
+using(WebResponse w=r.GetResponse())using(Stream st=w.GetResponseStream())using(MemoryStream m=new MemoryStream()){st.CopyTo(m);return m.ToArray();}}}";
+
+/// The command shown in the UI: paste into PowerShell (as Administrator).
+fn windows_one_liner(script_url: &str, pin: &str) -> String {
+    format!(
+        "if (-not ('FenrirDl' -as [type])) {{ Add-Type -IgnoreWarnings -TypeDefinition '{WIN_DOWNLOADER_CS}' }}; [FenrirDl]::Pin = '{pin}'; iex ([Text.Encoding]::UTF8.GetString([FenrirDl]::Get('{script_url}')))"
     )
 }
 
@@ -616,3 +632,49 @@ rm -f /Library/LaunchDaemons/uk.fenrir.agent.plist /usr/local/bin/fenrir-agent
 rm -rf "/Library/Application Support/Fenrir/agent"
 echo "Fenrir-Backup agent removed. Remove the machine in the web UI as well."
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_installer_text() {
+        // Embedded in PowerShell single-quoted strings.
+        assert!(!WIN_DOWNLOADER_CS.contains('\''));
+        // C# 5 only (.NET Framework's built-in compiler): no `=>`, `$"`, `?.`.
+        for newer in ["=>", "$\"", "?."] {
+            assert!(!WIN_DOWNLOADER_CS.contains(newer), "{newer}");
+        }
+        let pin = "89f93aae6e9aad9ed80272581bce6507762437a2728a3abf2c9ba6e541a8ca9d";
+        for hyperv in [false, true] {
+            let s = windows_script(
+                "https://198.51.100.7:8443",
+                pin,
+                "tok",
+                "server",
+                "abc",
+                hyperv,
+            );
+            assert!(
+                s.is_ascii(),
+                "PowerShell 5.1 reads BOM-less scripts as ANSI"
+            );
+            assert!(s.contains(
+                "[FenrirDl]::Get(\"$Server/agent/x86_64-pc-windows-msvc/fenrir-agent.exe\")"
+            ));
+            assert!(
+                !s.contains("ServerCertificateValidationCallback = {"),
+                "no scriptblock callbacks"
+            );
+            assert!(!s.contains("Invoke-WebRequest"));
+        }
+        let one = windows_one_liner("https://198.51.100.7:8443/install/tok/windows", pin);
+        assert!(one.is_ascii());
+        // Native PowerShell: no nested powershell.exe, so no `$` expansion surprises.
+        assert!(!one.contains("powershell"));
+        // Outside the single-quoted C#, no double quotes: nothing for
+        // PowerShell to expand.
+        assert!(!one.replace(WIN_DOWNLOADER_CS, "").contains('"'));
+        assert!(one.contains(&format!("[FenrirDl]::Pin = '{pin}'")));
+    }
+}
