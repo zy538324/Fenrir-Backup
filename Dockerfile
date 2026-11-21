@@ -5,7 +5,7 @@
 #   docker build -t fenrir-server .
 #   docker run -d -p 8443:8443 -v fenrir-data:/var/lib/fenrir-server fenrir-server
 #
-# The image contains the server, the web UI, the `fenrir` CLI, the Linux
+# The image contains the server, the web UI, the `fenrir-backup` CLI, the Linux
 # agent for the image's own CPU architecture and the Windows agent
 # (cross-compiled with MinGW; also used for Hyper-V hosts). macOS
 # agents are built on a Mac (CI does this) and mounted in; see docs/DEPLOY.md.
@@ -32,8 +32,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;; \
     esac \
  && mkdir -p /out/agents/$triple \
- && cp target/release/fenrir-server target/release/fenrir /out/ \
- && cp target/release/fenrir-agent /out/agents/$triple/
+ && cp target/release/fenrir-server target/release/fenrir-backup /out/ \
+ && cp target/release/fenrir-backup-agent /out/agents/$triple/
 
 # ---- Windows agent (also used on Hyper-V hosts), cross-compiled with MinGW ----
 FROM ubuntu:24.04 AS windows
@@ -50,7 +50,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p agent --target x86_64-pc-windows-gnu \
  && mkdir -p /out/agents/x86_64-pc-windows-msvc \
- && cp target/x86_64-pc-windows-gnu/release/fenrir-agent.exe /out/agents/x86_64-pc-windows-msvc/
+ && cp target/x86_64-pc-windows-gnu/release/fenrir-backup-agent.exe /out/agents/x86_64-pc-windows-msvc/
 
 # ---- runtime ----
 FROM alpine:3.22
@@ -58,7 +58,7 @@ RUN addgroup -S -g 10001 fenrir \
  && adduser -S -D -H -u 10001 -G fenrir fenrir \
  && mkdir -p /var/lib/fenrir-server \
  && chown fenrir:fenrir /var/lib/fenrir-server
-COPY --from=build /out/fenrir-server /out/fenrir /opt/fenrir/
+COPY --from=build /out/fenrir-server /out/fenrir-backup /opt/fenrir/
 COPY --from=build /out/agents /opt/fenrir/agents
 COPY --from=windows /out/agents /opt/fenrir/agents
 COPY --from=ui /ui/dist /opt/fenrir/ui

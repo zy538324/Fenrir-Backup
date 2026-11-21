@@ -7,14 +7,14 @@ import { Command, Field, Link, Loading, Notice, OsBadge, useApi } from "../ui";
 /** Windows and Hyper-V hosts: the setup program. */
 const SETUP_STEPS: Partial<Record<Platform["id"], string[]>> = {
   windows: [
-    "Run the downloaded Fenrir-Setup.exe on the machine and allow it to make changes (administrator prompt).",
+    "Run the downloaded Fenrir-Backup-Setup.exe on the machine and allow it to make changes (administrator prompt).",
     "If Windows SmartScreen says it protected your PC, choose More info › Run anyway: the file is built by your server for this link and is not code-signed.",
-    "The machine appears below within a minute. For silent installs (scripts, remote tools): Fenrir-Setup.exe /quiet",
+    "The machine appears below within a minute. For silent installs (scripts, remote tools): Fenrir-Backup-Setup.exe /quiet",
   ],
   hyperv: [
-    "Run the downloaded Fenrir-Setup-HyperV.exe on the Hyper-V host itself (not inside a VM) and allow the administrator prompt.",
+    "Run the downloaded Fenrir-Backup-Setup-HyperV.exe on the Hyper-V host itself (not inside a VM) and allow the administrator prompt.",
     "If Windows SmartScreen says it protected your PC, choose More info › Run anyway: the file is built by your server for this link and is not code-signed.",
-    "The host and its VMs appear below within a minute. Nothing is installed in the VMs. Silent install: Fenrir-Setup-HyperV.exe /quiet",
+    "The host and its VMs appear below within a minute. Nothing is installed in the VMs. Silent install: Fenrir-Backup-Setup-HyperV.exe /quiet",
   ],
 };
 
@@ -22,20 +22,20 @@ const INSTRUCTIONS: Record<Platform["id"], string[]> = {
   windows: [
     "Copy the installer to the machine (or use the one-line command below).",
     "Open PowerShell as Administrator in the folder with the file.",
-    "Run: powershell -ExecutionPolicy Bypass -File .\\install-fenrir.ps1",
+    "Run: powershell -ExecutionPolicy Bypass -File .\\install-fenrir-backup.ps1",
     "The machine appears below within a minute.",
   ],
   hyperv: [
     "Run this on the Hyper-V host itself, not inside a VM. Nothing is installed in the VMs.",
     "Open PowerShell as Administrator in the folder with the file.",
-    "Run: powershell -ExecutionPolicy Bypass -File .\\install-fenrir-hyperv.ps1",
+    "Run: powershell -ExecutionPolicy Bypass -File .\\install-fenrir-backup-hyperv.ps1",
     "The host and its VMs appear below within a minute.",
   ],
-  linux: ["Copy the installer to the machine, or use the one-line command below.", "Run: sudo sh install-fenrir.sh", "The machine appears below within a minute."],
+  linux: ["Copy the installer to the machine, or use the one-line command below.", "Run: sudo sh install-fenrir-backup.sh", "The machine appears below within a minute."],
   macos: [
     "Copy the installer to the Mac, or use the one-line command below in Terminal.",
-    "Run: sudo sh install-fenrir-macos.sh",
-    "Give fenrir-agent Full Disk Access in System Settings › Privacy & Security.",
+    "Run: sudo sh install-fenrir-backup-macos.sh",
+    "Give fenrir-backup-agent Full Disk Access in System Settings › Privacy & Security.",
   ],
 };
 
@@ -229,7 +229,7 @@ function Ready({ platform, downloads, token, onNew }: { platform: Platform; down
       <Waiting />
       <div className="faint small">
         To remove the agent later,{" "}
-        {platform.setup_url ? <>run <span className="mono">"C:\Program Files\Fenrir\fenrir-agent.exe" uninstall</span> as Administrator, or the </> : <>run the </>}
+        {platform.setup_url ? <>run <span className="mono">"C:\Program Files\Fenrir-Backup\fenrir-backup-agent.exe" uninstall</span> as Administrator, or the </> : <>run the </>}
         <a href={platform.uninstall_url} download>uninstaller</a> on the machine.
       </div>
     </div>

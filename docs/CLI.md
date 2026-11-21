@@ -1,7 +1,7 @@
-# `fenrir` command-line reference
+# `fenrir-backup` command-line reference
 
 ```text
-fenrir [--json] [--repo PATH] [--passphrase-file FILE | --recovery-key FILE] <command>
+fenrir-backup [--json] [--repo PATH] [--passphrase-file FILE | --recovery-key FILE] <command>
 ```
 
 | Option | Meaning |
@@ -88,4 +88,4 @@ Until the agent (Phase 7) ships, schedule the CLI with the OS:
   `fenrir.exe --json --repo E:\Backups --passphrase-file C:\ProgramData\Fenrir\pass.txt backup system`
   (protect the passphrase file with an ACL granting only SYSTEM and
   Administrators).
-* Linux systemd timer for `fenrir backup disk` of unmounted disks.
+* Linux systemd timer for `fenrir-backup backup disk` of unmounted disks.

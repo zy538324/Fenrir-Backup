@@ -131,7 +131,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          for b in fenrir-agent fenrir fenrir-server; do
+          for b in fenrir-backup-agent fenrir-backup fenrir-server; do
             f="target/${{ matrix.target }}/release/$b${{ matrix.ext }}"
             if [ -f "$f" ]; then cp "$f" out/; fi
           done
@@ -161,7 +161,7 @@ jobs:
             cp -r art/ui-dist "$d/ui"
             for t in x86_64-pc-windows-msvc x86_64-unknown-linux-musl aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
               mkdir -p "$d/agents/$t"
-              cp art/bin-$t/fenrir-agent* "$d/agents/$t/"
+              cp art/bin-$t/fenrir-backup-agent* "$d/agents/$t/"
               chmod +x "$d/agents/$t/"* || true
             done
             (cd "$d" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
@@ -200,7 +200,7 @@ jobs:
           mkdir -p pub
           for t in aarch64-apple-darwin x86_64-apple-darwin; do
             mkdir -p "pub/$t"
-            cp art/bin-$t/fenrir-agent* "pub/$t/"
+            cp art/bin-$t/fenrir-backup-agent* "pub/$t/"
             chmod +x "pub/$t/"*
           done
           printf 'Agent builds from %s@%s (CI run %s). Generated; do not edit.\n' \
@@ -241,9 +241,9 @@ jobs:
         run: |
           id=$(docker create fenrir-server:ci)
           mkdir -p win-agent
-          docker cp "$id:/opt/fenrir/agents/x86_64-pc-windows-msvc/fenrir-agent.exe" win-agent/
+          docker cp "$id:/opt/fenrir/agents/x86_64-pc-windows-msvc/fenrir-backup-agent.exe" win-agent/
           docker rm "$id"
-          sha256sum win-agent/fenrir-agent.exe
+          sha256sum win-agent/fenrir-backup-agent.exe
       - uses: actions/upload-artifact@v4
         with:
           name: image-windows-agent
@@ -297,35 +297,35 @@ jobs:
           Set-Content -Encoding ascii one-liner.ps1 $win.command
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\one-liner.ps1
           if ($LASTEXITCODE -ne 0) { throw "installer exited with $LASTEXITCODE" }
-          if ((Get-Service FenrirAgent).Status -ne 'Running') { throw 'service not running' }
+          if ((Get-Service FenrirBackupAgent).Status -ne 'Running') { throw 'service not running' }
           for ($i = 0; $i -lt 60; $i++) {
             $a = Invoke-RestMethod -SkipCertificateCheck -WebSession $s "$b/api/agents"
             if (@($a | Where-Object online).Count -ge 1) { Write-Host "online: $($a[0].name) $($a[0].os.name)"; break }
             Start-Sleep 2
           }
-          if (@($a | Where-Object online).Count -lt 1) { Get-Content C:\ProgramData\Fenrir\agent\agent.log -ErrorAction SilentlyContinue; throw 'agent did not come online' }
+          if (@($a | Where-Object online).Count -lt 1) { Get-Content C:\ProgramData\Fenrir-Backup\agent\agent.log -ErrorAction SilentlyContinue; throw 'agent did not come online' }
           # The downloadable script, run as the UI instructs (reinstall over the running agent).
-          Invoke-WebRequest -SkipCertificateCheck "$b/install/$tok/windows" -OutFile install-fenrir.ps1
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-fenrir.ps1
+          Invoke-WebRequest -SkipCertificateCheck "$b/install/$tok/windows" -OutFile install-fenrir-backup.ps1
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-fenrir-backup.ps1
           if ($LASTEXITCODE -ne 0) { throw "script installer exited with $LASTEXITCODE" }
-          if ((Get-Service FenrirAgent).Status -ne 'Running') { throw 'service not running after reinstall' }
+          if ((Get-Service FenrirBackupAgent).Status -ne 'Running') { throw 'service not running after reinstall' }
           # Uninstall, then a fresh install with the setup program (silent).
-          & 'C:\Program Files\Fenrir\fenrir-agent.exe' uninstall --yes
+          & 'C:\Program Files\Fenrir-Backup\fenrir-backup-agent.exe' uninstall --yes
           if ($LASTEXITCODE -ne 0) { throw "uninstall exited with $LASTEXITCODE" }
-          if (Get-Service FenrirAgent -ErrorAction SilentlyContinue) { throw 'service still present after uninstall' }
+          if (Get-Service FenrirBackupAgent -ErrorAction SilentlyContinue) { throw 'service still present after uninstall' }
           Start-Sleep 8
-          if (Test-Path 'C:\Program Files\Fenrir') { throw 'program folder left behind' }
-          Invoke-WebRequest -SkipCertificateCheck $win.setup_url -OutFile Fenrir-Setup.exe
-          $p = Start-Process -FilePath .\Fenrir-Setup.exe -ArgumentList '/quiet' -Wait -PassThru -NoNewWindow
-          if ($p.ExitCode -ne 0) { throw "Fenrir-Setup.exe exited with $($p.ExitCode)" }
-          if ((Get-Service FenrirAgent).Status -ne 'Running') { throw 'service not running after Fenrir-Setup.exe' }
+          if (Test-Path 'C:\Program Files\Fenrir-Backup') { throw 'program folder left behind' }
+          Invoke-WebRequest -SkipCertificateCheck $win.setup_url -OutFile Fenrir-Backup-Setup.exe
+          $p = Start-Process -FilePath .\Fenrir-Backup-Setup.exe -ArgumentList '/quiet' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "Fenrir-Backup-Setup.exe exited with $($p.ExitCode)" }
+          if ((Get-Service FenrirBackupAgent).Status -ne 'Running') { throw 'service not running after Fenrir-Backup-Setup.exe' }
           # The new identity works: the agent reaches the server with it.
-          & 'C:\Program Files\Fenrir\fenrir-agent.exe' status
-          if ($LASTEXITCODE -ne 0) { throw 'agent status failed after Fenrir-Setup.exe' }
-          $installed = (Get-FileHash 'C:\Program Files\Fenrir\fenrir-agent.exe').Hash
-          $built = (Get-FileHash agents\x86_64-pc-windows-msvc\fenrir-agent.exe).Hash
+          & 'C:\Program Files\Fenrir-Backup\fenrir-backup-agent.exe' status
+          if ($LASTEXITCODE -ne 0) { throw 'agent status failed after Fenrir-Backup-Setup.exe' }
+          $installed = (Get-FileHash 'C:\Program Files\Fenrir-Backup\fenrir-backup-agent.exe').Hash
+          $built = (Get-FileHash agents\x86_64-pc-windows-msvc\fenrir-backup-agent.exe).Hash
           if ($installed -ne $built) { throw 'installed agent differs from the server build (settings block not removed)' }
-          Write-Host 'Fenrir-Setup.exe: installed, enrolled, reachable; installed agent identical to the server build'
+          Write-Host 'Fenrir-Backup-Setup.exe: installed, enrolled, reachable; installed agent identical to the server build'
 
           # Network share repository: a local SMB share that only a dedicated
           # account may use; the sign-in is sealed to the agent like the UI does.
@@ -376,7 +376,7 @@ jobs:
         shell: pwsh
         run: |
           Get-Content server.out, server.err -Tail 40 -ErrorAction SilentlyContinue
-          Get-Content C:\ProgramData\Fenrir\agent\agent.log -Tail 30 -ErrorAction SilentlyContinue
+          Get-Content C:\ProgramData\Fenrir-Backup\agent\agent.log -Tail 30 -ErrorAction SilentlyContinue
 
   supply-chain:
     runs-on: ubuntu-latest

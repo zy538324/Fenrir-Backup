@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn offers_are_validated() {
         let ok = AgentUpdate {
-            path: "/agent/x86_64-unknown-linux-musl/fenrir-agent".into(),
+            path: "/agent/x86_64-unknown-linux-musl/fenrir-backup-agent".into(),
             sha256: "a".repeat(64),
         };
         assert!(valid_offer(&ok));
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn install_swaps_the_file() {
         let d = tempfile::tempdir().unwrap();
-        let exe = d.path().join("fenrir-agent");
+        let exe = d.path().join("fenrir-backup-agent");
         std::fs::write(&exe, b"old build").unwrap();
         install(&exe, b"new build").unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), b"new build");

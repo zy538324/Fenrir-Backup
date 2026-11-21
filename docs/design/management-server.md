@@ -7,7 +7,7 @@ The CLI stays, and covers everything for scripting and RMM use.
 ## Shape
 
 ```text
- Browser ──HTTPS──▶ fenrir-server ◀──HTTPS (agent polls)── fenrir-agent (Windows / Linux / macOS / Hyper-V host)
+ Browser ──HTTPS──▶ fenrir-server ◀──HTTPS (agent polls)── fenrir-backup-agent (Windows / Linux / macOS / Hyper-V host)
                      │  SQLite: users, agents, jobs, plans,                   │
                      │  repositories, sealed secrets, image index             ▼
                      └─ serves the web UI and agent downloads          repository (local disk, SMB share, NAS)
@@ -16,7 +16,7 @@ The CLI stays, and covers everything for scripting and RMM use.
 * **fenrir-server** (`crates/server`): one binary, axum + SQLite, serves the
   REST API and the built web UI. No agent ever accepts inbound connections;
   agents poll, so they work behind NAT and host firewalls.
-* **fenrir-agent** (`crates/agent`): Windows service, systemd unit or launchd
+* **fenrir-backup-agent** (`crates/agent`): Windows service, systemd unit or launchd
   daemon. Enrolls once, then heartbeats every 15 s, receives jobs, runs them
   with `engine`, streams progress and results back.
 * **Web UI** (`ui/`): React + TypeScript + Vite, built to static files the
@@ -30,10 +30,10 @@ per platform:
 
 | Platform | Download | Installs as |
 |---|---|---|
-| Windows 10/11, Server | `install-fenrir.ps1` | Windows service `FenrirAgent` (LocalSystem) |
-| Hyper-V host | `install-fenrir-hyperv.ps1` | Same service, role `hyperv` |
-| Linux (x86-64, arm64) | `install-fenrir.sh` | systemd unit `fenrir-agent.service` |
-| macOS (Apple silicon, Intel) | `install-fenrir-macos.sh` | launchd daemon `uk.fenrir.agent` |
+| Windows 10/11, Server | `install-fenrir-backup.ps1` | Windows service `FenrirBackupAgent` (LocalSystem) |
+| Hyper-V host | `install-fenrir-backup-hyperv.ps1` | Same service, role `hyperv` |
+| Linux (x86-64, arm64) | `install-fenrir-backup.sh` | systemd unit `fenrir-backup-agent.service` |
+| macOS (Apple silicon, Intel) | `install-fenrir-backup-macos.sh` | launchd daemon `uk.fenrir-backup.agent` |
 
 Each script is generated on request with: server URL, the server
 certificate's SHA-256 pin, the enrollment token, the role, and the SHA-256

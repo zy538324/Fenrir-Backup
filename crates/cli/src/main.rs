@@ -1,4 +1,4 @@
-//! `fenrir` — command-line interface.
+//! `fenrir-backup` — command-line interface.
 //!
 //! Every command supports `--json`: one JSON document on stdout, progress
 //! and messages on stderr. Exit codes are stable (see `ExitCode` and
@@ -25,7 +25,7 @@ use exit::{CliError, ExitCode};
 
 #[derive(Parser)]
 #[command(
-    name = "fenrir",
+    name = "fenrir-backup",
     version,
     about = "Fenrir-Backup: disk imaging and recovery"
 )]

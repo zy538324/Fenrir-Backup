@@ -3,7 +3,7 @@
 Build scripts for the Fenrir-Backup recovery environment (Phase 2):
 
 * Debian stable live image, UEFI with Secure Boot via Debian's signed shim
-  and kernel, plus legacy BIOS. Contains `fenrir`, a text UI and the local
+  and kernel, plus legacy BIOS. Contains `fenrir-backup`, a text UI and the local
   web UI.
 * Optional PowerShell script that builds a WinPE image locally with the
   user's own Microsoft ADK. WinPE is never redistributed.

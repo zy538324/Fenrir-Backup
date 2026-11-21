@@ -1,5 +1,5 @@
 //! Settings appended to the Windows agent executable to make a
-//! per-enrollment setup program (`Fenrir-Setup.exe`).
+//! per-enrollment setup program (`Fenrir-Backup-Setup.exe`).
 //!
 //! Layout: `<agent exe> <settings JSON> <u32 LE length of the JSON> <MAGIC>`.
 //! Windows loads a PE image by its headers and ignores data after it, so the

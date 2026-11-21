@@ -13,7 +13,7 @@ today:
   themes, phone-friendly.
 * **Downloads for every platform**: the web UI generates installers for
   Windows, Hyper-V hosts, Linux and macOS. On Windows it is a setup program,
-  `Fenrir-Setup.exe` (double-click, or `/quiet` for silent installs); on
+  `Fenrir-Backup-Setup.exe` (double-click, or `/quiet` for silent installs); on
   Linux and macOS a script. Each installs the agent as a service and enrols
   it with your server.
 * **Hyper-V hosts**: install once on the host; every VM is backed up through
@@ -38,7 +38,7 @@ today:
 * **Alerts** by email, Slack, Teams or webhook; **agents update themselves**
   when the server is upgraded.
 * Deduplicated, signed, verifiable images (format: [docs/FORMAT.md](docs/FORMAT.md)),
-  and a CLI (`fenrir`) for scripting.
+  and a CLI (`fenrir-backup`) for scripting.
 
 Not yet: recovery media and bare-metal restore (Phase 2), S3 and Object Lock (4),
 dissimilar-hardware restore and cloning (5), live Linux snapshots (6).
@@ -80,9 +80,9 @@ cd ui && npm ci && npm run build
 | `crates/engine` | Backup, restore, verify |
 | `crates/snapshot-win` | VSS, NTFS bitmaps, Windows disk layout |
 | `crates/snapshot-linux` | Linux sources (raw disks now; LVM/btrfs/ZFS later) |
-| `crates/cli` | `fenrir` command-line tool |
+| `crates/cli` | `fenrir-backup` command-line tool |
 | `crates/server` | `fenrir-server`: web UI host, API, installers, scheduler |
-| `crates/agent` | `fenrir-agent`: Windows service / systemd / launchd agent, Hyper-V backups |
+| `crates/agent` | `fenrir-backup-agent`: Windows service / systemd / launchd agent, Hyper-V backups |
 | `crates/protocol` | Server–agent protocol and secret sealing |
 | `crates/vdisk` | VHDX reader (from the MS-VHDX specification) |
 | `ui` | Web UI (React + TypeScript) |

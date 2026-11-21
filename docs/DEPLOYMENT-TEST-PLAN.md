@@ -20,9 +20,9 @@ most likely; please report everything you see there.
 When something fails, collect:
 
 * the job's error (Activity page, or the machine's Activity tab);
-* the agent log: Windows `C:\ProgramData\Fenrir\agent\agent.log`, Linux
-  `journalctl -u fenrir-agent` and `/var/lib/fenrir-agent/agent.log`, macOS
-  `/Library/Logs/fenrir-agent.log`;
+* the agent log: Windows `C:\ProgramData\Fenrir-Backup\agent\agent.log`, Linux
+  `journalctl -u fenrir-backup-agent` and `/var/lib/fenrir-backup-agent/agent.log`, macOS
+  `/Library/Logs/fenrir-backup-agent.log`;
 * the server log: `docker logs fenrir`.
 
 ## 0. Before you start
@@ -76,10 +76,10 @@ When something fails, collect:
 ## 3. Windows workstation / server (not yet run on hardware)
 
 1. [ ] Add machines → Windows → Create installer → download
-       `Fenrir-Setup.exe`, run it on the machine and allow the administrator
+       `Fenrir-Backup-Setup.exe`, run it on the machine and allow the administrator
        prompt (SmartScreen: More info › Run anyway; the file is not
        code-signed). **Expect:** the window ends with "Done"; `Get-Service
-       FenrirAgent` is Running; the machine appears online. (CI runs this,
+       FenrirBackupAgent` is Running; the machine appears online. (CI runs this,
        the PowerShell one-liner and the script on a Windows runner; this
        step is about a real desktop: SmartScreen, antivirus, UAC.)
 2. [ ] Give it access to the repository (Repositories → Give access) or
@@ -116,13 +116,13 @@ When something fails, collect:
        "Start" off. **Expect:** a new VM with the same generation, CPUs,
        memory and disks; start it by hand and check it boots. The original
        VM is untouched.
-5. [ ] Kill test: start a VM backup and restart the `FenrirAgent` service
+5. [ ] Kill test: start a VM backup and restart the `FenrirBackupAgent` service
        halfway. **Expect:** the job is marked failed after a few minutes;
        when the agent starts again it removes the checkpoint it left.
 
 ## 5. macOS (not yet run on hardware)
 
-1. [ ] Run the macOS installer with sudo; add `fenrir-agent` to Full Disk
+1. [ ] Run the macOS installer with sudo; add `fenrir-backup-agent` to Full Disk
        Access. **Expect:** the Mac appears online with its OS version.
 2. [ ] Run **Verify** against the repository. **Expect:** succeeded.
        (System backups of a Mac are not available yet.)
@@ -154,7 +154,7 @@ When something fails, collect:
        alert, and the next retention job stays queued. Release the hold
        (type `release`) and the queue continues.
 3. [ ] Recovery key drill: on any machine with the CLI,
-       `fenrir --repo <path> --recovery-key <key file> image list`.
+       `fenrir-backup --repo <path> --recovery-key <key file> image list`.
        **Expect:** the images are listed without the passphrase.
 4. [ ] Verify → Full on the repository once. **Expect:** no damaged data.
 

@@ -1,9 +1,9 @@
-//! Windows setup: install the agent as the `FenrirAgent` service.
+//! Windows setup: install the agent as the `FenrirBackupAgent` service.
 //!
-//! * `Fenrir-Setup.exe` from the server is the agent with its settings
+//! * `Fenrir-Backup-Setup.exe` from the server is the agent with its settings
 //!   appended (`protocol::setup`). Started with no arguments (double-click)
 //!   it installs itself; `/quiet` does the same without waiting for a key.
-//! * `fenrir-agent install --server ... --token ...` does it explicitly.
+//! * `fenrir-backup-agent install --server ... --token ...` does it explicitly.
 //!
 //! The installed copy in `%ProgramFiles%\Fenrir` is the plain agent (the
 //! settings block removed), byte-identical to the server's build.
@@ -58,7 +58,27 @@ mod win {
 
     use super::SetupConfig;
 
-    const NAME: &str = "FenrirAgent";
+    use crate::names::{EXE_STEM, WIN_FOLDER, WIN_SERVICE as NAME, WIN_SERVICE_DISPLAY};
+
+    fn exe_name() -> String {
+        format!("{EXE_STEM}.exe")
+    }
+
+    /// A service with our name that runs something else belongs to another
+    /// product: never stop, reconfigure or delete it.
+    fn check_ours(svc: &windows_service::service::Service, target: &Path) -> anyhow::Result<()> {
+        let cfg = svc
+            .query_config()
+            .context("reading the existing service's settings")?;
+        let runs = cfg.executable_path.to_string_lossy().to_ascii_lowercase();
+        if !runs.contains(&target.to_string_lossy().to_ascii_lowercase()) {
+            bail!(
+                "a service named {NAME} already exists but runs {}; it is not Fenrir-Backup's, so it was left untouched",
+                cfg.executable_path.display()
+            );
+        }
+        Ok(())
+    }
 
     fn elevated() -> bool {
         unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() }
@@ -88,7 +108,7 @@ mod win {
         PathBuf::from(
             std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into()),
         )
-        .join("Fenrir")
+        .join(WIN_FOLDER)
     }
 
     fn wait_for(svc: &windows_service::service::Service, state: ServiceState, secs: u64) -> bool {
@@ -136,11 +156,15 @@ mod win {
         }
 
         let access = ServiceAccess::QUERY_STATUS
+            | ServiceAccess::QUERY_CONFIG
             | ServiceAccess::START
             | ServiceAccess::STOP
             | ServiceAccess::CHANGE_CONFIG;
+        let dir = install_dir();
+        let target = dir.join(exe_name());
         let existing = mgr.open_service(NAME, access).ok();
         if let Some(s) = &existing {
+            check_ours(s, &target)?;
             if s.query_status()?.current_state != ServiceState::Stopped {
                 println!("Stopping the running agent...");
                 let _ = s.stop();
@@ -150,16 +174,14 @@ mod win {
             }
         }
 
-        let dir = install_dir();
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let target = dir.join("fenrir-agent.exe");
         let me = std::env::current_exe()?;
         let bytes = match exe {
             Some(b) => b,
             None => std::fs::read(&me)?,
         };
         if !same_file(&me, &target) {
-            let tmp = dir.join("fenrir-agent.exe.new");
+            let tmp = dir.join(format!("{}.new", exe_name()));
             std::fs::write(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
             std::fs::rename(&tmp, &target)
                 .with_context(|| format!("replacing {}", target.display()))?;
@@ -170,7 +192,7 @@ mod win {
 
         let info = ServiceInfo {
             name: OsString::from(NAME),
-            display_name: OsString::from("Fenrir-Backup Agent"),
+            display_name: OsString::from(WIN_SERVICE_DISPLAY),
             service_type: ServiceType::OWN_PROCESS,
             start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
@@ -204,9 +226,12 @@ mod win {
         let _ = svc.set_failure_actions_on_non_crash_failures(true);
         svc.start::<&str>(&[]).context("starting the service")?;
         if !wait_for(&svc, ServiceState::Running, 30) {
-            bail!("the service did not start; see C:\\ProgramData\\Fenrir\\agent\\agent.log");
+            bail!(
+                "the service did not start; see {}",
+                crate::config::state_dir().join("agent.log").display()
+            );
         }
-        println!("Done. The agent runs as the FenrirAgent service; this machine appears in the web UI within a minute.");
+        println!("Done. The agent runs as the {NAME} service; this machine appears in the web UI within a minute.");
         Ok(true)
     }
 
@@ -223,11 +248,19 @@ mod win {
         if !elevated() {
             bail!("run this as Administrator");
         }
+        if crate::names::legacy_install() {
+            bail!("this agent was installed under the old names (FenrirAgent, C:\\Program Files\\Fenrir), which other software also uses; remove it by hand as described in the deployment guide");
+        }
         let mgr = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+        let dir = install_dir();
         if let Ok(s) = mgr.open_service(
             NAME,
-            ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE,
+            ServiceAccess::QUERY_STATUS
+                | ServiceAccess::QUERY_CONFIG
+                | ServiceAccess::STOP
+                | ServiceAccess::DELETE,
         ) {
+            check_ours(&s, &dir.join(exe_name()))?;
             if s.query_status()?.current_state != ServiceState::Stopped {
                 let _ = s.stop();
                 wait_for(&s, ServiceState::Stopped, 60);
@@ -238,7 +271,6 @@ mod win {
         // This executable may be the installed one: delete the folder from a
         // detached helper once we have exited.
         use std::os::windows::process::CommandExt;
-        let dir = install_dir();
         // raw_arg: cmd.exe does not understand the \" escaping Rust would
         // apply to the quoted path.
         let _ = std::process::Command::new("cmd.exe")

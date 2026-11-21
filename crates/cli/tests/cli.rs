@@ -8,7 +8,7 @@ use serde_json::Value;
 const MIB: usize = 1024 * 1024;
 
 fn fenrir(repo: &Path, pass: &str, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_fenrir"))
+    Command::new(env!("CARGO_BIN_EXE_fenrir-backup"))
         .arg("--json")
         .arg("--repo")
         .arg(repo)
@@ -201,7 +201,7 @@ fn end_to_end_backup_verify_restore() {
     assert_eq!(json(&o)["error"]["kind"], "key_error");
 
     // recovery key works without the passphrase
-    let o = Command::new(env!("CARGO_BIN_EXE_fenrir"))
+    let o = Command::new(env!("CARGO_BIN_EXE_fenrir-backup"))
         .args([
             "--json",
             "--repo",
@@ -246,7 +246,7 @@ fn missing_repo_and_usage_errors() {
     let dir = tempfile::tempdir().unwrap();
     let o = fenrir(&dir.path().join("nope"), "x", &["image", "list"]);
     assert_eq!(code(&o), 5);
-    let o = Command::new(env!("CARGO_BIN_EXE_fenrir"))
+    let o = Command::new(env!("CARGO_BIN_EXE_fenrir-backup"))
         .args(["--json", "image", "list"])
         .env_remove("FENRIR_REPO")
         .output()

@@ -10,17 +10,17 @@ fenrir-server-linux-x64/
   fenrir-server
   ui/                         web interface
   agents/
-    x86_64-pc-windows-msvc/fenrir-agent.exe     Windows and Hyper-V hosts
-    x86_64-unknown-linux-musl/fenrir-agent      Linux x86-64 (static)
-    aarch64-unknown-linux-musl/fenrir-agent     Linux arm64 (static)
-    aarch64-apple-darwin/fenrir-agent           macOS, Apple silicon
-    x86_64-apple-darwin/fenrir-agent            macOS, Intel
+    x86_64-pc-windows-msvc/fenrir-backup-agent.exe     Windows and Hyper-V hosts
+    x86_64-unknown-linux-musl/fenrir-backup-agent      Linux x86-64 (static)
+    aarch64-unknown-linux-musl/fenrir-backup-agent     Linux arm64 (static)
+    aarch64-apple-darwin/fenrir-backup-agent           macOS, Apple silicon
+    x86_64-apple-darwin/fenrir-backup-agent            macOS, Intel
   SHA256SUMS
 ```
 
 ## Run it with Docker
 
-The image holds the server, the web UI, the `fenrir` CLI, the Linux agent
+The image holds the server, the web UI, the `fenrir-backup` CLI, the Linux agent
 for its own CPU architecture (x86-64 or arm64) and the Windows agent (used
 for Windows machines and Hyper-V hosts; cross-compiled with MinGW).
 
@@ -48,7 +48,7 @@ as arguments after the image name, e.g. `fenrir-server --poll-seconds 30`.
   agents pin the certificate stored there.
 * **macOS agents** are not built inside Docker (they need a Mac). The
   server sync fetches them from CI (see "Keep it updated from GitHub");
-  without it, copy `fenrir-agent` from a CI server bundle into
+  without it, copy `fenrir-backup-agent` from a CI server bundle into
   `./agents/aarch64-apple-darwin/` and `./agents/x86_64-apple-darwin/`.
   The Add machines page marks platforms without a build as unavailable.
 * **Bind mount instead of a volume:** the server runs as UID 10001, so
@@ -170,21 +170,54 @@ secret) and is never sent back to the browser.
 
 ## Windows setup program
 
-`Fenrir-Setup.exe` is the Windows agent with the enrollment settings
+`Fenrir-Backup-Setup.exe` is the Windows agent with the enrollment settings
 (server address, certificate fingerprint, enrollment token) appended. The
 server builds one per download; it is only as secret as the link it came
 from, and stops working when that link expires or is revoked. Run it
-interactively, or silently with `Fenrir-Setup.exe /quiet` from deployment
+interactively, or silently with `Fenrir-Backup-Setup.exe /quiet` from deployment
 tools (it must then run elevated). The installed copy in
-`C:\Program Files\Fenrir` is the plain agent. Remove the agent with
-`"C:\Program Files\Fenrir\fenrir-agent.exe" uninstall`.
+`C:\Program Files\Fenrir-Backup` is the plain agent. Remove the agent with
+`"C:\Program Files\Fenrir-Backup\fenrir-backup-agent.exe" uninstall`.
 
 The file is not code-signed, so SmartScreen and some antivirus products
-warn about it ("More info › Run anyway"). If you sign `fenrir-agent.exe`
+warn about it ("More info › Run anyway"). If you sign `fenrir-backup-agent.exe`
 with your own code-signing certificate before placing it in the server's
 agents folder, deploy with the PowerShell script or one-liner instead: they
 download the signed agent unchanged, while the setup program appends data
 to the file, which invalidates an Authenticode signature.
+
+## Names on the machines (and installs from before the rename)
+
+Everything the agent installs is named for Fenrir-Backup, so it cannot
+clash with other software that uses "Fenrir" names:
+
+| | Windows | Linux | macOS |
+|---|---|---|---|
+| Service | `FenrirBackupAgent` ("Fenrir-Backup Agent") | `fenrir-backup-agent.service` | `uk.fenrir-backup.agent` |
+| Program | `C:\Program Files\Fenrir-Backup\fenrir-backup-agent.exe` | `/usr/local/bin/fenrir-backup-agent` | same |
+| Identity and log | `C:\ProgramData\Fenrir-Backup\agent` | `/var/lib/fenrir-backup-agent` | `/Library/Application Support/Fenrir-Backup/agent` |
+
+The installers and `uninstall` refuse to stop, change or delete a service
+with this name that runs a different program.
+
+Earlier test builds used `FenrirAgent`, `C:\Program Files\Fenrir\fenrir-agent.exe`
+and `C:\ProgramData\Fenrir\agent` (Linux: `fenrir-agent`). If another
+product uses those names, an old installer may have stopped or replaced
+its service. Nothing removes the old names automatically, because they may
+belong to the other product. To check a Windows machine, in an elevated
+prompt:
+
+```
+sc.exe qc FenrirAgent
+```
+
+If `BINARY_PATH_NAME` ends in `fenrir-agent.exe" service` and the machine
+does not run that other product, it is a Fenrir-Backup test install:
+`sc.exe delete FenrirAgent`, then delete `C:\Program Files\Fenrir` and
+`C:\ProgramData\Fenrir\agent`. If the other product is installed, repair or
+reinstall it instead, and install Fenrir-Backup with the current installer.
+Agents from before the rename that are already enrolled keep working and
+keep their old names when they update themselves.
 
 ## Agent updates
 
@@ -231,7 +264,7 @@ no administrator account; SMB 3 with encryption if the network is shared.
 To change the password, change it on the server first, then use **Change
 sign-in** on the repository (it re-encrypts it for every machine).
 
-Linux machines mount the share privately (`/run/fenrir-agent/smb`) and need
+Linux machines mount the share privately (`/run/fenrir-backup-agent/smb`) and need
 the `cifs-utils` package. macOS machines cannot use share repositories yet:
 use a folder the system has mounted.
 
@@ -252,7 +285,7 @@ straight from the repository (nothing is copied), writes go to a
 temporary overlay that is deleted afterwards, and its network is isolated:
 it cannot reach your LAN or the internet, so a booted copy never clashes
 with the real machine. Hyper-V hosts can run boot checks too; they copy
-the image to a scratch folder under `C:\ProgramData\Fenrir\agent\boot-checks`
+the image to a scratch folder under `C:\ProgramData\Fenrir-Backup\agent\boot-checks`
 first, so they need free space for the whole image.
 
 Give the boot host access to the repository, then either click **Test

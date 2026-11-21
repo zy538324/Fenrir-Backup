@@ -1,4 +1,4 @@
-//! Wire protocol between `fenrir-server` and `fenrir-agent`, plus the
+//! Wire protocol between `fenrir-server` and `fenrir-backup-agent`, plus the
 //! sealing scheme the browser uses to hand repository secrets to agents
 //! without the server being able to read them.
 //!
@@ -181,7 +181,7 @@ pub struct HeartbeatResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentUpdate {
-    /// Server path to download, e.g. "/agent/x86_64-pc-windows-msvc/fenrir-agent.exe".
+    /// Server path to download, e.g. "/agent/x86_64-pc-windows-msvc/fenrir-backup-agent.exe".
     pub path: String,
     pub sha256: String,
 }

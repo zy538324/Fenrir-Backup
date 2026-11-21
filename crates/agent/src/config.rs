@@ -39,13 +39,27 @@ pub fn state_dir() -> PathBuf {
     if let Ok(d) = std::env::var("FENRIR_AGENT_STATE") {
         return PathBuf::from(d);
     }
+    // Installs from before the rename keep their state where it was.
+    let legacy = crate::names::legacy_install();
     if cfg!(windows) {
         PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into()))
-            .join(r"Fenrir\agent")
+            .join(if legacy {
+                r"Fenrir\agent"
+            } else {
+                r"Fenrir-Backup\agent"
+            })
     } else if cfg!(target_os = "macos") {
-        PathBuf::from("/Library/Application Support/Fenrir/agent")
+        PathBuf::from(if legacy {
+            "/Library/Application Support/Fenrir/agent"
+        } else {
+            "/Library/Application Support/Fenrir-Backup/agent"
+        })
     } else {
-        PathBuf::from("/var/lib/fenrir-agent")
+        PathBuf::from(if legacy {
+            "/var/lib/fenrir-agent"
+        } else {
+            "/var/lib/fenrir-backup-agent"
+        })
     }
 }
 
@@ -81,7 +95,10 @@ impl AgentConfig {
     pub fn load(dir: &Path) -> anyhow::Result<AgentConfig> {
         let p = dir.join("agent.json");
         let s = std::fs::read_to_string(&p).with_context(|| {
-            format!("{} not found: run `fenrir-agent enroll` first", p.display())
+            format!(
+                "{} not found: run `fenrir-backup-agent enroll` first",
+                p.display()
+            )
         })?;
         Ok(serde_json::from_str(&s)?)
     }

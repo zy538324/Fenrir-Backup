@@ -39,7 +39,7 @@ the phase or task that delivers it). This file is reviewed at every release.
 |---|---|---|---|
 | 4.1 | State the level of support and maintenance | Support lifecycle table in `SECURITY.md`. | Done |
 | 4.2 | At least one year's notice before end of support | Committed to in `SECURITY.md`. | Done |
-| 4.3 | Information about notable incidents | Security advisories and release notes; for incidents affecting backup integrity, guidance on how to verify existing repositories (`fenrir verify --full`). | Done (process) |
+| 4.3 | Information about notable incidents | Security advisories and release notes; for incidents affecting backup integrity, guidance on how to verify existing repositories (`fenrir-backup verify --full`). | Done (process) |
 
 ## Product controls relevant to ransomware resilience
 

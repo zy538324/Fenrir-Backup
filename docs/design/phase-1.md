@@ -19,7 +19,7 @@ In:
 - `snapshot-linux`: Phase 1 only provides a raw file / block-device
   `DiskSource` (used for tests and for imaging an unmounted disk). Snapshots
   are Phase 6.
-- `cli` (`fenrir`): `repo init`, `repo info`, `key add-recovery`, `backup disk`,
+- `cli` (`fenrir-backup`): `repo init`, `repo info`, `key add-recovery`, `backup disk`,
   `backup system` (Windows), `image list|show`, `verify`, `restore disk`.
   `--json` everywhere; documented exit codes.
 
@@ -106,7 +106,7 @@ Nothing in the backup path opens any device for writing.
 
 ## Restore (Phase 1 subset)
 
-`fenrir restore disk` writes one disk image to a target path (file or block
+`fenrir-backup restore disk` writes one disk image to a target path (file or block
 device). Safety rules, enforced in the engine, not just the CLI:
 
 - The target must be named explicitly; there is no default.

@@ -1,13 +1,13 @@
 [package]
 name = "agent"
-description = "fenrir-agent: Fenrir-Backup agent for Windows, Hyper-V hosts, Linux and macOS"
+description = "fenrir-backup-agent: Fenrir-Backup agent for Windows, Hyper-V hosts, Linux and macOS"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "fenrir-agent"
+name = "fenrir-backup-agent"
 path = "src/main.rs"
 
 [dependencies]

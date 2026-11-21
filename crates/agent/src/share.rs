@@ -8,7 +8,7 @@
 //!   user's Explorer, so ransomware running as a user cannot reach it. With
 //!   no credentials, Windows uses the computer account (domain-joined
 //!   machines; grant `DOMAIN\NAME$` access on the share).
-//! * Linux: a private CIFS mount under `/run/fenrir-agent/smb`, credentials
+//! * Linux: a private CIFS mount under `/run/fenrir-backup-agent/smb`, credentials
 //!   passed in a 0600 file that is deleted straight after mounting.
 //!
 //! `release_all` disconnects after each job.
@@ -186,7 +186,7 @@ fn connect(unc: &Unc, creds: Option<&ShareCredentials>) -> anyhow::Result<String
         bail!("Linux machines need a username and password for network shares (the computer-account option is for Windows)");
     };
     let remote = format!("//{}/{}", unc.server, unc.share);
-    let base = std::path::Path::new("/run/fenrir-agent/smb");
+    let base = std::path::Path::new("/run/fenrir-backup-agent/smb");
     let id = hex::encode(&Sha256::digest(format!("{remote}\0{}", windows_user(c)).as_bytes())[..8]);
     let mnt = base.join(&id);
     let local = |m: &std::path::Path| {

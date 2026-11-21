@@ -85,7 +85,10 @@ impl Client {
         let mut b = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
             .timeout(Duration::from_secs(120))
-            .user_agent(&format!("fenrir-agent/{}", env!("CARGO_PKG_VERSION")));
+            .user_agent(&format!(
+                "fenrir-backup-agent/{}",
+                env!("CARGO_PKG_VERSION")
+            ));
         if !pin_hex.is_empty() {
             let pin: [u8; 32] = hex::decode(pin_hex)
                 .ok()

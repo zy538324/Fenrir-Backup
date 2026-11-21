@@ -47,7 +47,7 @@ struct Args {
 
 const fn default_data_dir() -> &'static str {
     if cfg!(windows) {
-        r"C:\ProgramData\Fenrir\server"
+        r"C:\ProgramData\Fenrir-Backup\server"
     } else {
         "/var/lib/fenrir-server"
     }

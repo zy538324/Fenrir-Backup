@@ -18,8 +18,8 @@ impl T {
         let dir = tempfile::tempdir().unwrap();
         let agents = dir.path().join("agents");
         for (t, f) in [
-            ("x86_64-pc-windows-msvc", "fenrir-agent.exe"),
-            ("x86_64-unknown-linux-musl", "fenrir-agent"),
+            ("x86_64-pc-windows-msvc", "fenrir-backup-agent.exe"),
+            ("x86_64-unknown-linux-musl", "fenrir-backup-agent"),
         ] {
             std::fs::create_dir_all(agents.join(t)).unwrap();
             std::fs::write(agents.join(t).join(f), format!("binary for {t}")).unwrap();
@@ -276,7 +276,7 @@ async fn downloads_and_installers() {
     assert!(p("windows")["setup_url"]
         .as_str()
         .unwrap()
-        .ends_with("/windows/Fenrir-Setup.exe"));
+        .ends_with("/windows/Fenrir-Backup-Setup.exe"));
     assert!(p("linux")["setup_url"].is_null());
     assert_eq!(p("macos")["available"], false, "no mac build in agents dir");
     assert!(p("linux")["command"]
@@ -312,8 +312,8 @@ async fn downloads_and_installers() {
     assert!(body.contains("Get-Service vmms"));
     // Windows setup programs: the agent build with the settings appended.
     for (platform, file, role) in [
-        ("windows", "Fenrir-Setup.exe", "workstation"),
-        ("hyperv", "Fenrir-Setup-HyperV.exe", "hyperv"),
+        ("windows", "Fenrir-Backup-Setup.exe", "workstation"),
+        ("hyperv", "Fenrir-Backup-Setup-HyperV.exe", "hyperv"),
     ] {
         let req = Request::builder()
             .uri(format!("/install/{token}/{platform}/{file}"))
@@ -334,12 +334,12 @@ async fn downloads_and_installers() {
         assert_eq!(cfg.token, token);
         assert_eq!(cfg.role, role);
     }
-    for bad in ["windows/setup.exe", "linux/Fenrir-Setup.exe"] {
+    for bad in ["windows/setup.exe", "linux/Fenrir-Backup-Setup.exe"] {
         let (s, _) = t.get(&format!("/install/{token}/{bad}")).await;
         assert_eq!(s, StatusCode::NOT_FOUND, "{bad}");
     }
     let (s, _) = t
-        .get("/install/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/windows/Fenrir-Setup.exe")
+        .get("/install/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/windows/Fenrir-Backup-Setup.exe")
         .await;
     assert_eq!(s, StatusCode::NOT_FOUND, "unknown token");
 
@@ -361,7 +361,7 @@ async fn downloads_and_installers() {
     let (s, _, bin) = t
         .req(
             "GET",
-            "/agent/x86_64-pc-windows-msvc/fenrir-agent.exe",
+            "/agent/x86_64-pc-windows-msvc/fenrir-backup-agent.exe",
             None,
             None,
             false,
@@ -1007,7 +1007,10 @@ async fn maintenance_restore_settings_and_updates() {
         .await;
     let u: HeartbeatResponse = serde_json::from_value(v).unwrap();
     let up = u.update.expect("update offered");
-    assert_eq!(up.path, "/agent/x86_64-unknown-linux-musl/fenrir-agent");
+    assert_eq!(
+        up.path,
+        "/agent/x86_64-unknown-linux-musl/fenrir-backup-agent"
+    );
     assert_eq!(
         up.sha256,
         server::sha256_hex(b"binary for x86_64-unknown-linux-musl")
@@ -1020,7 +1023,7 @@ async fn maintenance_restore_settings_and_updates() {
         .await;
     assert_eq!(
         v["update"]["path"],
-        "/agent/x86_64-unknown-linux-musl/fenrir-agent"
+        "/agent/x86_64-unknown-linux-musl/fenrir-backup-agent"
     );
     // A MinGW Windows build uses the Windows slot.
     let mut mingw = inv.clone();
@@ -1034,7 +1037,7 @@ async fn maintenance_restore_settings_and_updates() {
         .await;
     assert_eq!(
         v["update"]["path"],
-        "/agent/x86_64-pc-windows-msvc/fenrir-agent.exe"
+        "/agent/x86_64-pc-windows-msvc/fenrir-backup-agent.exe"
     );
     inv.agent_sha256 = up.sha256.clone();
     let (_, v) = t

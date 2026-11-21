@@ -1,4 +1,4 @@
-//! fenrir-agent: enrolls with a Fenrir-Backup server, then runs the jobs it
+//! fenrir-backup-agent: enrolls with a Fenrir-Backup server, then runs the jobs it
 //! is given (backups, Hyper-V VM backups, verification).
 
 mod boot;
@@ -8,6 +8,7 @@ mod hyperv;
 mod inventory;
 mod jobs;
 mod log;
+mod names;
 mod restore;
 mod setup;
 mod share;
@@ -29,7 +30,7 @@ use crate::client::Client;
 use crate::config::{AgentConfig, Secrets};
 
 #[derive(Parser)]
-#[command(name = "fenrir-agent", version, about = "Fenrir-Backup agent")]
+#[command(name = "fenrir-backup-agent", version, about = "Fenrir-Backup agent")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -55,7 +56,7 @@ enum Cmd {
     Service,
     /// Show enrollment and connectivity.
     Status,
-    /// Windows: install (or update) the agent as the FenrirAgent service and
+    /// Windows: install (or update) the agent as the FenrirBackupAgent service and
     /// enrol it. Asks for administrator rights if needed.
     Install {
         #[arg(long)]
@@ -77,7 +78,7 @@ enum Cmd {
 }
 
 fn main() {
-    // Fenrir-Setup.exe: the agent with its settings appended. Started by
+    // Fenrir-Backup-Setup.exe: the agent with its settings appended. Started by
     // double-click (no arguments) or with /quiet, it installs itself.
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 1 || (args.len() == 2 && setup::is_quiet_flag(&args[1])) {
@@ -147,7 +148,7 @@ fn main() {
         }
     };
     if let Err(e) = r {
-        eprintln!("fenrir-agent: {e:#}");
+        eprintln!("fenrir-backup-agent: {e:#}");
         std::process::exit(1);
     }
 }

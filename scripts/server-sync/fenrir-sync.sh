@@ -72,12 +72,15 @@ sync_agents() {
         return 1
     fi
     for t in $MAC_TARGETS; do
-        [ -f "$TMP/$t/fenrir-agent" ] || continue
+        # Builds from before the rename are named fenrir-agent.
+        src="$TMP/$t/fenrir-backup-agent"
+        [ -f "$src" ] || src="$TMP/$t/fenrir-agent"
+        [ -f "$src" ] || continue
         mkdir -p "agents/$t"
         # Replace the file inside the mounted directory (keeps the mount).
-        cp "$TMP/$t/fenrir-agent" "agents/$t/.fenrir-agent.new"
-        chmod 755 "agents/$t/.fenrir-agent.new"
-        mv -f "agents/$t/.fenrir-agent.new" "agents/$t/fenrir-agent"
+        cp "$src" "agents/$t/.fenrir-backup-agent.new"
+        chmod 755 "agents/$t/.fenrir-backup-agent.new"
+        mv -f "agents/$t/.fenrir-backup-agent.new" "agents/$t/fenrir-backup-agent"
     done
     rm -rf "$TMP"
     echo "$REV" > "$STATE/agents"
