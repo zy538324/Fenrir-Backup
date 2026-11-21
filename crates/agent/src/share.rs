@@ -73,6 +73,7 @@ pub fn parse_unc(path: &str) -> Option<Unc> {
 
 /// Windows user name for a sign-in: `DOMAIN\user`, or as typed when it
 /// already names the domain (`user@domain`, `DOMAIN\user`).
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn windows_user(c: &ShareCredentials) -> String {
     let u = c.username.trim();
     if c.domain.trim().is_empty() || u.contains('\\') || u.contains('@') {
