@@ -372,6 +372,10 @@ Versions are pinned in `ui/package-lock.json`.
   Microsoft's published Open Specification [MS-VHDX]. No Microsoft code is
   redistributed.
 * Linux: kernel ioctls (`BLKSSZGET`, `BLKPBSZGET`), `/proc`, `/sys`.
+* Network share repositories: on Windows through the documented
+  `WNetAddConnection2W` / `WNetCancelConnection2W` API (mpr.dll); on Linux
+  through the system's `mount -t cifs` (cifs-utils, GPL-3.0, installed by
+  the administrator and run as a separate program, never linked or shipped).
 * Boot from backup: the agent starts the host's own `qemu-system-x86_64` and
   `qemu-img` (GPL-2.0) and OVMF firmware (BSD-2-Clause-Patent) as separate
   programs, installed by the administrator from the distribution; nothing

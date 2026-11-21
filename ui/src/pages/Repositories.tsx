@@ -5,6 +5,7 @@ import { ago, bytes, passwordStrength, when } from "../format";
 import { newRecoveryKey, seal, sealSupported } from "../seal";
 import { Empty, Field, Loading, Modal, Notice, Pill, useApi, useToast } from "../ui";
 import { BootVerification } from "./Boot";
+import { emptySignin, isSharePath, sealSignin, ShareFields, ShareSigninRow, signinComplete, signinDisplay, signinFromDisplay, TestConnection, type ShareSignin } from "./Share";
 
 export default function RepositoriesPage() {
   const repos = useApi<Repository[]>("/api/repositories", 5000);
@@ -83,6 +84,7 @@ export default function RepositoriesPage() {
                 <div className="row">
                   {r.status === "ready" && <Maintenance repo={r} agents={agents.data!} onChange={repos.reload} />}
                 </div>
+                <ShareSigninRow repo={r} agents={agents.data!} onSaved={repos.reload} />
                 {r.status === "ready" && <BootVerification repo={r} agents={agents.data!} onSaved={repos.reload} />}
                 <div className="row">
                   <span className="faint small mono">ID {r.repo_uuid.slice(0, 8)}</span>
@@ -150,6 +152,7 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
   const [others, setOthers] = useState<string[]>([]);
   const [pass, setPass] = useState("");
   const [pass2, setPass2] = useState("");
+  const [signin, setSignin] = useState<ShareSignin>(emptySignin());
   const [saved, setSaved] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -157,6 +160,8 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
   const recovery = useMemo(() => newRecoveryKey(), []);
   const creatorAgent = agents.find((a) => a.id === creator);
   const winPath = creatorAgent?.os.family === "windows";
+  const share = isSharePath(path);
+  const chosen = agents.filter((a) => a.id === creator || others.includes(a.id));
 
   const download = () => {
     const blob = new Blob([recovery.fileContents], { type: "application/json" });
@@ -178,10 +183,15 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
         ids.map(async (id) => {
           const a = agents.find((x) => x.id === id)!;
           const secret = JSON.stringify({ passphrase: pass, recovery_key: id === creator ? recovery.fileContents : null });
-          return { agent_id: id, sealed: await seal(a.public_key, secret) };
+          const sealed_share = share && signin.mode === "password" ? await sealSignin(a, signin) : null;
+          return { agent_id: id, sealed: await seal(a.public_key, secret), sealed_share };
         }),
       );
-      await api.post("/api/repositories", { name, path, repo_uuid: recovery.repoId, init_agent_id: creator, access });
+      await api.post("/api/repositories", {
+        name, path, repo_uuid: recovery.repoId, init_agent_id: creator, access,
+        share_auth: share ? signin.mode : "none",
+        share_user: share && signin.mode === "password" ? signinDisplay(signin) : null,
+      });
       onDone();
     } catch (e) {
       const m = (e as Error).message;
@@ -208,7 +218,7 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
         <>
           {step > 1 && <button className="btn" onClick={() => setStep(step - 1)}>Back</button>}
           <span className="grow" />
-          {step === 1 && <button className="btn primary" disabled={!name.trim() || !path.trim() || !creator} onClick={() => setStep(2)}>Continue</button>}
+          {step === 1 && <button className="btn primary" disabled={!name.trim() || !path.trim() || !creator || (share && !signinComplete(signin))} onClick={() => setStep(2)}>Continue</button>}
           {step === 2 && <button className="btn primary" disabled={pass.length < 12 || pass !== pass2} onClick={() => setStep(3)}>Continue</button>}
           {step === 3 && <button className="btn primary" disabled={!saved || busy} onClick={create}><Lock size={15} /> {busy ? "Encrypting…" : "Create repository"}</button>}
         </>
@@ -223,9 +233,15 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
             </select>
           </Field>
-          <Field label="Folder" hint={winPath ? "As this machine sees it: a local folder like D:\\Backups\\Fenrir or a share like \\\\nas\\backups\\fenrir. The folder must be new or empty." : "As this machine sees it, e.g. /mnt/nas/fenrir. The folder must be new or empty."}>
-            <input className="input mono" placeholder={winPath ? "\\\\nas\\backups\\fenrir" : "/mnt/backups/fenrir"} value={path} onChange={(e) => setPath(e.target.value)} />
+          <Field label="Folder" hint={<>A local folder (<span className="mono">{winPath ? "D:\\Backups\\Fenrir" : "/srv/backups/fenrir"}</span>) or a network share (<span className="mono">{"\\\\backup-server\\backups\\fenrir"}</span>). The folder must be new or empty; it is created if missing.</>}>
+            <input className="input mono" placeholder={"\\\\backup-server\\backups\\fenrir"} value={path} onChange={(e) => setPath(e.target.value)} />
           </Field>
+          {share && (
+            <Field label="Sign-in to the share">
+              <ShareFields value={signin} onChange={setSignin} machines={chosen} />
+            </Field>
+          )}
+          {path.trim() && <TestConnection agent={creatorAgent} path={path} signin={share ? signin : null} />}
           {agents.length > 1 && (
             <Field label="Other machines that back up here" hint="You can add more later.">
               <div className="chips">
@@ -272,6 +288,8 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
   const candidates = agents.filter((a) => !repo.agents.some((x) => x.id === a.id));
   const [agent, setAgent] = useState(candidates[0]?.id ?? "");
   const [pass, setPass] = useState("");
+  const needsSignin = repo.share_auth === "password";
+  const [signin, setSignin] = useState<ShareSignin>(() => signinFromDisplay(repo.share_user));
   const [err, setErr] = useState<string | null>(null);
   const toast = useToast();
   return (
@@ -283,12 +301,13 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
           <button className="btn" onClick={onClose}>Cancel</button>
           <button
             className="btn primary"
-            disabled={!agent || !pass}
+            disabled={!agent || !pass || (needsSignin && !signin.password)}
             onClick={async () => {
               try {
                 const a = agents.find((x) => x.id === agent)!;
                 const sealed = await seal(a.public_key, JSON.stringify({ passphrase: pass, recovery_key: null }));
-                await api.post(`/api/repositories/${repo.id}/access`, { agent_id: agent, sealed });
+                const sealed_share = needsSignin ? await sealSignin(a, signin) : null;
+                await api.post(`/api/repositories/${repo.id}/access`, { agent_id: agent, sealed, sealed_share });
                 toast("ok", `${a.name} can now use ${repo.name}`);
                 onDone();
               } catch (e) {
@@ -314,7 +333,16 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
           <Field label="Repository passphrase" hint="Encrypted here for that machine only. If it is wrong, the machine's first backup reports it.">
             <input className="input" type="password" autoComplete="off" value={pass} onChange={(e) => setPass(e.target.value)} />
           </Field>
+          {needsSignin && (
+            <Field label={`Share password for ${repo.share_user}`} hint="Encrypted here for that machine only.">
+              <input className="input" type="password" autoComplete="off" value={signin.password} onChange={(e) => setSignin({ ...signin, password: e.target.value })} />
+            </Field>
+          )}
+          {repo.share_auth === "machine" && agents.find((x) => x.id === agent)?.os.family !== "windows" && (
+            <Notice tone="warn">This repository uses the Windows computer account to reach the share; this machine is not Windows. Switch the repository to a username and password first (Change sign-in).</Notice>
+          )}
           <div className="muted small">The machine must be able to reach <span className="mono">{repo.path}</span>.</div>
+          <TestConnection agent={agents.find((x) => x.id === agent)} path={repo.path} signin={isSharePath(repo.path) && repo.share_auth !== "none" ? { ...signin, mode: repo.share_auth === "machine" ? "machine" : "password" } : null} />
         </>
       )}
     </Modal>

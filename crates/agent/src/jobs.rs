@@ -143,9 +143,9 @@ fn secret(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<RepoSecret> {
 
 fn open_repo(key: &AgentKey, access: &RepoAccess) -> anyhow::Result<Repository> {
     let s = secret(key, access)?;
+    let path = crate::share::prepare(key, &access.path, access.sealed_share.as_ref())?;
     let backend: Arc<dyn Backend> = Arc::new(
-        LocalBackend::open(&access.path)
-            .with_context(|| format!("repository path {}", access.path))?,
+        LocalBackend::open(&path).with_context(|| format!("repository path {}", access.path))?,
     );
     Repository::unlock_with_passphrase(backend, s.passphrase.as_bytes()).map_err(|e| match e {
         core_format::Error::WrongKey => anyhow!("the repository passphrase given to this machine is wrong; grant access again with the right passphrase"),
@@ -158,6 +158,11 @@ pub fn run(ctx: &Ctx, spec: &JobSpec) -> JobUpdate {
     let rep = Reporter::new(ctx.client, spec.id);
     rep.progress("starting", 0, 1, spec.kind.label());
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(ctx, spec, &rep)));
+    // Network shares stay connected only while a job (or a VM running from
+    // a backup) needs them.
+    if crate::boot::running_vms().is_empty() {
+        crate::share::release_all();
+    }
     match r {
         Ok(Ok(u)) => u,
         Ok(Err(e)) => {
@@ -210,8 +215,9 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                     .as_deref()
                     .ok_or_else(|| anyhow!("no recovery key supplied"))?,
             )?;
+            let path = crate::share::prepare(ctx.key, &access.path, access.sealed_share.as_ref())?;
             let backend: Arc<dyn Backend> =
-                Arc::new(LocalBackend::create(&access.path).with_context(|| {
+                Arc::new(LocalBackend::create(&path).with_context(|| {
                     format!(
                         "creating the repository at {} (the folder must be new or empty)",
                         access.path
@@ -360,6 +366,9 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             crate::boot::run(ctx, &repo, &req, rep)
         }
         JobKind::StopVm { session_id } => crate::boot::stop_vm(*session_id),
+        JobKind::CheckAccess { path, sealed_share } => {
+            check_access(ctx, path, sealed_share.as_ref())
+        }
     }
 }
 
@@ -588,6 +597,66 @@ fn backup_one_vm(
         )),
     }
     result.map(|r| (r, warnings))
+}
+
+/// Sign in (if a share), then check the folder: exists, is a repository,
+/// writable; report free space. Writes and deletes one small test file.
+fn check_access(
+    ctx: &Ctx,
+    path: &str,
+    sealed: Option<&protocol::seal::Sealed>,
+) -> anyhow::Result<JobUpdate> {
+    let local = crate::share::prepare(ctx.key, path, sealed)?;
+    let p = Path::new(&local);
+    let exists = p.is_dir();
+    let repository = exists && p.join(core_format::repo::CONFIG_KEY).is_file();
+    // The folder itself, or the nearest parent that exists (a new repository
+    // folder is created when the repository is).
+    let mut probe_dir = p.to_path_buf();
+    while !probe_dir.is_dir() {
+        match probe_dir.parent() {
+            Some(q) if q != probe_dir => probe_dir = q.to_path_buf(),
+            _ => bail!("{path}: no part of this path exists"),
+        }
+    }
+    let test = probe_dir.join(format!(
+        ".fenrir-write-test-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let writable = std::fs::write(&test, b"fenrir").is_ok();
+    let _ = std::fs::remove_file(&test);
+    let space = crate::share::space(&probe_dir.display().to_string());
+    let mut u = done(if writable {
+        JobState::Succeeded
+    } else {
+        JobState::Failed
+    });
+    if !writable {
+        u.error = Some(format!(
+            "{} is readable but this machine cannot write to it (check the share and folder permissions)",
+            probe_dir.display()
+        ));
+    } else if exists
+        && !repository
+        && std::fs::read_dir(p)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false)
+    {
+        u.state = JobState::Warning;
+        u.warnings.push(format!(
+            "{path} exists and is not empty; a new repository needs a new or empty folder"
+        ));
+    }
+    u.result = Some(json!({
+        "path": path,
+        "exists": exists,
+        "repository": repository,
+        "writable": writable,
+        "free_bytes": space.map(|s| s.0),
+        "total_bytes": space.map(|s| s.1),
+        "share": crate::share::parse_unc(path).is_some(),
+    }));
+    Ok(u)
 }
 
 #[cfg(test)]

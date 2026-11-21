@@ -68,6 +68,8 @@ pub fn routes() -> Router<Shared> {
             "/api/repositories/{id}/boot-verification",
             post(set_boot_verification),
         )
+        .route("/api/repositories/{id}/share", post(set_share))
+        .route("/api/agents/{id}/check-access", post(check_access))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/settings/test-notification", post(test_notification))
         .route("/api/notifications", get(list_notifications))
@@ -695,6 +697,46 @@ async fn revoke_token(
 struct SealedFor {
     agent_id: String,
     sealed: protocol::seal::Sealed,
+    /// Network share sign-in sealed to this agent (share_auth = password).
+    #[serde(default)]
+    sealed_share: Option<protocol::seal::Sealed>,
+}
+
+/// How agents sign in to a repository on a network share.
+#[derive(Deserialize, Default, Clone)]
+struct ShareAuth {
+    /// "none" (local path, or the share needs no sign-in), "machine"
+    /// (Windows computer account) or "password".
+    #[serde(default)]
+    share_auth: Option<String>,
+    /// Shown in the UI, e.g. "CORP\\backup-svc"; never the password.
+    #[serde(default)]
+    share_user: Option<String>,
+}
+
+impl ShareAuth {
+    fn mode(&self) -> ApiResult<&'static str> {
+        match self.share_auth.as_deref().unwrap_or("none") {
+            "none" => Ok("none"),
+            "machine" => Ok("machine"),
+            "password" => Ok("password"),
+            _ => Err(ApiError::bad(
+                "share sign-in must be none, machine or password",
+            )),
+        }
+    }
+    fn user(&self) -> Option<String> {
+        self.share_user
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(|u| u.chars().take(200).collect())
+    }
+}
+
+fn is_share_path(p: &str) -> bool {
+    let p = p.trim();
+    p.starts_with(r"\\") || p.starts_with("//") || p.starts_with("smb://")
 }
 
 #[derive(Deserialize)]
@@ -705,6 +747,8 @@ struct NewRepo {
     repo_uuid: Uuid,
     init_agent_id: String,
     access: Vec<SealedFor>,
+    #[serde(flatten)]
+    share: ShareAuth,
 }
 
 async fn create_repo(
@@ -723,20 +767,37 @@ async fn create_repo(
             "the machine that creates the repository needs its sealed secret",
         ));
     }
+    let mode = n.share.mode()?;
+    if mode != "none" && !is_share_path(path) {
+        return Err(ApiError::bad(
+            r"a share sign-in needs a network path like \\server\share\folder",
+        ));
+    }
+    if mode == "password" && n.access.iter().any(|x| x.sealed_share.is_none()) {
+        return Err(ApiError::bad("enter the share password for every machine"));
+    }
     let id = Uuid::new_v4().to_string();
     let t = now();
     {
         let db = st.db();
         let tx = db.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6)",
-            params![id, name, path, n.repo_uuid.to_string(), t, init],
+            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id, share_auth, share_user) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8)",
+            params![id, name, path, n.repo_uuid.to_string(), t, init, mode, n.share.user()],
         )?;
         for x in &n.access {
             let agent = uuid_param(&x.agent_id)?;
+            let share = match mode {
+                "password" => x
+                    .sealed_share
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+                _ => None,
+            };
             tx.execute(
-                "INSERT INTO repo_access (repository_id, agent_id, sealed, granted) VALUES (?1, ?2, ?3, ?4)",
-                params![id, agent, serde_json::to_string(&x.sealed)?, t],
+                "INSERT INTO repo_access (repository_id, agent_id, sealed, granted, sealed_share) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, agent, serde_json::to_string(&x.sealed)?, t, share],
             )
             .map_err(|_| ApiError::bad("unknown machine in access list"))?;
         }
@@ -769,7 +830,8 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
             r.hold, r.hold_reason, r.hold_since, r.maintenance_agent_id, r.prune_every_days, r.last_prune,
             (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id AND i.anomaly IS NOT NULL),
             r.boot_agent_id, r.boot_every_days,
-            (SELECT MAX(at) FROM boot_checks b WHERE b.repository_id = r.id AND b.outcome = 'verified')
+            (SELECT MAX(at) FROM boot_checks b WHERE b.repository_id = r.id AND b.outcome = 'verified'),
+            r.share_auth, r.share_user
          FROM repositories r ORDER BY r.created",
     )?;
     let mut repos: Vec<Value> = s
@@ -784,6 +846,7 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
                 "last_prune": r.get::<_, Option<i64>>(15)?, "anomalies": r.get::<_, i64>(16)?,
                 "boot_agent_id": r.get::<_, Option<String>>(17)?, "boot_every_days": r.get::<_, i64>(18)?,
                 "last_verified_boot": r.get::<_, Option<i64>>(19)?,
+                "share_auth": r.get::<_, String>(20)?, "share_user": r.get::<_, Option<String>>(21)?,
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -811,10 +874,31 @@ async fn grant_access(
     let id = uuid_param(&id)?;
     let agent = uuid_param(&x.agent_id)?;
     let db = st.db();
+    let mode: Option<String> = db
+        .query_row(
+            "SELECT share_auth FROM repositories WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mode = mode.ok_or_else(|| ApiError::not_found("no such repository"))?;
+    if mode == "password" && x.sealed_share.is_none() {
+        return Err(ApiError::bad(
+            "this repository is on a network share: enter the share password for the machine too",
+        ));
+    }
+    let share = match mode.as_str() {
+        "password" => x
+            .sealed_share
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?,
+        _ => None,
+    };
     db.execute(
-        "INSERT INTO repo_access (repository_id, agent_id, sealed, granted) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(repository_id, agent_id) DO UPDATE SET sealed = excluded.sealed, granted = excluded.granted",
-        params![id, agent, serde_json::to_string(&x.sealed)?, now()],
+        "INSERT INTO repo_access (repository_id, agent_id, sealed, granted, sealed_share) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(repository_id, agent_id) DO UPDATE SET sealed = excluded.sealed, granted = excluded.granted, sealed_share = excluded.sealed_share",
+        params![id, agent, serde_json::to_string(&x.sealed)?, now(), share],
     )
     .map_err(|_| ApiError::bad("unknown repository or machine"))?;
     audit(
@@ -1757,4 +1841,118 @@ async fn set_boot_verification(
         &id,
     );
     Ok(Json(json!({ "ok": true })))
+}
+
+// ---------- network shares ----------
+
+#[derive(Deserialize)]
+struct ShareUpdate {
+    #[serde(flatten)]
+    share: ShareAuth,
+    /// For "password": the sign-in sealed to every machine with access.
+    #[serde(default)]
+    access: Vec<ShareFor>,
+}
+
+#[derive(Deserialize)]
+struct ShareFor {
+    agent_id: String,
+    sealed_share: protocol::seal::Sealed,
+}
+
+/// Change how machines sign in to a share repository (new password,
+/// another account, computer account).
+async fn set_share(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(u): Json<ShareUpdate>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let mode = u.share.mode()?;
+    let db = st.db();
+    let path: String = db
+        .query_row(
+            "SELECT path FROM repositories WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("no such repository"))?;
+    if mode != "none" && !is_share_path(&path) {
+        return Err(ApiError::bad("this repository is not on a network share"));
+    }
+    let agents: Vec<String> = db
+        .prepare("SELECT agent_id FROM repo_access WHERE repository_id = ?1")?
+        .query_map(params![id], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut sealed: std::collections::BTreeMap<String, String> = Default::default();
+    if mode == "password" {
+        for x in &u.access {
+            sealed.insert(
+                uuid_param(&x.agent_id)?,
+                serde_json::to_string(&x.sealed_share)?,
+            );
+        }
+        if let Some(missing) = agents.iter().find(|a| !sealed.contains_key(*a)) {
+            return Err(ApiError::bad(format!(
+                "the sign-in must be sealed for every machine with access (missing {missing})"
+            )));
+        }
+    }
+    let tx = db.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE repositories SET share_auth = ?1, share_user = ?2 WHERE id = ?3",
+        params![
+            mode,
+            if mode == "password" {
+                u.share.user()
+            } else {
+                None
+            },
+            id
+        ],
+    )?;
+    for agent in &agents {
+        tx.execute(
+            "UPDATE repo_access SET sealed_share = ?1 WHERE repository_id = ?2 AND agent_id = ?3",
+            params![sealed.get(agent), id, agent],
+        )?;
+    }
+    tx.commit()?;
+    audit(
+        &db,
+        &a.username,
+        "repository.share_signin_changed",
+        &format!("{id}: {mode}"),
+    );
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct CheckAccessReq {
+    path: String,
+    #[serde(default)]
+    sealed_share: Option<protocol::seal::Sealed>,
+}
+
+/// Queue a connection test on a machine; poll the job for the result.
+async fn check_access(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<CheckAccessReq>,
+) -> ApiResult<Json<Value>> {
+    let agent = uuid_param(&id)?;
+    let path = r.path.trim();
+    if path.is_empty() || path.len() > 1000 {
+        return Err(ApiError::bad("enter a folder path"));
+    }
+    agent_caps(&st.db(), &agent)?;
+    let kind = JobKind::CheckAccess {
+        path: path.to_string(),
+        sealed_share: r.sealed_share,
+    };
+    let job = insert_job(&st, &agent, &kind, None, None, &a.username)?;
+    Ok(Json(json!({ "id": job })))
 }

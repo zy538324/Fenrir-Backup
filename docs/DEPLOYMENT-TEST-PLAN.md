@@ -127,6 +127,21 @@ When something fails, collect:
 2. [ ] Run **Verify** against the repository. **Expect:** succeeded.
        (System backups of a Mac are not available yet.)
 
+## 5a. Repository on a network share
+
+1. [ ] On the backup server, create a share and a dedicated account with
+       change rights on it only.
+2. [ ] Repositories → New repository → folder `\\server\share\fenrir`
+       → Username and password → **Test connection**. **Expect:** "Signed in
+       to the share and wrote a test file" and the share's free space. Try a
+       wrong password once: **Expect** "wrong username or password".
+3. [ ] Create the repository and back up a machine into it. **Expect:**
+       while no backup runs, the machine has no connection to the share
+       (`net use` in an elevated prompt shows nothing for it; the share is
+       not visible to the logged-in user).
+4. [ ] Change the account's password on the server, then Change sign-in on
+       the repository. **Expect:** the next backup works on every machine.
+
 ## 6. Retention, space and protection
 
 1. [ ] After a few days of nightly backups with "Short" retention, the

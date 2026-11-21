@@ -1206,3 +1206,143 @@ async fn boot_checks_results_and_schedule() {
     assert_eq!(repos[0]["boot_every_days"], 7);
     assert!(repos[0]["last_verified_boot"].as_i64().is_some());
 }
+
+#[tokio::test]
+async fn network_share_signin_sealed_per_machine() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let k1 = AgentKey::generate();
+    let k2 = AgentKey::generate();
+    let (a1, tok1) = enroll(&mut t, &k1, "pc-1").await;
+    let (a2, tok2) = enroll(&mut t, &k2, "pc-2").await;
+    heartbeat(&mut t, &tok1, CAPS, None).await;
+    heartbeat(&mut t, &tok2, CAPS, None).await;
+    let pass = |k: &AgentKey| seal(&k.public_b64(), b"{\"passphrase\":\"p\"}").unwrap();
+    let creds = |k: &AgentKey, pw: &str| {
+        seal(
+            &k.public_b64(),
+            json!({ "domain": "CORP", "username": "backup-svc", "password": pw })
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap()
+    };
+    let unc = r"\\nas01\backups\fenrir";
+    let repo_uuid = uuid::Uuid::new_v4();
+    let body = |with_share: bool| {
+        json!({ "name": "NAS", "path": unc, "repo_uuid": repo_uuid, "init_agent_id": a1,
+                "share_auth": "password", "share_user": "CORP\\backup-svc",
+                "access": [{ "agent_id": a1, "sealed": pass(&k1), "sealed_share": if with_share { Some(creds(&k1, "pw1")) } else { None } }] })
+    };
+    let (s, _) = t.post("/api/repositories", body(false)).await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "password mode needs a sealed sign-in"
+    );
+    let (s, _) = t
+        .post(
+            "/api/repositories",
+            json!({ "name": "L", "path": "/srv/r", "repo_uuid": repo_uuid, "init_agent_id": a1, "share_auth": "machine",
+                    "access": [{ "agent_id": a1, "sealed": pass(&k1) }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "share sign-in on a local path");
+    let (s, r) = t.post("/api/repositories", body(true)).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let repo = r["id"].as_str().unwrap().to_string();
+
+    // The init job carries the sealed sign-in; only that agent can open it.
+    let hb = heartbeat(&mut t, &tok1, CAPS, None).await;
+    let acc = hb.jobs[0].repository.as_ref().unwrap();
+    assert_eq!(acc.path, unc);
+    let c: ShareCredentials =
+        serde_json::from_slice(&k1.open(acc.sealed_share.as_ref().unwrap()).unwrap()).unwrap();
+    assert_eq!(
+        (c.domain.as_str(), c.username.as_str(), c.password.as_str()),
+        ("CORP", "backup-svc", "pw1")
+    );
+    assert!(k2.open(acc.sealed_share.as_ref().unwrap()).is_err());
+    t.agent(
+        &format!("/api/agent/jobs/{}/update", hb.jobs[0].id),
+        &tok1,
+        json!({ "state": "succeeded", "repo_uuid": repo_uuid }),
+    )
+    .await;
+    // The server stored only sealed data.
+    let raw: String =
+        t.st.db()
+            .query_row(
+                "SELECT sealed_share FROM repo_access WHERE agent_id = ?1",
+                rusqlite::params![a1],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(!raw.contains("pw1") && !raw.contains("backup-svc"));
+    let (_, repos) = t.get("/api/repositories").await;
+    assert_eq!(repos[0]["share_auth"], "password");
+    assert_eq!(repos[0]["share_user"], "CORP\\backup-svc");
+
+    // A second machine needs the sign-in too.
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/access"),
+            json!({ "agent_id": a2, "sealed": pass(&k2) }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/access"),
+            json!({ "agent_id": a2, "sealed": pass(&k2), "sealed_share": creds(&k2, "pw1") }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // New password: must be sealed for every machine with access.
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/share"),
+            json!({ "share_auth": "password", "share_user": "CORP\\backup-svc", "access": [{ "agent_id": a1, "sealed_share": creds(&k1, "pw2") }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "pc-2 missing");
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/share"),
+            json!({ "share_auth": "password", "share_user": "CORP\\backup-svc", "access": [
+                { "agent_id": a1, "sealed_share": creds(&k1, "pw2") }, { "agent_id": a2, "sealed_share": creds(&k2, "pw2") }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // Switching to the computer account drops the stored sign-ins.
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/share"),
+            json!({ "share_auth": "machine" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let n: i64 =
+        t.st.db()
+            .query_row(
+                "SELECT COUNT(*) FROM repo_access WHERE sealed_share IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(n, 0);
+
+    // Test connection: a job with the path and the sign-in.
+    let (s, j) = t
+        .post(
+            &format!("/api/agents/{a2}/check-access"),
+            json!({ "path": unc, "sealed_share": creds(&k2, "pw3") }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+    let hb = heartbeat(&mut t, &tok2, CAPS, None).await;
+    assert!(
+        matches!(&hb.jobs[0].kind, JobKind::CheckAccess { path, sealed_share: Some(_) } if path == unc)
+    );
+}

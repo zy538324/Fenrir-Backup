@@ -167,6 +167,8 @@ export interface Repository {
   boot_agent_id: string | null;
   boot_every_days: number;
   last_verified_boot: number | null;
+  share_auth: "none" | "machine" | "password";
+  share_user: string | null;
 }
 
 export type Schedule =

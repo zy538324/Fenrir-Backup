@@ -10,6 +10,7 @@ mod jobs;
 mod log;
 mod restore;
 mod setup;
+mod share;
 mod update;
 #[cfg(windows)]
 mod winsvc;

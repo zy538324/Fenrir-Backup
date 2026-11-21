@@ -322,6 +322,51 @@ jobs:
           $built = (Get-FileHash agents\x86_64-pc-windows-msvc\fenrir-agent.exe).Hash
           if ($installed -ne $built) { throw 'installed agent differs from the server build (settings block not removed)' }
           Write-Host 'Fenrir-Setup.exe: installed, enrolled, reachable; installed agent identical to the server build'
+
+          # Network share repository: a local SMB share that only a dedicated
+          # account may use; the sign-in is sealed to the agent like the UI does.
+          $pw = 'Fenrir-' + [guid]::NewGuid().ToString('N').Substring(0, 12) + '!a1'
+          New-LocalUser -Name fenrirbk -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -PasswordNeverExpires | Out-Null
+          New-Item -ItemType Directory C:\fenrir-share | Out-Null
+          icacls C:\fenrir-share /grant 'fenrirbk:(OI)(CI)F' | Out-Null
+          New-SmbShare -Name fenrir -Path C:\fenrir-share -FullAccess fenrirbk | Out-Null
+          $unc = "\\$env:COMPUTERNAME\fenrir\repo"
+          $ag = (Invoke-RestMethod -SkipCertificateCheck -WebSession $s "$b/api/agents") | Where-Object online | Select-Object -First 1
+          function Seal($text) { (node ci/seal.mjs $ag.public_key $text) | ConvertFrom-Json }
+          function Wait-Job($id) {
+            for ($i = 0; $i -lt 90; $i++) {
+              $j = Invoke-RestMethod -SkipCertificateCheck -WebSession $s "$b/api/jobs/$id"
+              if ($j.state -in 'succeeded', 'warning', 'failed', 'cancelled') { return $j }
+              Start-Sleep 2
+            }
+            throw "job $id did not finish"
+          }
+          function Signin($password) { Seal (@{ domain = $env:COMPUTERNAME; username = 'fenrirbk'; password = $password } | ConvertTo-Json -Compress) }
+          $post = @{ SkipCertificateCheck = $true; WebSession = $s; Headers = $h; Method = 'Post'; ContentType = 'application/json' }
+          # Wrong password: a clear message.
+          $j = Invoke-RestMethod @post "$b/api/agents/$($ag.id)/check-access" -Body (@{ path = $unc; sealed_share = (Signin 'wrong') } | ConvertTo-Json -Depth 5)
+          $r = Wait-Job $j.id
+          Write-Host "wrong password: $($r.state): $($r.error)"
+          if ($r.state -ne 'failed' -or $r.error -notmatch 'wrong username or password') { throw 'expected a wrong-password failure' }
+          # Right password: writable, free space reported.
+          $j = Invoke-RestMethod @post "$b/api/agents/$($ag.id)/check-access" -Body (@{ path = $unc; sealed_share = (Signin $pw) } | ConvertTo-Json -Depth 5)
+          $r = Wait-Job $j.id
+          Write-Host "right password: $($r.state) $($r.result | ConvertTo-Json -Compress)"
+          if ($r.state -ne 'succeeded' -or -not $r.result.writable -or -not ($r.result.free_bytes -gt 0)) { throw 'expected a writable share' }
+          # A repository on the share, created and verified through the sign-in.
+          $repoId = [guid]::NewGuid().ToString()
+          $rk = @{ format = 'fenrir-recovery-key'; version = 1; repo_id = $repoId; slot_id = [guid]::NewGuid().ToString(); key = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 } | ForEach-Object { [byte]$_ })) } | ConvertTo-Json
+          $secret = @{ passphrase = 'share repository passphrase'; recovery_key = $rk } | ConvertTo-Json -Compress
+          $body = @{ name = 'NAS'; path = $unc; repo_uuid = $repoId; init_agent_id = $ag.id; share_auth = 'password'; share_user = "$env:COMPUTERNAME\fenrirbk"
+                     access = @(@{ agent_id = $ag.id; sealed = (Seal $secret); sealed_share = (Signin $pw) }) } | ConvertTo-Json -Depth 6
+          $repo = Invoke-RestMethod @post "$b/api/repositories" -Body $body
+          $r = Wait-Job $repo.init_job_id
+          if ($r.state -ne 'succeeded') { throw "creating the repository on the share failed: $($r.error)" }
+          if (-not (Test-Path C:\fenrir-share\repo\config.json)) { throw 'no repository on the share' }
+          $j = Invoke-RestMethod @post "$b/api/agents/$($ag.id)/jobs" -Body (@{ kind = @{ type = 'verify'; level = 'quick' }; repository_id = $repo.id } | ConvertTo-Json -Depth 5)
+          $r = Wait-Job $j.id
+          if ($r.state -ne 'succeeded') { throw "verify on the share failed: $($r.error)" }
+          Write-Host 'Share repository: wrong password reported, sign-in works, repository created and verified on \\host\share'
       - name: logs
         if: always()
         shell: pwsh

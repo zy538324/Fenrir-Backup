@@ -162,6 +162,12 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE repositories ADD COLUMN boot_agent_id TEXT;
     ALTER TABLE repositories ADD COLUMN boot_every_days INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 4: network share sign-in
+    r#"
+    ALTER TABLE repositories ADD COLUMN share_auth TEXT NOT NULL DEFAULT 'none';
+    ALTER TABLE repositories ADD COLUMN share_user TEXT;
+    ALTER TABLE repo_access ADD COLUMN sealed_share TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

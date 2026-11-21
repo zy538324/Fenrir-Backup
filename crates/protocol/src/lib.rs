@@ -314,6 +314,13 @@ pub enum JobKind {
     },
     /// Power off a VM left running by a boot check.
     StopVm { session_id: Uuid },
+    /// Can this machine reach and write to `path`? Signs in to a network
+    /// share first when credentials are given. Reports free space.
+    CheckAccess {
+        path: String,
+        #[serde(default)]
+        sealed_share: Option<seal::Sealed>,
+    },
 }
 
 impl JobKind {
@@ -330,6 +337,7 @@ impl JobKind {
             JobKind::Restore { .. } => "Restore",
             JobKind::BootCheck { .. } => "Boot check",
             JobKind::StopVm { .. } => "Stop VM",
+            JobKind::CheckAccess { .. } => "Test connection",
         }
     }
 }
@@ -340,6 +348,30 @@ pub struct RepoAccess {
     pub repository_id: Uuid,
     pub path: String,
     pub sealed_secret: seal::Sealed,
+    /// Network share sign-in (`ShareCredentials`), sealed to this agent.
+    #[serde(default)]
+    pub sealed_share: Option<seal::Sealed>,
+}
+
+/// Sign-in for a repository on a network share (SMB). Sealed to each agent
+/// by the browser; the server never sees it in plain text.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct ShareCredentials {
+    /// Windows domain, or empty (NAS local account, or user@domain).
+    #[serde(default)]
+    pub domain: String,
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for ShareCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShareCredentials")
+            .field("domain", &self.domain)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Plaintext inside `RepoAccess::sealed_secret`.

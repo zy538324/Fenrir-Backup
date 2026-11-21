@@ -206,6 +206,35 @@ nothing is deleted or reclaimed until an administrator reviews it and
 types `release`. Backups continue during a hold. You can also place a
 hold by hand.
 
+## Repositories on a network share (NAS, file server)
+
+Type the folder as a share path, `\\backup-server\backups\fenrir`, in
+**New repository**, and choose how machines sign in:
+
+* **Username and password** (domain optional; empty for a NAS's own
+  accounts; `user@domain` also works). The browser encrypts the sign-in
+  separately for each machine; the server stores only those encrypted
+  copies, like the repository passphrase.
+* **This computer's account**: domain-joined Windows machines reach the
+  share as `DOMAIN\COMPUTERNAME$` (the agent runs as SYSTEM). Grant those
+  computer accounts, or an AD group of them, change rights. Nothing is
+  stored.
+
+**Test connection** signs in from the chosen machine, writes and deletes a
+test file and shows free space. Machines connect only while a job runs and
+disconnect afterwards; on Windows the connection lives in the agent's
+SYSTEM session, so it never appears as a drive in a user's Explorer.
+
+Recommended setup on the backup server: a dedicated account used for
+nothing else, with change rights on the backup share only; no person and
+no administrator account; SMB 3 with encryption if the network is shared.
+To change the password, change it on the server first, then use **Change
+sign-in** on the repository (it re-encrypts it for every machine).
+
+Linux machines mount the share privately (`/run/fenrir-agent/smb`) and need
+the `cifs-utils` package. macOS machines cannot use share repositories yet:
+use a folder the system has mounted.
+
 ## Boot verification (booting backups as VMs)
 
 A **boot host** starts images as virtual machines to prove they boot. Any
