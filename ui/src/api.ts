@@ -220,6 +220,9 @@ export interface Platform {
   script_name: string;
   script_url: string | null;
   command: string | null;
+  /** Windows / Hyper-V: per-enrollment setup program. */
+  setup_name: string | null;
+  setup_url: string | null;
   uninstall_url: string;
 }
 export interface Downloads { server_url: string; pinned: boolean; cert_sha256: string | null; platforms: Platform[] }

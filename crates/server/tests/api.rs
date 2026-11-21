@@ -273,6 +273,11 @@ async fn downloads_and_installers() {
             .clone()
     };
     assert_eq!(p("windows")["available"], true);
+    assert!(p("windows")["setup_url"]
+        .as_str()
+        .unwrap()
+        .ends_with("/windows/Fenrir-Setup.exe"));
+    assert!(p("linux")["setup_url"].is_null());
     assert_eq!(p("macos")["available"], false, "no mac build in agents dir");
     assert!(p("linux")["command"]
         .as_str()
@@ -305,6 +310,39 @@ async fn downloads_and_installers() {
     assert!(body.contains(&format!("$Sha256 = '{win_sha}'")));
     assert!(body.contains("$Server = 'https://backup.test:8443'"));
     assert!(body.contains("Get-Service vmms"));
+    // Windows setup programs: the agent build with the settings appended.
+    for (platform, file, role) in [
+        ("windows", "Fenrir-Setup.exe", "workstation"),
+        ("hyperv", "Fenrir-Setup-HyperV.exe", "hyperv"),
+    ] {
+        let req = Request::builder()
+            .uri(format!("/install/{token}/{platform}/{file}"))
+            .header(header::HOST, "backup.test:8443")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router(t.st.clone()).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .contains(file));
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let (cfg, at) = protocol::setup::read(&bytes).expect("settings appended");
+        assert_eq!(&bytes[..at], b"binary for x86_64-pc-windows-msvc");
+        assert_eq!(cfg.server, "https://backup.test:8443");
+        assert_eq!(cfg.pin, "ab".repeat(32));
+        assert_eq!(cfg.token, token);
+        assert_eq!(cfg.role, role);
+    }
+    for bad in ["windows/setup.exe", "linux/Fenrir-Setup.exe"] {
+        let (s, _) = t.get(&format!("/install/{token}/{bad}")).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{bad}");
+    }
+    let (s, _) = t
+        .get("/install/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/windows/Fenrir-Setup.exe")
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "unknown token");
+
     let (_, _, body) = t
         .req("GET", &format!("/install/{token}/linux"), None, None, false)
         .await;

@@ -12,8 +12,10 @@ today:
   with schedules, repositories, activity and audit log, light and dark
   themes, phone-friendly.
 * **Downloads for every platform**: the web UI generates installers for
-  Windows, Hyper-V hosts, Linux and macOS. Each one downloads the agent from
-  your server, checks its hash, installs it as a service and enrols it.
+  Windows, Hyper-V hosts, Linux and macOS. On Windows it is a setup program,
+  `Fenrir-Setup.exe` (double-click, or `/quiet` for silent installs); on
+  Linux and macOS a script. Each installs the agent as a service and enrols
+  it with your server.
 * **Hyper-V hosts**: install once on the host; every VM is backed up through
   recovery checkpoints, with nothing installed inside the VMs.
 * **Windows**: application-consistent system images through VSS.

@@ -305,6 +305,23 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-fenrir.ps1
           if ($LASTEXITCODE -ne 0) { throw "script installer exited with $LASTEXITCODE" }
           if ((Get-Service FenrirAgent).Status -ne 'Running') { throw 'service not running after reinstall' }
+          # Uninstall, then a fresh install with the setup program (silent).
+          & 'C:\Program Files\Fenrir\fenrir-agent.exe' uninstall --yes
+          if ($LASTEXITCODE -ne 0) { throw "uninstall exited with $LASTEXITCODE" }
+          if (Get-Service FenrirAgent -ErrorAction SilentlyContinue) { throw 'service still present after uninstall' }
+          Start-Sleep 8
+          if (Test-Path 'C:\Program Files\Fenrir') { throw 'program folder left behind' }
+          Invoke-WebRequest -SkipCertificateCheck $win.setup_url -OutFile Fenrir-Setup.exe
+          $p = Start-Process -FilePath .\Fenrir-Setup.exe -ArgumentList '/quiet' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "Fenrir-Setup.exe exited with $($p.ExitCode)" }
+          if ((Get-Service FenrirAgent).Status -ne 'Running') { throw 'service not running after Fenrir-Setup.exe' }
+          # The new identity works: the agent reaches the server with it.
+          & 'C:\Program Files\Fenrir\fenrir-agent.exe' status
+          if ($LASTEXITCODE -ne 0) { throw 'agent status failed after Fenrir-Setup.exe' }
+          $installed = (Get-FileHash 'C:\Program Files\Fenrir\fenrir-agent.exe').Hash
+          $built = (Get-FileHash agents\x86_64-pc-windows-msvc\fenrir-agent.exe).Hash
+          if ($installed -ne $built) { throw 'installed agent differs from the server build (settings block not removed)' }
+          Write-Host 'Fenrir-Setup.exe: installed, enrolled, reachable; installed agent identical to the server build'
       - name: logs
         if: always()
         shell: pwsh

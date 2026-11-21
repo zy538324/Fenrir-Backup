@@ -31,7 +31,7 @@ vmboot.workspace = true
 [target.'cfg(windows)'.dependencies]
 snapshot-win.workspace = true
 windows-service = "0.8"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 tempfile.workspace = true

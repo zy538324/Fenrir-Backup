@@ -105,6 +105,7 @@ pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/api/downloads", get(catalogue))
         .route("/install/{token}/{platform}", get(installer))
+        .route("/install/{token}/{platform}/{file}", get(setup_exe))
         .route("/uninstall/{platform}", get(uninstaller))
         .route("/agent/{target}/{file}", get(binary))
 }
@@ -273,6 +274,11 @@ async fn catalogue(
             json!({
                 "id": p.id, "name": p.name, "summary": p.summary, "available": available, "targets": targets,
                 "script_name": p.script_name, "script_url": script_url, "command": command,
+                "setup_name": matches!(p.id, "windows" | "hyperv").then(|| setup_name(p.id)),
+                "setup_url": match (&token, p.id) {
+                    (Some(tok), "windows" | "hyperv") => Some(format!("{url}/install/{tok}/{}/{}", p.id, setup_name(p.id))),
+                    _ => None,
+                },
                 "uninstall_url": format!("{url}/uninstall/{}", p.id),
             })
         })
@@ -336,6 +342,63 @@ async fn installer(
         _ => unreachable!(),
     };
     Ok(script_response(p.script_name, body))
+}
+
+/// Windows setup program: the agent with this enrollment's settings
+/// appended (`protocol::setup`). Double-click to install.
+async fn setup_exe(
+    State(st): State<Shared>,
+    headers: HeaderMap,
+    uri: Uri,
+    Path((token, platform, file)): Path<(String, String, String)>,
+) -> ApiResult<Response> {
+    let token_role = token_valid(&st, &token)?;
+    let p = PLATFORMS
+        .iter()
+        .find(|p| p.id == platform && (p.id == "windows" || p.id == "hyperv"))
+        .ok_or_else(|| ApiError::not_found("setup programs exist for Windows and Hyper-V hosts"))?;
+    if file != setup_name(p.id) {
+        return Err(ApiError::not_found("no such file"));
+    }
+    let exe = tokio::fs::read(binary_path(&st, &p.targets[0]))
+        .await
+        .map_err(|_| ApiError::not_found("this agent build is not installed on the server"))?;
+    let cfg = protocol::setup::SetupConfig {
+        server: public_url(&st, &headers, &uri)?,
+        pin: st
+            .cfg
+            .tls
+            .as_ref()
+            .filter(|t| t.pinned)
+            .map(|t| t.cert_sha256.clone())
+            .unwrap_or_default(),
+        token,
+        role: p.role.unwrap_or(&token_role).to_string(),
+    };
+    Ok((
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/vnd.microsoft.portable-executable".to_string(),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{file}\""),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        Body::from(protocol::setup::append(&exe, &cfg)),
+    )
+        .into_response())
+}
+
+fn setup_name(platform: &str) -> &'static str {
+    if platform == "hyperv" {
+        "Fenrir-Setup-HyperV.exe"
+    } else {
+        "Fenrir-Setup.exe"
+    }
 }
 
 async fn uninstaller(Path(platform): Path<String>) -> ApiResult<Response> {

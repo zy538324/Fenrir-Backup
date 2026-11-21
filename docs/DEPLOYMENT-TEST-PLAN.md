@@ -75,9 +75,13 @@ When something fails, collect:
 
 ## 3. Windows workstation / server (not yet run on hardware)
 
-1. [ ] Run the Windows installer in an elevated PowerShell.
-       **Expect:** `Get-Service FenrirAgent` is Running; the machine appears
-       online.
+1. [ ] Add machines → Windows → Create installer → download
+       `Fenrir-Setup.exe`, run it on the machine and allow the administrator
+       prompt (SmartScreen: More info › Run anyway; the file is not
+       code-signed). **Expect:** the window ends with "Done"; `Get-Service
+       FenrirAgent` is Running; the machine appears online. (CI runs this,
+       the PowerShell one-liner and the script on a Windows runner; this
+       step is about a real desktop: SmartScreen, antivirus, UAC.)
 2. [ ] Give it access to the repository (Repositories → Give access) or
        create a new one on a share it can write to (it runs as
        LocalSystem: grant the computer account `DOMAIN\NAME$` write access,

@@ -4,6 +4,20 @@ import { api, type Agent, type Downloads, type EnrollmentToken, type Platform } 
 import { bytes, when } from "../format";
 import { Command, Field, Link, Loading, Notice, OsBadge, useApi } from "../ui";
 
+/** Windows and Hyper-V hosts: the setup program. */
+const SETUP_STEPS: Partial<Record<Platform["id"], string[]>> = {
+  windows: [
+    "Run the downloaded Fenrir-Setup.exe on the machine and allow it to make changes (administrator prompt).",
+    "If Windows SmartScreen says it protected your PC, choose More info › Run anyway: the file is built by your server for this link and is not code-signed.",
+    "The machine appears below within a minute. For silent installs (scripts, remote tools): Fenrir-Setup.exe /quiet",
+  ],
+  hyperv: [
+    "Run the downloaded Fenrir-Setup-HyperV.exe on the Hyper-V host itself (not inside a VM) and allow the administrator prompt.",
+    "If Windows SmartScreen says it protected your PC, choose More info › Run anyway: the file is built by your server for this link and is not code-signed.",
+    "The host and its VMs appear below within a minute. Nothing is installed in the VMs. Silent install: Fenrir-Setup-HyperV.exe /quiet",
+  ],
+};
+
 const INSTRUCTIONS: Record<Platform["id"], string[]> = {
   windows: [
     "Copy the installer to the machine (or use the one-line command below).",
@@ -153,21 +167,51 @@ function Links() {
 }
 
 function Ready({ platform, downloads, token, onNew }: { platform: Platform; downloads: Downloads; token: EnrollmentToken; onNew: () => void }) {
+  const setup = platform.setup_url ? SETUP_STEPS[platform.id] : undefined;
+  const script = (
+    <>
+      <a className={`btn ${setup ? "" : "primary lg"}`} href={platform.script_url!} download={platform.script_name}>
+        <Download size={setup ? 15 : 17} /> Download {platform.script_name}
+      </a>
+      <ol className="steps">
+        {INSTRUCTIONS[platform.id].map((s, i) => <li key={i}><span>{s}</span></li>)}
+      </ol>
+    </>
+  );
+  const oneLiner = (
+    <Field label={platform.id === "windows" || platform.id === "hyperv" ? "Or paste this into PowerShell opened as Administrator" : "Or paste this into an elevated terminal on the machine"}>
+      <Command text={platform.command!} />
+    </Field>
+  );
   return (
     <div className="stack">
       <div className="grid cols-2" style={{ alignItems: "start" }}>
         <div className="stack">
-          <a className="btn primary lg" href={platform.script_url!} download={platform.script_name}>
-            <Download size={17} /> Download {platform.script_name}
-          </a>
-          <ol className="steps">
-            {INSTRUCTIONS[platform.id].map((s, i) => <li key={i}><span>{s}</span></li>)}
-          </ol>
+          {setup ? (
+            <>
+              <a className="btn primary lg" href={platform.setup_url!} download={platform.setup_name!}>
+                <Download size={17} /> Download {platform.setup_name}
+              </a>
+              <ol className="steps">
+                {setup.map((s, i) => <li key={i}><span>{s}</span></li>)}
+              </ol>
+            </>
+          ) : (
+            script
+          )}
         </div>
         <div className="stack">
-          <Field label="Or paste this into an elevated terminal on the machine">
-            <Command text={platform.command!} />
-          </Field>
+          {setup ? (
+            <details>
+              <summary className="small" style={{ cursor: "pointer", fontWeight: 600 }}>Other ways to install (PowerShell)</summary>
+              <div className="stack" style={{ marginTop: 12 }}>
+                {script}
+                {oneLiner}
+              </div>
+            </details>
+          ) : (
+            oneLiner
+          )}
           <div className="faint small row" style={{ gap: 6, alignItems: "flex-start" }}>
             <Fingerprint size={14} style={{ flex: "none", marginTop: 2 }} />
             <span>
@@ -183,7 +227,11 @@ function Ready({ platform, downloads, token, onNew }: { platform: Platform; down
         </div>
       </div>
       <Waiting />
-      <div className="faint small">To remove the agent later, run the <a href={platform.uninstall_url} download>uninstaller</a> on the machine.</div>
+      <div className="faint small">
+        To remove the agent later,{" "}
+        {platform.setup_url ? <>run <span className="mono">"C:\Program Files\Fenrir\fenrir-agent.exe" uninstall</span> as Administrator, or the </> : <>run the </>}
+        <a href={platform.uninstall_url} download>uninstaller</a> on the machine.
+      </div>
     </div>
   );
 }

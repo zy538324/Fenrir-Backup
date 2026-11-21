@@ -168,6 +168,24 @@ test" shows the mail or webhook server's answer if delivery fails. The
 SMTP password is stored on the server (it is the only server-side
 secret) and is never sent back to the browser.
 
+## Windows setup program
+
+`Fenrir-Setup.exe` is the Windows agent with the enrollment settings
+(server address, certificate fingerprint, enrollment token) appended. The
+server builds one per download; it is only as secret as the link it came
+from, and stops working when that link expires or is revoked. Run it
+interactively, or silently with `Fenrir-Setup.exe /quiet` from deployment
+tools (it must then run elevated). The installed copy in
+`C:\Program Files\Fenrir` is the plain agent. Remove the agent with
+`"C:\Program Files\Fenrir\fenrir-agent.exe" uninstall`.
+
+The file is not code-signed, so SmartScreen and some antivirus products
+warn about it ("More info › Run anyway"). If you sign `fenrir-agent.exe`
+with your own code-signing certificate before placing it in the server's
+agents folder, deploy with the PowerShell script or one-liner instead: they
+download the signed agent unchanged, while the setup program appends data
+to the file, which invalidates an Authenticode signature.
+
 ## Agent updates
 
 Agents run the build the server carries for their platform: when the

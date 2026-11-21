@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod seal;
+pub mod setup;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

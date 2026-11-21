@@ -9,6 +9,7 @@ mod inventory;
 mod jobs;
 mod log;
 mod restore;
+mod setup;
 mod update;
 #[cfg(windows)]
 mod winsvc;
@@ -53,9 +54,52 @@ enum Cmd {
     Service,
     /// Show enrollment and connectivity.
     Status,
+    /// Windows: install (or update) the agent as the FenrirAgent service and
+    /// enrol it. Asks for administrator rights if needed.
+    Install {
+        #[arg(long)]
+        server: String,
+        #[arg(long)]
+        token: String,
+        #[arg(long, default_value = "")]
+        pin: String,
+        #[arg(long, default_value = "server")]
+        role: String,
+    },
+    /// Windows: remove the service, the program and this machine's agent
+    /// identity. Backups already stored are kept.
+    Uninstall {
+        /// Confirm without asking.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn main() {
+    // Fenrir-Setup.exe: the agent with its settings appended. Started by
+    // double-click (no arguments) or with /quiet, it installs itself.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 1 || (args.len() == 2 && setup::is_quiet_flag(&args[1])) {
+        if let Some((cfg, exe)) = setup::embedded() {
+            let quiet = args.len() == 2;
+            let r = setup::install(&cfg, Some(exe), Some(if quiet { "/quiet" } else { "" }));
+            let relaunched = matches!(r, Ok(false));
+            let code = match r {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("\nSetup failed: {e:#}");
+                    1
+                }
+            };
+            // Started by double-click: keep the window open to read it. An
+            // elevated copy was started instead when `relaunched`.
+            if !quiet && !relaunched {
+                println!("\nPress Enter to close this window.");
+                let _ = std::io::stdin().read_line(&mut String::new());
+            }
+            std::process::exit(code);
+        }
+    }
     let cli = Cli::parse();
     let r = match cli.cmd {
         Cmd::Enroll {
@@ -72,6 +116,34 @@ fn main() {
         },
         Cmd::Service => service(),
         Cmd::Status => status(),
+        Cmd::Install {
+            server,
+            token,
+            pin,
+            role,
+        } => {
+            let cfg = protocol::setup::SetupConfig {
+                server,
+                pin,
+                token,
+                role,
+            };
+            setup::install(&cfg, None, None).map(|_| ())
+        }
+        Cmd::Uninstall { yes } => {
+            if !yes {
+                print!("Remove the Fenrir-Backup agent from this machine? Type yes: ");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                let mut a = String::new();
+                let _ = std::io::stdin().read_line(&mut a);
+                if a.trim() != "yes" {
+                    eprintln!("not removed");
+                    std::process::exit(2);
+                }
+            }
+            setup::uninstall()
+        }
     };
     if let Err(e) = r {
         eprintln!("fenrir-agent: {e:#}");
