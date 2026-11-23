@@ -173,8 +173,8 @@ of a machine from section 2 or 3.
    USB stick instead first. **Expect:** the stick is not offered and is
    refused if typed in.
 4. [ ] When the job succeeds, remove the stick and restart. **Expect:**
-   the restored system starts (Windows may ask for the BitLocker recovery
-   key; drivers for very different hardware are Phase 5).
+   the restored system starts without asking for a BitLocker recovery
+   key; if BitLocker was on, the job says to turn it on again.
 5. [ ] Offline: start from the stick with the network cable out → Restore
    from a repository here → repository on a USB disk → passphrase → image
    → disk → confirm. **Expect:** the same result.

@@ -127,9 +127,15 @@ New hardware has no firmware boot entry for the restored system:
   machine started in legacy BIOS mode and vice versa. The UI warns before
   the restore; the job result repeats it with what to change in the
   firmware settings.
-* BitLocker: volumes restore still encrypted; the restored Windows asks for
-  the BitLocker recovery key on first boot on new hardware (TPM changed).
-  The UI says so when the image recorded BitLocker.
+* BitLocker: the Windows agent reads volumes through their VSS snapshot,
+  above BitLocker, so the image holds them decrypted (encrypted by the
+  repository key). They restore unencrypted and start without the recovery
+  key; the partition tail outside the snapshot (NTFS backup boot sector) is
+  synthesised from the decrypted boot sector rather than copied as
+  ciphertext. The job reminds the administrator to turn BitLocker on again.
+  Volumes captured raw (Hyper-V guests' own BitLocker, unsnapshotted
+  volumes, Linux backups of Windows disks) stay encrypted; the job says
+  their recovery key is needed on new hardware.
 
 Driver injection for different storage controllers is Phase 5.
 

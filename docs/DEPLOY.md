@@ -326,9 +326,16 @@ add with Disk Management or `growpart`) or smaller if every partition fits.
 On UEFI systems it adds the fallback boot loader `\EFI\BOOT\BOOTX64.EFI`
 when missing and a firmware boot entry. If the machine started in a
 different firmware mode (UEFI vs legacy BIOS) from the backed-up system,
-the job says which setting to change. BitLocker volumes are restored still
-encrypted, and Windows asks for the BitLocker recovery key on first start
-on new hardware. Drivers for different storage controllers are not added
+the job says which setting to change.
+
+BitLocker: the Windows agent backs volumes up through their snapshot, which
+reads them decrypted (the image is encrypted with the repository key
+instead). They restore **unencrypted** and start without the recovery key;
+the job reminds you to turn BitLocker on again. Volumes captured still
+encrypted (a Hyper-V VM's own BitLocker backed up from the host, a volume
+VSS could not snapshot, or a Windows disk backed up from Linux) need their
+48-digit recovery key on first start on different hardware; the job says
+which. Drivers for different storage controllers are not added
 yet (Phase 5).
 
 Without a server (or without network): choose **Restore from a repository

@@ -31,7 +31,7 @@ jobs:
       - name: QEMU, OVMF and a CirrOS image (VHDX interop + boot-from-backup tests)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update && sudo apt-get install -y qemu-utils qemu-system-x86 ovmf
+          sudo apt-get update && sudo apt-get install -y qemu-utils qemu-system-x86 ovmf libhivex-bin libwin-hivex-perl
           sudo chmod 666 /dev/kvm || true
           # Same pinned image from either host; the checksum decides.
           for url in \
