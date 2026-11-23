@@ -325,9 +325,20 @@ jobs:
     needs: [build, ui, recovery-iso]
     runs-on: ubuntu-latest
     steps:
+      # Only what goes into the bundle: downloading everything also fetches
+      # the Docker build record, whose download fails.
       - uses: actions/download-artifact@v4
         with:
+          pattern: bin-*
           path: art
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: art/ui-dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: recovery-iso
+          path: art/recovery-iso
       - name: assemble
         run: |
           set -eu
