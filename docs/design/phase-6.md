@@ -31,6 +31,14 @@ allows an inconsistent image (then it is read live and the image is marked
 `inconsistent`). Those systems are imaged consistently from the recovery
 media, or by moving to LVM.
 
+Only the PV's metadata areas and the extents of its logical volumes are
+captured; free extents are not. Another tool's snapshot LV is not imaged
+(a warning says to remove it after a restore). Inactive LVs are read from
+the disk (nothing writes to them). LUKS-encrypted volumes and software RAID
+holding mounted file systems are refused (the plaintext seen through a
+snapshot does not match the disk): image them from the recovery media. A
+disk holding only the repository is left out of an automatic selection.
+
 Snapshots are taken one LV after another (LVM cannot snapshot several thick
 LVs atomically); each is consistent in itself. The image is marked
 `crash` consistent (file systems clean, applications not told).
@@ -58,4 +66,5 @@ those) snapshots when it starts.
   changing files during the backup. The live image is restored to another
   loop device: `fsck` passes on every file system, the volume group has no
   snapshot LV, files written before the backup are intact, and no snapshot
-  is left behind.
+  is left behind. A recorded leftover snapshot is removed by the next run,
+  another tool's snapshot is kept.
