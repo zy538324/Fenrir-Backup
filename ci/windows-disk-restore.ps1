@@ -137,6 +137,37 @@ Check ($disk.Size -eq 320MB) 'the GPT covers the larger disk'
 
 # ---- prepare the restored Windows for this hardware --------------------------------------------
 $out = & $Agent prepare-windows --device $target
+if ($LASTEXITCODE -ne 0) {
+    # Which programs hold the restored registry open (Windows Restart Manager).
+    Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class Rm {
+  [StructLayout(LayoutKind.Sequential)] public struct UNIQUE_PROCESS { public int Pid; public System.Runtime.InteropServices.ComTypes.FILETIME Start; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct INFO {
+    public UNIQUE_PROCESS Process;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=256)] public string App;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=64)] public string Service;
+    public int Type; public int Status; public int Session; [MarshalAs(UnmanagedType.Bool)] public bool Restartable; }
+  [DllImport("rstrtmgr.dll", CharSet=CharSet.Unicode)] static extern int RmStartSession(out uint h, int f, string key);
+  [DllImport("rstrtmgr.dll")] static extern int RmEndSession(uint h);
+  [DllImport("rstrtmgr.dll", CharSet=CharSet.Unicode)] static extern int RmRegisterResources(uint h, uint n, string[] files, uint a, IntPtr b, uint c, string[] d);
+  [DllImport("rstrtmgr.dll")] static extern int RmGetList(uint h, out uint need, ref uint n, [In, Out] INFO[] info, ref uint reasons);
+  public static string Who(string path) {
+    uint h; RmStartSession(out h, 0, Guid.NewGuid().ToString());
+    try {
+      RmRegisterResources(h, 1, new[] { path }, 0, IntPtr.Zero, 0, null);
+      uint need = 0, n = 0, r = 0; RmGetList(h, out need, ref n, null, ref r);
+      var info = new INFO[need]; n = need; RmGetList(h, out need, ref n, info, ref r);
+      var s = ""; foreach (var i in info) s += i.App + " (pid " + i.Process.Pid + ", service " + i.Service + "); ";
+      return s == "" ? "nobody the Restart Manager can see" : s;
+    } finally { RmEndSession(h); } } }
+'@
+    foreach ($f in 'SYSTEM', 'SYSTEM.LOG1', 'SYSTEM.LOG2') {
+        $p = "${n}:\Windows\System32\config\$f"
+        if (Test-Path $p) { Write-Host "  $p is held by: $([Rm]::Who($p))" }
+    }
+    Get-ChildItem "${n}:\Windows\System32\config" -Force | Format-Table Name, Length, LastWriteTime | Out-String | Write-Host
+}
 Check ($LASTEXITCODE -eq 0) 'prepare-windows ran'
 $fix = ($out | Select-Object -Last 1) | ConvertFrom-Json
 Write-Host ($fix | ConvertTo-Json -Depth 4)
