@@ -1484,3 +1484,59 @@ async fn browse_and_restore_files() {
         "{v}"
     );
 }
+
+#[tokio::test]
+async fn hyperv_boot_test_keeps_the_vm_in_a_chosen_folder() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    let caps: Vec<&str> = CAPS
+        .iter()
+        .copied()
+        .chain(["boot_hyperv", "restore_hyperv"])
+        .collect();
+    heartbeat(&mut t, &token, &caps, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+    t.post(
+        &format!("/api/agents/{agent_id}/jobs"),
+        json!({ "kind": { "type": "backup_disks", "paths": ["/dev/sda"] }, "repository_id": repo }),
+    )
+    .await;
+    let im = image(1, 30, 30 << 20, 12 << 20);
+    complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "images": [im] }),
+    )
+    .await
+    .unwrap();
+
+    let url = format!("/api/images/{}/boot-check", im.image_id);
+    let (s, _) = t
+        .post(
+            &url,
+            json!({ "agent_id": agent_id, "keep_running": true, "directory": "relative" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v) = t
+        .post(
+            &url,
+            json!({ "agent_id": agent_id, "keep_running": true, "directory": "D:\\Fenrir checks" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let j = heartbeat(&mut t, &token, &caps, None).await.jobs.remove(0);
+    assert_eq!(
+        j.kind,
+        JobKind::BootCheck {
+            image_id: im.image_id,
+            keep_running: true,
+            memory_mb: None,
+            cpus: None,
+            directory: Some("D:\\Fenrir checks".into())
+        }
+    );
+}

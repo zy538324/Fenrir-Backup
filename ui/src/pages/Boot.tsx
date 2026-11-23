@@ -2,17 +2,22 @@ import { useMemo, useState } from "react";
 import { Camera, MonitorPlay, Power, Rocket } from "lucide-react";
 import { api, type Agent, type BootCheck, type Image, type Repository, type RunningVm } from "../api";
 import { accelLabel, ago, bootLabel, when } from "../format";
+import { seal } from "../seal";
 import { Field, Modal, Notice, Pill, useApi, useRoute, useToast } from "../ui";
 
 export const canBoot = (a: Agent) => a.capabilities.includes("boot_kvm") || a.capabilities.includes("boot_hyperv");
 
-/** Machines that can boot images from `repositoryId`. */
+/** Machines that can boot images (Hyper-V or QEMU), those with access to `repositoryId` first. */
 export function useBootHosts(repositoryId: string | null) {
   const agents = useApi<Agent[]>("/api/agents");
   const repos = useApi<Repository[]>("/api/repositories");
   const repo = repos.data?.find((r) => r.id === repositoryId);
-  const hosts = useMemo(() => (agents.data ?? []).filter((a) => canBoot(a) && repo?.agents.some((x) => x.id === a.id)), [agents.data, repo]);
-  return { hosts, loading: agents.loading || repos.loading };
+  const hasAccess = (id: string) => !!repo?.agents.some((x) => x.id === id);
+  const hosts = useMemo(
+    () => (agents.data ?? []).filter(canBoot).sort((a, b) => Number(!!repo?.agents.some((x) => x.id === b.id)) - Number(!!repo?.agents.some((x) => x.id === a.id))),
+    [agents.data, repo],
+  );
+  return { hosts, repo, hasAccess, loading: agents.loading || repos.loading };
 }
 
 export function BootPill({ check, onClick }: { check: BootCheck | null; onClick?: () => void }) {
@@ -27,10 +32,14 @@ export function BootPill({ check, onClick }: { check: BootCheck | null; onClick?
 }
 
 export function BootCheckDialog({ image, onClose }: { image: Image; onClose: () => void }) {
-  const { hosts, loading } = useBootHosts(image.repository_id);
+  const { hosts, repo, hasAccess, loading } = useBootHosts(image.repository_id);
   const [hostId, setHostId] = useState("");
-  const host = hosts.find((h) => h.id === hostId) ?? hosts.find((h) => h.id === image.agent_id) ?? hosts[0];
+  const host = hosts.find((h) => h.id === hostId) ?? hosts.find((h) => h.id === image.agent_id && hasAccess(h.id)) ?? hosts[0];
   const kvm = !!host?.capabilities.includes("boot_kvm");
+  const needsAccess = !!host && !hasAccess(host.id);
+  const shareSignin = repo?.share_auth === "password";
+  const [pass, setPass] = useState("");
+  const [folder, setFolder] = useState("");
   const [keep, setKeep] = useState(false);
   const [memory, setMemory] = useState(4096);
   const [busy, setBusy] = useState(false);
@@ -43,7 +52,12 @@ export function BootCheckDialog({ image, onClose }: { image: Image; onClose: () 
     setBusy(true);
     setErr(null);
     try {
-      await api.post(`/api/images/${image.image_id}/boot-check`, { agent_id: host.id, keep_running: kvm && keep, memory_mb: memory });
+      if (needsAccess) {
+        // Sealed in this browser for that host only; the server never sees the passphrase.
+        const sealed = await seal(host.public_key, JSON.stringify({ passphrase: pass, recovery_key: null }));
+        await api.post(`/api/repositories/${image.repository_id}/access`, { agent_id: host.id, sealed });
+      }
+      await api.post(`/api/images/${image.image_id}/boot-check`, { agent_id: host.id, keep_running: keep, memory_mb: memory, directory: !kvm && folder.trim() ? folder.trim() : null });
       toast("ok", `Boot test queued on ${host.name}`);
       onClose();
       go(`/machines/${host.id}`);
@@ -62,7 +76,7 @@ export function BootCheckDialog({ image, onClose }: { image: Image; onClose: () 
       foot={
         <>
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={!host || busy} onClick={submit}><Rocket size={15} /> {keep && kvm ? "Boot and keep running" : "Start boot test"}</button>
+          <button className="btn primary" disabled={!host || busy || (needsAccess && (!pass || shareSignin))} onClick={submit}><Rocket size={15} /> {needsAccess ? "Give access and start" : keep ? (kvm ? "Boot and keep running" : "Boot and keep the VM") : "Start boot test"}</button>
         </>
       }
     >
@@ -73,7 +87,7 @@ export function BootCheckDialog({ image, onClose }: { image: Image; onClose: () 
       </div>
       {!loading && hosts.length === 0 ? (
         <Notice tone="warn">
-          No machine with access to {image.repository_name} can run VMs. Use a Linux machine with QEMU installed (packages <span className="mono">qemu-system-x86 qemu-utils ovmf</span>) or a Hyper-V host, and give it access on the Repositories page.
+          No machine can run VMs yet. Install the agent on a Windows machine with Hyper-V (it is detected by itself) or a Linux machine with QEMU (packages <span className="mono">qemu-system-x86 qemu-utils ovmf</span>).
         </Notice>
       ) : (
         <>
@@ -81,23 +95,42 @@ export function BootCheckDialog({ image, onClose }: { image: Image; onClose: () 
             <select className="input" value={host?.id} onChange={(e) => setHostId(e.target.value)}>
               {hosts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name} — {a.capabilities.includes("boot_kvm") ? "QEMU/KVM" : "Hyper-V"}{a.online ? "" : " (offline)"}
+                  {a.name} — {a.capabilities.includes("boot_kvm") ? "QEMU/KVM" : "Hyper-V"}{hasAccess(a.id) ? "" : " — no access yet"}{a.online ? "" : " (offline)"}
                 </option>
               ))}
             </select>
           </Field>
+          {needsAccess && (shareSignin ? (
+            <Notice tone="warn">{host?.name} has no access to {image.repository_name}, which is on a network share with a password: give it access on the Repositories page (with the share sign-in), then come back.</Notice>
+          ) : (
+            <Field label={`Repository passphrase (gives ${host?.name} access to ${image.repository_name})`} hint="Encrypted in this browser for that machine only.">
+              <input className="input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" />
+            </Field>
+          ))}
+          {!kvm && host && (
+            <Field label="Folder on the host for the VM's disks" hint="Optional. The VM's disks need about as much free space as the data in the backup. Default: the agent's folder on C:.">
+              <input className="input" value={folder} placeholder="D:\\Fenrir checks" onChange={(e) => setFolder(e.target.value)} />
+            </Field>
+          )}
           <Field label="Memory">
             <select className="input" value={memory} onChange={(e) => setMemory(Number(e.target.value))}>
               {[1024, 2048, 4096, 8192, 16384].map((m) => <option key={m} value={m}>{m / 1024} GB</option>)}
             </select>
           </Field>
-          {kvm && (
+          {host && (
             <label className="check">
               <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} />
-              <span>
-                Keep it running afterwards
-                <div className="faint small">Reach its screen, RDP or SSH through the host (loopback only, over an SSH tunnel). It stops automatically after 8 hours and can be stopped from the host's page.</div>
-              </span>
+              {kvm ? (
+                <span>
+                  Keep it running afterwards
+                  <div className="faint small">Reach its screen, RDP or SSH through the host (loopback only, over an SSH tunnel). It stops automatically after 8 hours and can be stopped from the host's page.</div>
+                </span>
+              ) : (
+                <span>
+                  Keep the VM afterwards so I can log in and check it
+                  <div className="faint small">It stays in Hyper-V Manager on {host.name} (network disconnected) until you stop it from the host's page, which deletes the VM and its disks.</div>
+                </span>
+              )}
             </label>
           )}
         </>
@@ -163,11 +196,17 @@ export function RunningVmsCard({ agent, vms, images }: { agent: Agent; vms: Runn
               <div className="tl-icon ok"><MonitorPlay size={15} /></div>
               <div className="grow stack tight">
                 <div><strong>{im ? im.vm_name ?? im.hostname : v.image_id.slice(0, 8)}</strong> <span className="muted">· started {ago(v.started_unix)} · isolated network</span></div>
-                <div className="small muted">
-                  Screen: VNC on <span className="mono">127.0.0.1:{v.vnc_port}</span>
-                  {Object.entries(v.forwards).map(([k, p]) => <span key={k}> · {k} on <span className="mono">127.0.0.1:{p}</span></span>)}
-                </div>
-                <div className="small faint">From your computer: <span className="mono">ssh {tunnels} {agent.hostname}</span>, then connect to the same ports on localhost.</div>
+                {v.vnc_port ? (
+                  <>
+                    <div className="small muted">
+                      Screen: VNC on <span className="mono">127.0.0.1:{v.vnc_port}</span>
+                      {Object.entries(v.forwards).map(([k, p]) => <span key={k}> · {k} on <span className="mono">127.0.0.1:{p}</span></span>)}
+                    </div>
+                    <div className="small faint">From your computer: <span className="mono">ssh {tunnels} {agent.hostname}</span>, then connect to the same ports on localhost.</div>
+                  </>
+                ) : (
+                  <div className="small muted">In Hyper-V Manager on {agent.name} as “Fenrir check …”: open it there to log in. Stop deletes the VM and its disks.</div>
+                )}
               </div>
               <button
                 className="btn sm danger"

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { HardDrive, Layers, RotateCcw, Server } from "lucide-react";
 import { api, type Agent, type AgentDetail, type Image, type Repository, type RestoreTarget } from "../api";
 import { bytes, when } from "../format";
+import { seal } from "../seal";
 import { Field, Modal, Notice, useApi, useRoute, useToast } from "../ui";
 
 type Kind = "vhdx" | "hyperv_vm" | "disk";
@@ -35,11 +36,17 @@ export function RestoreDialog({ image, onClose }: { image: Image; onClose: () =>
   const repos = useApi<Repository[]>("/api/repositories");
   const repo = repos.data?.find((r) => r.id === image.repository_id);
   const candidates = useMemo(
-    () => (agents.data ?? []).filter((a) => repo?.agents.some((x) => x.id === a.id) && a.capabilities.some((c) => c.startsWith("restore_"))),
+    // Any machine that can restore; those with access first. One without access is given it here.
+    () => (agents.data ?? []).filter((a) => a.capabilities.some((c) => c.startsWith("restore_")))
+      .sort((a, b) => Number(!!repo?.agents.some((x) => x.id === b.id)) - Number(!!repo?.agents.some((x) => x.id === a.id))),
     [agents.data, repo],
   );
+  const hasAccess = (id: string) => !!repo?.agents.some((x) => x.id === id);
   const [agentId, setAgentId] = useState("");
   const agent = candidates.find((a) => a.id === agentId) ?? candidates.find((a) => a.id === image.agent_id) ?? candidates[0];
+  const needsAccess = !!agent && !hasAccess(agent.id);
+  const shareSignin = repo?.share_auth === "password";
+  const [pass, setPass] = useState("");
   const detail = useApi<AgentDetail>(agent ? `/api/agents/${agent.id}` : null);
   const kinds = KINDS.filter((k) => agent?.capabilities.includes(k.cap));
   const [kindSel, setKind] = useState<Kind | null>(null);
@@ -78,6 +85,10 @@ export function RestoreDialog({ image, onClose }: { image: Image; onClose: () =>
     setBusy(true);
     setErr(null);
     try {
+      if (needsAccess) {
+        const sealed = await seal(agent.public_key, JSON.stringify({ passphrase: pass, recovery_key: null }));
+        await api.post(`/api/repositories/${image.repository_id}/access`, { agent_id: agent.id, sealed });
+      }
       await api.post("/api/restores", { image_id: image.image_id, agent_id: agent.id, target, disks: [] });
       toast("ok", `Restore queued on ${agent.name}`);
       onClose();
@@ -99,7 +110,7 @@ export function RestoreDialog({ image, onClose }: { image: Image; onClose: () =>
       foot={
         <>
           <button className="btn" onClick={onClose}>Cancel</button>
-          <button className={`btn ${kind === "disk" ? "danger solid" : "primary"}`} disabled={!ready || busy} onClick={submit}>
+          <button className={`btn ${kind === "disk" ? "danger solid" : "primary"}`} disabled={!ready || busy || (needsAccess && (!pass || shareSignin))} onClick={submit}>
             <RotateCcw size={15} /> {kind === "disk" ? "Overwrite and restore" : "Start restore"}
           </button>
         </>
@@ -108,14 +119,21 @@ export function RestoreDialog({ image, onClose }: { image: Image; onClose: () =>
       {err && <Notice tone="bad">{err}</Notice>}
       {image.anomaly && <Notice tone="warn">This image was flagged as a possible ransomware event. Restore an earlier image unless you are sure.</Notice>}
       {candidates.length === 0 ? (
-        <Notice tone="warn">No machine with access to {image.repository_name} can restore. Give a machine access on the Repositories page.</Notice>
+        <Notice tone="warn">No machine can restore yet: install the backup agent on the machine to restore to.</Notice>
       ) : (
         <>
-          <Field label="Restore on" hint="The machine that reads the backup and writes the result. It needs access to the repository.">
+          <Field label="Restore on" hint="The machine that reads the backup and writes the result.">
             <select className="input" value={agent?.id} onChange={(e) => { setAgentId(e.target.value); setKind(null); setDir(""); }}>
-              {candidates.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
+              {candidates.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " — Hyper-V" : ""}{hasAccess(a.id) ? "" : " — no access yet"}{a.online ? "" : " (offline)"}</option>)}
             </select>
           </Field>
+          {needsAccess && (shareSignin ? (
+            <Notice tone="warn">{agent?.name} has no access to {image.repository_name}, which is on a network share with a password: give it access on the Repositories page (with the share sign-in) first.</Notice>
+          ) : (
+            <Field label={`Repository passphrase (gives ${agent?.name} access to ${image.repository_name})`} hint="Encrypted in this browser for that machine only.">
+              <input className="input" type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="off" />
+            </Field>
+          ))}
           <div className="stack tight">
             {kinds.map((k) => (
               <label key={k.id} className="check card" style={{ padding: "12px 14px", borderColor: kind === k.id ? "var(--accent)" : undefined }}>

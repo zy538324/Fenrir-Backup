@@ -1646,6 +1646,9 @@ struct BootCheckReq {
     memory_mb: Option<u64>,
     #[serde(default)]
     cpus: Option<u32>,
+    /// Hyper-V: folder on the host for the VM's disks.
+    #[serde(default)]
+    directory: Option<String>,
 }
 
 async fn create_boot_check(
@@ -1677,13 +1680,22 @@ async fn create_boot_check(
         let kvm = caps.iter().any(|c| c == "boot_kvm");
         if !kvm && !caps.iter().any(|c| c == "boot_hyperv") {
             return Err(ApiError::bad(
-                "that machine cannot boot VMs (it needs QEMU on Linux, or the Hyper-V role)",
+                "that machine cannot boot VMs (it needs QEMU on Linux, or Hyper-V on Windows)",
             ));
         }
-        if r.keep_running && !kvm {
-            return Err(ApiError::bad(
-                "keeping the VM running is available on Linux (QEMU/KVM) hosts",
-            ));
+        if let Some(d) = r
+            .directory
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            let windows_path = d.len() >= 3 && d.as_bytes()[1] == b':' && d.as_bytes()[2] == b'\\'
+                || d.starts_with("\\\\");
+            if kvm || d.len() > 500 || !windows_path {
+                return Err(ApiError::bad(
+                    "the folder for the VM is for Hyper-V hosts and must be a full Windows path, e.g. D:\\Fenrir checks",
+                ));
+            }
         }
         let access: bool = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2)",
@@ -1702,7 +1714,10 @@ async fn create_boot_check(
         keep_running: r.keep_running,
         memory_mb: r.memory_mb,
         cpus: r.cpus,
-        directory: None,
+        directory: r
+            .directory
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty()),
     };
     let job = insert_job(&st, &agent, &kind, Some(&repo), None, &a.username)?;
     audit(
