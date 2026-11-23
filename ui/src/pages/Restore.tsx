@@ -191,12 +191,12 @@ export function RestoreDialog({ image, preferAgent, onClose }: { image: Image; p
                 </Field>
               )}
               <Field label={free.length > 0 ? "Or another device or image file" : "Target device or image file"} hint="Not in use and not the running system's disk.">
-                <input className="input mono" value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }} placeholder="/dev/sdc" />
+                <input className="input mono" value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }} placeholder={isWin ? "\\\\.\\PhysicalDrive1" : "/dev/sdc"} />
               </Field>
               <Notice tone="bad">
                 Everything on <span className="mono">{device || "the target"}</span> will be permanently replaced. Type the device path again to confirm.
               </Notice>
-              <input className={`input mono${confirm && confirm !== device ? " invalid" : ""}`} value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={device || "/dev/sdc"} aria-label="Confirm target device" />
+              <input className={`input mono${confirm && confirm !== device ? " invalid" : ""}`} value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={device || (isWin ? "\\\\.\\PhysicalDrive1" : "/dev/sdc")} aria-label="Confirm target device" />
             </>
           )}
         </>

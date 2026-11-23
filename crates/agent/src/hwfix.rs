@@ -229,10 +229,12 @@ pub fn adapt(
 // hivex (Linux recovery media)
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(windows, allow(dead_code))]
 pub struct HivexHive {
     pub path: PathBuf,
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 impl HivexHive {
     fn get(&self, key: &str, name: Option<&str>) -> Option<String> {
         let mut c = Command::new("hivexget");
@@ -374,6 +376,208 @@ fn partitions(device: &str) -> Vec<(String, u64)> {
             (format!("/dev/{}", e.file_name().to_string_lossy()), size)
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// reg.exe and DISM (Windows PE)
+// ---------------------------------------------------------------------------
+
+/// `    Start    REG_DWORD    0x3` → ("REG_DWORD", "0x3").
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn parse_reg_query(out: &str, name: &str) -> Option<(String, String)> {
+    out.lines().find_map(|l| {
+        let rest = l.trim().strip_prefix(name)?;
+        let mut it = rest.split_whitespace();
+        let typ = it.next()?.to_string();
+        if !typ.starts_with("REG_") {
+            return None;
+        }
+        Some((typ, it.collect::<Vec<_>>().join(" ")))
+    })
+}
+
+/// A hive loaded under `HKLM\FenrirOffline` with reg.exe; unloaded on drop.
+#[cfg(windows)]
+pub struct RegHive;
+
+#[cfg(windows)]
+const OFFLINE: &str = r"HKLM\FenrirOffline";
+
+#[cfg(windows)]
+fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
+    Command::new("reg.exe").args(args).output()
+}
+
+#[cfg(windows)]
+impl RegHive {
+    pub fn load(path: &Path) -> anyhow::Result<RegHive> {
+        let p = path.to_string_lossy().to_string();
+        let o = reg(&["load", OFFLINE, &p]).context("running reg.exe")?;
+        if !o.status.success() {
+            bail!("reg load: {}", String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Ok(RegHive)
+    }
+
+    fn query(&self, key: &str, name: &str) -> Option<(String, String)> {
+        let full = format!(r"{OFFLINE}\{key}");
+        let o = reg(&["query", &full, "/v", name]).ok()?;
+        if !o.status.success() {
+            return None;
+        }
+        parse_reg_query(&String::from_utf8_lossy(&o.stdout), name)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for RegHive {
+    fn drop(&mut self) {
+        let _ = reg(&["unload", OFFLINE]);
+    }
+}
+
+#[cfg(windows)]
+impl Hive for RegHive {
+    fn dword(&self, key: &str, name: &str) -> Option<u32> {
+        let (_, v) = self.query(key, name)?;
+        u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()
+    }
+    fn string(&self, key: &str, name: &str) -> Option<String> {
+        self.query(key, name).map(|(_, v)| v)
+    }
+    fn key_exists(&self, key: &str) -> bool {
+        reg(&["query", &format!(r"{OFFLINE}\{key}")]).is_ok_and(|o| o.status.success())
+    }
+    fn apply(&self, set: &[(String, String, u32)], delete: &[String]) -> anyhow::Result<()> {
+        for (key, name, v) in set {
+            let k = format!(r"{OFFLINE}\{key}");
+            let o = reg(&[
+                "add",
+                &k,
+                "/v",
+                name,
+                "/t",
+                "REG_DWORD",
+                "/d",
+                &v.to_string(),
+                "/f",
+            ])?;
+            if !o.status.success() {
+                bail!(
+                    "reg add {key}: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+            }
+        }
+        for key in delete {
+            let o = reg(&["delete", &format!(r"{OFFLINE}\{key}"), "/f"])?;
+            if !o.status.success() {
+                bail!(
+                    "reg delete {key}: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// For a dirty hive: `adapt` returns before reading it.
+#[cfg(windows)]
+struct NoHive;
+
+#[cfg(windows)]
+impl Hive for NoHive {
+    fn dword(&self, _: &str, _: &str) -> Option<u32> {
+        None
+    }
+    fn string(&self, _: &str, _: &str) -> Option<String> {
+        None
+    }
+    fn key_exists(&self, _: &str) -> bool {
+        false
+    }
+    fn apply(&self, _: &[(String, String, u32)], _: &[String]) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// Driver folders to add on Windows PE: the media's own, and a
+/// `fenrir-drivers` folder in the root of any drive.
+#[cfg(windows)]
+fn driver_folders() -> Vec<PathBuf> {
+    let mut v = vec![crate::recovery::runtime_dir().join("drivers")];
+    for d in b'C'..=b'Z' {
+        v.push(PathBuf::from(format!(r"{}:\fenrir-drivers", d as char)));
+    }
+    v.into_iter()
+        .filter(|p| std::fs::read_dir(p).is_ok_and(|mut r| r.next().is_some()))
+        .collect()
+}
+
+/// Windows (PE): after a Windows disk was restored to `device`
+/// (`\\.\PhysicalDriveN`) and Windows read its new partition table, find
+/// the Windows volume, set its storage drivers to start at boot, and add
+/// driver packages with DISM.
+#[cfg(windows)]
+pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
+    use snapshot_win::win::disks;
+    let n = disks::disk_number(device).context("not a physical disk")?;
+    // The restored volumes appear shortly after the partition table is re-read.
+    let mut vols = Vec::new();
+    for _ in 0..30 {
+        vols = disks::volumes_on_disk(n);
+        if !vols.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    vols.sort_by_key(|v| std::cmp::Reverse(v.2));
+    let folder = crate::recovery::runtime_dir().join("windows");
+    for (vol, _, _) in vols {
+        let Ok(root) = disks::volume_root(&vol, &folder) else {
+            continue;
+        };
+        let Some((hive_path, drivers)) = find_windows(&root.root) else {
+            continue;
+        };
+        let mut fix = if hive_is_dirty(&hive_path)? {
+            adapt(&root.root, &vol, &NoHive, &hive_path, &drivers)?
+        } else {
+            let h = RegHive::load(&hive_path)?;
+            adapt(&root.root, &vol, &h, &hive_path, &drivers)?
+        };
+        let image = root.root.to_string_lossy().to_string();
+        for d in driver_folders() {
+            let o = Command::new("dism.exe")
+                .arg(format!("/Image:{image}"))
+                .arg("/Add-Driver")
+                .arg(format!("/Driver:{}", d.display()))
+                .arg("/Recurse")
+                .output();
+            match o {
+                Ok(o) if o.status.success() => fix.drivers_added.push(d.display().to_string()),
+                Ok(o) => fix.notes.push(format!(
+                    "DISM could not add the drivers in {}: {}",
+                    d.display(),
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim()
+                )),
+                Err(e) => fix.notes.push(format!("DISM is not available: {e}")),
+            }
+        }
+        return Ok(Some(fix));
+    }
+    Ok(None)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn adapt_restored_disk(_device: &str) -> anyhow::Result<Option<WindowsFix>> {
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -671,6 +875,25 @@ mod tests {
         let fix = adapt(t.path(), "x", &h, &hive, &drivers).unwrap();
         assert!(fix.boot_start.is_empty() && fix.notes[0].contains("unsaved"));
         assert_eq!(std::fs::read(&hive).unwrap(), before);
+    }
+
+    #[test]
+    fn reg_query_output_is_parsed() {
+        let out = "\r\nHKEY_LOCAL_MACHINE\\FenrirOffline\\Select\r\n    Current    REG_DWORD    0x1\r\n\r\n";
+        assert_eq!(
+            parse_reg_query(out, "Current"),
+            Some(("REG_DWORD".into(), "0x1".into()))
+        );
+        let out =
+            "    ImagePath    REG_EXPAND_SZ    \\SystemRoot\\System32\\drivers\\stornvme.sys\r\n";
+        assert_eq!(
+            parse_reg_query(out, "ImagePath").unwrap().1,
+            r"\SystemRoot\System32\drivers\stornvme.sys"
+        );
+        assert_eq!(
+            parse_reg_query("    Start2    REG_DWORD    0x0", "Start"),
+            None
+        );
     }
 
     #[test]

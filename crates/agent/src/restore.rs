@@ -268,7 +268,7 @@ fn run_target(
                 .ok_or_else(|| anyhow!("the image has no disk {disk}"))?;
             let c = DestructiveConfirmation::confirmed_by_user(device);
             // Bare-metal restore: the new disk may be bigger or smaller.
-            let t = FileTarget::open(Path::new(device), engine::fit::min_size(d), true, &c)?;
+            let (t, takeover) = open_target(device, engine::fit::min_size(d), &c)?;
             let total = d.size;
             let cb = |done: u64, _t: u64| rep.progress("restoring", done, total, device);
             let r = engine::restore_disk(
@@ -310,6 +310,15 @@ fn run_target(
                         .push(format!("could not add the fallback boot loader: {e}")),
                 }
             }
+            // Windows: release the disk and let Windows read the restored
+            // partition table.
+            if let Some(finish) = takeover {
+                if let Err(e) = finish() {
+                    u.warnings.push(format!(
+                        "Windows did not re-read the restored disk ({e}); restart before using it."
+                    ));
+                }
+            }
             // Windows on different hardware: its storage drivers (design:
             // phase-5-hardware).
             if ctx.cfg.role == "recovery" {
@@ -343,6 +352,27 @@ fn run_target(
             Ok(u)
         }
     }
+}
+
+/// Called after writing a taken-over disk.
+type Finish = Box<dyn FnOnce() -> std::io::Result<()>>;
+
+/// The restore target. On Windows a physical disk is taken over first (its
+/// volumes locked and dismounted; the system disk refused).
+fn open_target(
+    device: &str,
+    min_size: u64,
+    c: &DestructiveConfirmation,
+) -> anyhow::Result<(FileTarget, Option<Finish>)> {
+    #[cfg(windows)]
+    if engine::target::is_windows_device_path(device) {
+        let (t, lock) = snapshot_win::win::disks::take_over(device, c)?;
+        return Ok((t, Some(Box::new(move || lock.finish()))));
+    }
+    Ok((
+        FileTarget::open(Path::new(device), min_size, true, c)?,
+        None,
+    ))
 }
 
 /// How the backed-up system boots: as recorded at backup, else inferred

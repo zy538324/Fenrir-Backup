@@ -85,7 +85,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release -p cli --locked
+      - run: cargo build --release -p cli -p agent --locked
       - name: disk layout (diagnostics)
         shell: pwsh
         run: |
@@ -101,6 +101,9 @@ jobs:
           if (-not $p.ok) { exit 1 }
           $snap = $p.result.disks.partitions | Where-Object { $_.capture -eq 'snapshot_bitmap' }
           if (-not $snap) { Write-Error 'no partition was captured through a VSS snapshot'; exit 1 }
+      - name: whole-disk restore on Windows (volumes locked; storage drivers prepared)
+        shell: pwsh
+        run: ./ci/windows-disk-restore.ps1 -Cli target/release/fenrir-backup.exe -Agent target/release/fenrir-backup-agent.exe
 
   # Agent, CLI and server binaries for every platform the server offers
   # downloads for. Linux builds are static (musl) so one binary runs on
@@ -164,6 +167,48 @@ jobs:
         with:
           name: recovery-iso
           path: out
+
+  # Windows PE recovery media, built the way a user builds it: the Windows
+  # ADK and its Windows PE add-on installed on a Windows machine, then
+  # recovery-env/winpe/New-FenrirWinPE.ps1 with the Windows agent and CLI.
+  winpe-media:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-x86_64-pc-windows-msvc
+          path: bin
+      - name: Windows ADK and Windows PE add-on
+        shell: pwsh
+        run: choco install windows-adk-deploy windows-adk-winpe -y --no-progress
+      - name: build the media
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory drivers | Out-Null
+          '{"server":"https://backup.example.lan:8443","pin":"","token":"ci","expires":0}' | Set-Content settings.json
+          ./recovery-env/winpe/New-FenrirWinPE.ps1 -Agent bin/fenrir-backup-agent.exe -Cli bin/fenrir-backup.exe -Settings settings.json -Out out/fenrir-recovery-winpe.iso
+      - name: check the image
+        shell: pwsh
+        run: |
+          $iso = (Resolve-Path out/fenrir-recovery-winpe.iso).Path
+          $v = Mount-DiskImage -ImagePath $iso -PassThru | Get-Volume
+          $d = "$($v.DriveLetter):"
+          if (-not (Test-Path "$d\fenrir\recovery.json")) { throw 'settings missing from the media' }
+          New-Item -ItemType Directory mnt | Out-Null
+          dism /Mount-Image /ImageFile:"$d\sources\boot.wim" /Index:1 /MountDir:"$PWD\mnt" /ReadOnly
+          foreach ($f in 'Windows\System32\fenrir-backup-agent.exe', 'Windows\System32\fenrir-backup.exe', 'Windows\System32\startnet.cmd', 'fenrir\status.cmd') {
+            if (-not (Test-Path "mnt\$f")) { throw "$f missing from boot.wim" }
+          }
+          if (-not (Select-String -Path mnt\Windows\System32\startnet.cmd -Pattern 'fenrir-backup-agent.exe recovery' -Quiet)) { throw 'startnet.cmd does not start the agent' }
+          dism /Unmount-Image /MountDir:"$PWD\mnt" /Discard
+          Dismount-DiskImage -ImagePath $iso | Out-Null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recovery-winpe-ci
+          path: out
+          retention-days: 3
 
   # Bare-metal restore end to end: the server personalises the ISO, which
   # boots in QEMU with Secure Boot, enrols, and restores a backed-up UEFI

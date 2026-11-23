@@ -45,11 +45,13 @@ today:
   Secure Boot, and BIOS) downloaded from the web UI with this server's
   settings in it. A machine started from it appears as a recovery session;
   restore any backup onto its disk, larger or smaller, and it is made
-  bootable on the new hardware. Works without a server too, from a menu on
-  the screen.
+  bootable on the new hardware: Windows gets the storage drivers for its new
+  disk controller. Works without a server too, from a menu on the screen.
+  Optional Windows PE media, built with your own Windows ADK, adds third-party
+  drivers.
 
-Not yet: S3 and Object Lock (Phase 4), dissimilar-hardware driver injection
-and cloning (5), live Linux snapshots (6), WinPE media.
+Not yet: S3 and Object Lock (Phase 4), cloning and growing file systems (5),
+live Linux snapshots (6).
 
 Before relying on it, work through [docs/DEPLOYMENT-TEST-PLAN.md](docs/DEPLOYMENT-TEST-PLAN.md).
 

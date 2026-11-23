@@ -1,6 +1,6 @@
 # Phase 2 design note: recovery media and bare-metal restore
 
-Status: done except WinPE (§6, deferred).
+Status: done.
 
 Goal: a machine whose disk has died, been wiped or been encrypted by
 ransomware can be put back from a backup without any operating system on it.
@@ -16,7 +16,7 @@ wizard on the machine's screen.
 | Recovery agent mode (`fenrir-backup-agent recovery`) | `crates/agent` | permissive deps only |
 | Restore to a different-size disk, boot fix-ups | `crates/engine` (`fit.rs`, `bootfix.rs`) | adds `fatfs` (MIT) |
 | Personalised ISO download, recovery machines, restore-to-disk flow | `crates/server`, `ui/`, and Fenrir Cloud | none new |
-| Optional WinPE media builder (deferred, §6) | `recovery-env/winpe/` PowerShell, run by the user with their own Microsoft ADK | WinPE is never redistributed |
+| Optional WinPE media builder (§6) | `recovery-env/winpe/` PowerShell, run by the user with their own Microsoft ADK | WinPE is never redistributed |
 
 ## 2. Recovery ISO
 
@@ -155,13 +155,28 @@ target's name to confirm. It runs
 `fenrir-backup restore disk ... --yes` with `--fit` and `--boot-fixup`
 (new CLI flags matching §4), showing progress.
 
-## 6. WinPE (optional; deferred)
+## 6. WinPE (optional)
 
-Not in the first release of this phase: writing a whole disk from Windows
-needs every volume on it locked and dismounted first (Windows refuses raw
-writes to mounted volumes), which the agent does not do yet. The Linux ISO
-covers the machines it can boot; this remains for storage that only has
-Windows drivers.
+Windows refuses raw writes to sectors of a mounted volume, so a whole-disk
+restore on Windows (Windows PE, or a running Windows onto a disk other than
+its own) first takes the target over (`snapshot_win::win::disks`):
+
+* the disk must be a listed physical disk, not the one holding the running
+  Windows, the Windows PE medium (`sources\boot.wim`, `fenrir\recovery.json`)
+  or a page file;
+* an offline or read-only disk is made online and writable for this boot;
+* every volume on it is locked (`FSCTL_LOCK_VOLUME`, which fails while files
+  are open: the restore is refused and nothing is written) and dismounted;
+* the disk is written through `\\.\PhysicalDriveN` in whole sectors (the
+  boot fix-up goes through a sector-aligned adapter);
+* afterwards `IOCTL_DISK_UPDATE_PROPERTIES` makes Windows read the restored
+  partition table, and the old volume handles are released.
+
+Windows PE identifies the machine from SMBIOS (system UUID and serial), the
+same values the Linux ISO reads, so either medium updates the same recovery
+session entry. Tested on a Windows CI runner with two virtual disks
+(`ci/windows-disk-restore.ps1`); the media build is tested there too with
+the ADK installed.
 
 
 `recovery-env/winpe/New-FenrirWinPE.ps1` on a Windows PC with the Windows

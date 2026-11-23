@@ -335,8 +335,41 @@ the job reminds you to turn BitLocker on again. Volumes captured still
 encrypted (a Hyper-V VM's own BitLocker backed up from the host, a volume
 VSS could not snapshot, or a Windows disk backed up from Linux) need their
 48-digit recovery key on first start on different hardware; the job says
-which. Drivers for different storage controllers are not added
-yet (Phase 5).
+which.
+
+Different hardware: a restored Windows gets its own storage drivers (AHCI,
+NVMe, Intel RST, common RAID/SAS controllers, Hyper-V, VMware, virtio) set to
+start at boot in its registry, so a move from RAID to AHCI, SATA to NVMe or a
+physical machine to a VM does not stop it with INACCESSIBLE_BOOT_DEVICE. A
+copy of the registry hive is kept as `SYSTEM.fenrir-before-hardware`. Drivers
+that do not come with Windows need Windows PE media (below).
+
+### Windows PE recovery media
+
+For storage controllers that only have Windows drivers, or to add drivers
+to the restored Windows. Build it on any Windows 10/11 PC with Microsoft's
+free Windows ADK and its Windows PE add-on (Fenrir-Backup does not ship
+Windows PE):
+
+```powershell
+.\recovery-env\winpe\New-FenrirWinPE.ps1 -Agent .\fenrir-backup-agent.exe -Cli .\fenrir-backup.exe `
+  -Settings .\fenrir-recovery.json -Drivers .\drivers -Out .\fenrir-recovery-winpe.iso
+```
+
+`fenrir-backup-agent.exe` and `fenrir-backup.exe` are in the server's
+`agents/x86_64-pc-windows-msvc` folder; the settings file comes from
+**Recovery media › Settings file only**. `-UsbDrive E:` writes a USB stick
+instead of an ISO. `-Drivers` takes a folder of driver packages (`.inf`):
+they are added to Windows PE so it sees the disks, and after a restore to
+the restored Windows with DISM, as is a `fenrir-drivers` folder on any USB
+stick. Started from it, the machine appears as a recovery session as with
+the Linux ISO; the disk's volumes are locked and dismounted before the
+restore, and the disk that Windows PE started from is never offered.
+
+The same whole-disk restore works on a running Windows onto a disk other
+than its system disk (Restore › Onto a disk, or `fenrir-backup restore
+disk --target \\.\PhysicalDrive2`): Windows refuses while files are open on
+that disk.
 
 Without a server (or without network): choose **Restore from a repository
 here** on the recovery screen. It reads a repository from a USB disk or an
