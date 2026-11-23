@@ -178,6 +178,15 @@ of a machine from section 2 or 3.
 5. [ ] Offline: start from the stick with the network cable out → Restore
    from a repository here → repository on a USB disk → passphrase → image
    → disk → confirm. **Expect:** the same result.
+6. [ ] Different hardware: restore a Windows backup from a machine with
+   SATA/RAID storage onto one with NVMe (or into a Hyper-V or VMware VM).
+   **Expect:** the job lists the drivers set to start at boot; Windows
+   starts without INACCESSIBLE_BOOT_DEVICE.
+7. [ ] Windows PE: build the media with `recovery-env/winpe/New-FenrirWinPE.ps1`
+   (Windows ADK + Windows PE add-on, `-Settings` from Recovery media ›
+   Settings file only). Start the spare machine from it. **Expect:** it
+   appears as a recovery session; restoring to its disk works as with the
+   Linux ISO; the disk Windows PE started from is not offered.
 
 ## 6a. Boot verification
 
