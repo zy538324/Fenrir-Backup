@@ -76,6 +76,8 @@ reg delete $k /f | Out-Null
 # Only now an EFI system partition (Windows assigns no letter to one).
 Remove-PartitionAccessPath -DiskNumber $pc -PartitionNumber $esp.PartitionNumber -AccessPath "${e}:\"
 Set-Partition -DiskNumber $pc -PartitionNumber $esp.PartitionNumber -GptType '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'
+# Windows adds a Microsoft reserved partition to a new GPT disk.
+$pcParts = (Get-Partition -DiskNumber $pc).Count
 Dismount-DiskImage -ImagePath $pcVhd | Out-Null
 # A fixed VHD is the raw disk followed by a 512-byte footer.
 $img = "$Work\pc.img"
@@ -117,9 +119,9 @@ Check ($r.result.boot.added -contains '\EFI\BOOT\BOOTX64.EFI') 'fallback boot lo
 Start-Sleep -Seconds 3
 Update-Disk -Number $new
 $parts = Get-Partition -DiskNumber $new
-Check ($parts.Count -eq 2) "two partitions on the new disk ($($parts.Count))"
+Check ($parts.Count -eq $pcParts) "the PC disk's $pcParts partitions on the new disk ($($parts.Count))"
 Check (($parts | Where-Object GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}').Count -eq 1) 'its EFI system partition'
-$data = $parts | Where-Object { $_.GptType -ne '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' }
+$data = $parts | Where-Object { $_.GptType -eq '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' }
 if (-not $data.DriveLetter) { $data | Add-PartitionAccessPath -AssignDriveLetter; $data = Get-Partition -DiskNumber $new -PartitionNumber $data.PartitionNumber }
 $n = $data.DriveLetter
 Check ((Get-Volume -DriveLetter $n).FileSystemLabel -eq 'FENRIRSRC') 'the restored NTFS volume'

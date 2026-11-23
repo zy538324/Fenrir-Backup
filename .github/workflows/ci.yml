@@ -182,7 +182,20 @@ jobs:
           path: bin
       - name: Windows ADK and Windows PE add-on
         shell: pwsh
-        run: choco install windows-adk-deploy windows-adk-winpe -y --no-progress
+        run: |
+          # The community feed fails now and then: retry each package, then
+          # check the ADK is really there.
+          foreach ($p in 'windows-adk-deploy', 'windows-adk-winpe') {
+            for ($i = 1; $i -le 4; $i++) {
+              choco install $p -y --no-progress
+              if (choco list --exact $p --limit-output) { break }
+              Start-Sleep -Seconds (30 * $i)
+            }
+          }
+          $kit = "${env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit"
+          foreach ($f in 'Deployment Tools\DandISetEnv.bat', 'Windows Preinstallation Environment\copype.cmd') {
+            if (-not (Test-Path "$kit\$f")) { throw "ADK not installed: $f missing" }
+          }
       - name: build the media
         shell: pwsh
         run: |
