@@ -175,6 +175,9 @@ pub fn hive_is_dirty(path: &Path) -> anyhow::Result<bool> {
     Ok(b[4..8] != b[8..12])
 }
 
+/// The original SYSTEM hive, kept next to it before it is changed.
+pub const BACKUP_NAME: &str = "SYSTEM.fenrir-before-hardware";
+
 /// Prepare the Windows installation mounted at `root` for this hardware.
 pub fn adapt(
     root: &Path,
@@ -200,7 +203,7 @@ pub fn adapt(
     };
     fix.control_set = p.control_set.clone();
     if !p.boot_start.is_empty() || !p.overrides.is_empty() {
-        let backup = hive_path.with_file_name("SYSTEM.fenrir-before-hardware");
+        let backup = hive_path.with_file_name(BACKUP_NAME);
         if !backup.exists() {
             std::fs::copy(hive_path, &backup).context("keeping a copy of the registry")?;
         }
@@ -547,8 +550,22 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
         let mut fix = if hive_is_dirty(&hive_path)? {
             adapt(&root.root, &vol, &NoHive, &hive_path, &drivers)?
         } else {
-            let h = RegHive::load(&hive_path)?;
-            adapt(&root.root, &vol, &h, &hive_path, &drivers)?
+            // reg.exe holds a loaded hive open exclusively: keep the copy of
+            // the original first (adapt finds it there), and drop it again if
+            // nothing changed.
+            let backup = hive_path.with_file_name(BACKUP_NAME);
+            let made = !backup.exists();
+            if made {
+                std::fs::copy(&hive_path, &backup).context("keeping a copy of the registry")?;
+            }
+            let fix = {
+                let h = RegHive::load(&hive_path)?;
+                adapt(&root.root, &vol, &h, &hive_path, &drivers)?
+            };
+            if made && fix.boot_start.is_empty() && fix.overrides_removed.is_empty() {
+                let _ = std::fs::remove_file(&backup);
+            }
+            fix
         };
         let image = root.root.to_string_lossy().to_string();
         for d in driver_folders() {
