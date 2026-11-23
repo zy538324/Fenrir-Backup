@@ -480,6 +480,38 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             u.images = Some(ok.iter().map(report_of).collect());
             Ok(u)
         }
+        JobKind::CopyImages {
+            images,
+            full_verify,
+            ..
+        } => {
+            let src = open_repo(ctx, access.ok_or_else(|| anyhow!("no source repository"))?)?;
+            let target = spec.copy_target.as_ref().ok_or_else(|| {
+                anyhow!("this machine has no access to the destination repository; grant it access there")
+            })?;
+            let dst = open_repo(ctx, target)?;
+            let cb = |done: u64, total: u64| rep.progress("copying", done, total, &target.path);
+            let ids = (!images.is_empty()).then_some(images.as_slice());
+            let r = engine::copy::copy_images(&src, &dst, ids, *full_verify, &ctx.ctl, &cb)?;
+            let mut u = done(JobState::Succeeded);
+            u.result = Some(json!({
+                "copied": r.copied.len(),
+                "already_there": r.already_there,
+                "chunks_written": r.chunks_written,
+                "bytes_stored": r.bytes_stored,
+                "verified": r.verified,
+                "to": target.path,
+            }));
+            // The destination's catalogue lists the copies.
+            u.images = Some(
+                r.copied
+                    .iter()
+                    .filter_map(|id| dst.load_manifest(id).ok())
+                    .map(|m| report_of(&m))
+                    .collect(),
+            );
+            Ok(u)
+        }
         JobKind::ApplyRetention {
             machine_ids,
             retention,

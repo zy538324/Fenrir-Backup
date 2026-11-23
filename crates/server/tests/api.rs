@@ -2038,3 +2038,91 @@ async fn s3_repositories_with_object_lock() {
         .await;
     assert_eq!(s, StatusCode::OK, "{r}");
 }
+
+#[tokio::test]
+async fn offsite_copy_after_each_plan_backup() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let local = ready_repo(&mut t, &key, &agent_id, &token).await;
+    let offsite = ready_repo(&mut t, &key, &agent_id, &token).await;
+
+    // Not into itself, and only where the machine has access.
+    let plan_body = |copy: &str| {
+        json!({ "name": "Nightly", "agent_id": agent_id, "repository_id": local, "job": { "type": "backup_disks", "paths": ["/dev/sdb"] },
+                "schedule": { "type": "manual" }, "copy_to_repository_id": copy })
+    };
+    let (s, _) = t.post("/api/plans", plan_body(&local)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, plan) = t.post("/api/plans", plan_body(&offsite)).await;
+    assert_eq!(s, StatusCode::OK, "{plan}");
+    let plan = plan["id"].as_str().unwrap().to_string();
+    let (_, plans) = t.get("/api/plans").await;
+    assert_eq!(plans[0]["copy_to_repository_id"], offsite.as_str());
+
+    // A backup is followed by a copy job carrying both repositories.
+    t.post(&format!("/api/plans/{plan}/run"), json!({})).await;
+    let im = image(1, 30, 30 << 20, 12 << 20);
+    complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "images": [im] }),
+    )
+    .await
+    .unwrap();
+    let hb = heartbeat(&mut t, &token, CAPS, None).await;
+    let job = &hb.jobs[0];
+    match &job.kind {
+        JobKind::CopyImages {
+            target_repository_id,
+            images,
+            ..
+        } => {
+            assert_eq!(target_repository_id.to_string(), offsite);
+            assert_eq!(images, &vec![im.image_id]);
+        }
+        other => panic!("expected a copy, got {other:?}"),
+    }
+    assert_eq!(
+        job.repository.as_ref().unwrap().repository_id.to_string(),
+        local
+    );
+    assert_eq!(
+        job.copy_target.as_ref().unwrap().repository_id.to_string(),
+        offsite
+    );
+    // The copied image is listed in the destination.
+    let (s, _) = t
+        .agent(
+            &format!("/api/agent/jobs/{}/update", job.id),
+            &token,
+            json!({ "state": "succeeded", "images": [ImageReport { image_id: uuid::Uuid::new_v4(), ..im.clone() }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, imgs) = t.get(&format!("/api/images?repository_id={offsite}")).await;
+    assert_eq!(imgs.as_array().unwrap().len(), 1);
+
+    // Copy now, by hand; and the plan's copy can be turned off.
+    let (s, v) = t
+        .post(
+            &format!("/api/repositories/{local}/copy"),
+            json!({ "agent_id": agent_id, "target_repository_id": offsite }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _, _) = t
+        .req(
+            "PATCH",
+            &format!("/api/plans/{plan}"),
+            Some(json!({ "copy_to_repository_id": null })),
+            None,
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, plans) = t.get("/api/plans").await;
+    assert!(plans[0]["copy_to_repository_id"].is_null());
+}

@@ -790,6 +790,7 @@ checksum = "5ab6bbd053d3cdc62ba3de82aae11530a97bbd5b3a572fbdbcd0f0e545e3ff21"
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "core-format",
  "crc32fast",
  "fatfs",

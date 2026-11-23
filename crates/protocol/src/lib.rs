@@ -321,6 +321,17 @@ pub enum JobKind {
     },
     /// Report the repository's images to the server.
     ListImages,
+    /// Copy images from this job's repository to `target_repository_id`
+    /// (off-site copies, docs/design/offsite-copy.md): re-encrypted for the
+    /// destination, then verified there. Empty `images` = every image the
+    /// destination does not have.
+    CopyImages {
+        target_repository_id: Uuid,
+        #[serde(default)]
+        images: Vec<Uuid>,
+        #[serde(default)]
+        full_verify: bool,
+    },
     /// Delete images the policy no longer keeps (manifests only).
     ApplyRetention {
         /// Machine IDs to apply it to; empty = all in the repository.
@@ -404,6 +415,7 @@ impl JobKind {
             JobKind::BackupHyperv { .. } => "Hyper-V backup",
             JobKind::Verify { .. } => "Verify",
             JobKind::ListImages => "Refresh images",
+            JobKind::CopyImages { .. } => "Copy off-site",
             JobKind::ApplyRetention { .. } => "Apply retention",
             JobKind::Prune { .. } => "Reclaim space",
             JobKind::Restore { .. } => "Restore",
@@ -510,6 +522,10 @@ pub struct JobSpec {
     pub kind: JobKind,
     #[serde(default)]
     pub repository: Option<RepoAccess>,
+    /// The destination of a `CopyImages` job, sealed to this machine like
+    /// the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_target: Option<RepoAccess>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

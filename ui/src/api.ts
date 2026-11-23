@@ -73,6 +73,7 @@ export type JobKind =
   | { type: "backup_hyperv"; vm_ids: string[]; settings?: BackupSettings }
   | { type: "verify"; level: "quick" | "sample" | "full"; sample_percent?: number }
   | { type: "list_images" }
+  | { type: "copy_images"; target_repository_id: string; images?: string[]; full_verify?: boolean }
   | { type: "apply_retention"; machine_ids: string[]; retention: Retention; dry_run?: boolean }
   | { type: "prune"; dry_run?: boolean }
   | { type: "restore"; image_id: string; disks: number[]; target: RestoreTarget }
@@ -200,6 +201,8 @@ export interface Plan {
   last_run: number | null;
   next_run: number | null;
   retention: Retention | null;
+  copy_to_repository_id?: string | null;
+  copy_to_repository_name?: string | null;
 }
 
 export interface Overview {

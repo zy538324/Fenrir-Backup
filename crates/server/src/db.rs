@@ -183,6 +183,10 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE images ADD COLUMN applications_json TEXT;
     "#,
+    // 8: off-site copies: a plan copies each backup to another repository.
+    r#"
+    ALTER TABLE plans ADD COLUMN copy_to_repository_id TEXT REFERENCES repositories(id) ON DELETE SET NULL;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

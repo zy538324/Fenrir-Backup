@@ -59,6 +59,7 @@ pub fn routes() -> Router<Shared> {
         .route("/api/repositories/{id}/hold", post(set_hold))
         .route("/api/repositories/{id}/maintenance", post(set_maintenance))
         .route("/api/repositories/{id}/prune", post(prune_now))
+        .route("/api/repositories/{id}/copy", post(copy_now))
         .route("/api/restores", post(create_restore))
         .route("/api/images/{id}/boot-check", post(create_boot_check))
         .route("/api/images/{id}/boot-checks", get(list_boot_checks))
@@ -1116,6 +1117,9 @@ struct NewPlan {
     enabled: bool,
     #[serde(default)]
     retention: Option<protocol::Retention>,
+    /// Off-site copy: copy each backup to this repository too.
+    #[serde(default)]
+    copy_to_repository_id: Option<String>,
 }
 fn yes() -> bool {
     true
@@ -1129,6 +1133,7 @@ fn plan_from_row(r: &Row) -> rusqlite::Result<Value> {
         "schedule": serde_json::from_str::<Value>(&r.get::<_, String>(7)?).unwrap_or(Value::Null),
         "enabled": r.get::<_, i64>(8)? != 0, "last_run": r.get::<_, Option<i64>>(9)?, "next_run": r.get::<_, Option<i64>>(10)?,
         "retention": r.get::<_, Option<String>>(11)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+        "copy_to_repository_id": r.get::<_, Option<String>>(12)?, "copy_to_repository_name": r.get::<_, Option<String>>(13)?,
     }))
 }
 
@@ -1136,8 +1141,9 @@ fn plans_query(st: &Shared, agent: Option<&str>) -> ApiResult<Vec<Value>> {
     let db = st.db();
     let base = "SELECT p.id, p.name, p.agent_id, COALESCE(a.display_name, a.hostname), p.repository_id, r.name, p.job_json, p.schedule_json, p.enabled,
         COALESCE((SELECT MAX(j.created) FROM jobs j WHERE j.plan_id = p.id AND j.kind_json NOT LIKE '{\"type\":\"apply_retention%'), p.last_run),
-        p.next_run, p.retention_json
-        FROM plans p JOIN agents a ON a.id = p.agent_id JOIN repositories r ON r.id = p.repository_id";
+        p.next_run, p.retention_json, p.copy_to_repository_id, c.name
+        FROM plans p JOIN agents a ON a.id = p.agent_id JOIN repositories r ON r.id = p.repository_id
+        LEFT JOIN repositories c ON c.id = p.copy_to_repository_id";
     let v = match agent {
         Some(id) => db
             .prepare(&format!("{base} WHERE p.agent_id = ?1 ORDER BY p.name"))?
@@ -1176,13 +1182,14 @@ async fn create_plan(
     }
     p.schedule.validate().map_err(ApiError::bad)?;
     validate_job(&st, &agent, &p.job, &Some(repo.clone()))?;
+    let copy_to = check_copy_target(&st, &agent, &repo, p.copy_to_repository_id.as_deref())?;
     let id = Uuid::new_v4().to_string();
     let t = now();
     let db = st.db();
     db.execute(
-        "INSERT INTO plans (id, name, agent_id, repository_id, job_json, schedule_json, enabled, next_run, created, retention_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO plans (id, name, agent_id, repository_id, job_json, schedule_json, enabled, next_run, created, retention_json, copy_to_repository_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![id, p.name.trim(), agent, repo, serde_json::to_string(&p.job)?, serde_json::to_string(&p.schedule)?, p.enabled, p.schedule.next_after(t), t,
-                p.retention.map(|r| serde_json::to_string(&r)).transpose()?],
+                p.retention.map(|r| serde_json::to_string(&r)).transpose()?, copy_to],
     )?;
     audit(&db, &a.username, "plan.created", p.name.trim());
     Ok(Json(json!({ "id": id })))
@@ -1201,6 +1208,39 @@ struct PlanPatch {
     /// Present (even null) to change retention; null = keep everything.
     #[serde(default, deserialize_with = "some_value")]
     retention: Option<Option<protocol::Retention>>,
+    /// Present (even null) to change the off-site copy; null = none.
+    #[serde(default, deserialize_with = "some_value")]
+    copy_to_repository_id: Option<Option<String>>,
+}
+
+/// An off-site copy destination for `agent`'s backups in `repo`: another
+/// repository the machine has access to.
+fn check_copy_target(
+    st: &Shared,
+    agent: &str,
+    repo: &str,
+    target: Option<&str>,
+) -> ApiResult<Option<String>> {
+    let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    let t = uuid_param(t)?;
+    if t == repo {
+        return Err(ApiError::bad(
+            "the copy must go to another repository than the backup",
+        ));
+    }
+    let has: i64 = st.db().query_row(
+        "SELECT COUNT(*) FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2",
+        params![t, agent],
+        |r| r.get(0),
+    )?;
+    if has == 0 {
+        return Err(ApiError::bad(
+            "the machine has no access to the copy's repository; grant it access there first",
+        ));
+    }
+    Ok(Some(t))
 }
 
 fn some_value<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
@@ -1225,7 +1265,7 @@ async fn update_plan(
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
     if let Some(j) = &p.job {
-        validate_job(&st, &agent, j, &Some(repo))?;
+        validate_job(&st, &agent, j, &Some(repo.clone()))?;
     }
     let db = st.db();
     if let Some(n) = p.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
@@ -1255,6 +1295,15 @@ async fn update_plan(
             params![r.map(|r| serde_json::to_string(&r)).transpose()?, id],
         )?;
     }
+    if let Some(c) = &p.copy_to_repository_id {
+        drop(db);
+        let c = check_copy_target(&st, &agent, &repo, c.as_deref())?;
+        st.db().execute(
+            "UPDATE plans SET copy_to_repository_id = ?1 WHERE id = ?2",
+            params![c, id],
+        )?;
+    }
+    let db = st.db();
     audit(&db, &a.username, "plan.updated", &id);
     Ok(Json(json!({ "ok": true })))
 }
@@ -1559,6 +1608,48 @@ async fn prune_now(
         None,
         &a.username,
     )?;
+    Ok(Json(json!({ "id": job })))
+}
+
+#[derive(Deserialize)]
+struct CopyReq {
+    /// Machine that copies (it needs access to both repositories).
+    agent_id: String,
+    target_repository_id: String,
+    /// Empty: every image the destination does not have.
+    #[serde(default)]
+    images: Vec<Uuid>,
+    #[serde(default)]
+    full_verify: bool,
+}
+
+/// Copy images to another repository now (off-site copy).
+async fn copy_now(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(c): Json<CopyReq>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let agent = uuid_param(&c.agent_id)?;
+    let has: i64 = st.db().query_row(
+        "SELECT COUNT(*) FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2",
+        params![id, agent],
+        |r| r.get(0),
+    )?;
+    if has == 0 {
+        return Err(ApiError::bad(
+            "the machine has no access to this repository",
+        ));
+    }
+    let target = check_copy_target(&st, &agent, &id, Some(&c.target_repository_id))?
+        .ok_or_else(|| ApiError::bad("choose the repository to copy to"))?;
+    let kind = JobKind::CopyImages {
+        target_repository_id: Uuid::parse_str(&target).map_err(|_| ApiError::bad("bad id"))?,
+        images: c.images,
+        full_verify: c.full_verify,
+    };
+    let job = insert_job(&st, &agent, &kind, Some(&id), None, &a.username)?;
     Ok(Json(json!({ "id": job })))
 }
 

@@ -167,30 +167,47 @@ async fn heartbeat(
             .optional()?;
         if let Some((id, repo_id, kind_json)) = next {
             let kind: JobKind = serde_json::from_str(&kind_json)?;
+            let access_to = |rid: &str| -> Result<RepoAccess, ApiError> {
+                db.query_row(
+                    "SELECT r.path, a.sealed, a.sealed_share, r.s3_json FROM repositories r JOIN repo_access a ON a.repository_id = r.id
+                     WHERE r.id = ?1 AND a.agent_id = ?2",
+                    params![rid, agent.agent_id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?)),
+                )
+                .optional()?
+                .map(|(path, sealed, share, s3)| {
+                    Ok::<_, ApiError>(RepoAccess {
+                        repository_id: Uuid::parse_str(rid).map_err(|_| ApiError::bad("bad repository id"))?,
+                        path,
+                        sealed_secret: serde_json::from_str(&sealed)?,
+                        sealed_share: share.as_deref().map(serde_json::from_str).transpose()?,
+                        gateway: crate::gateway::route(&db, rid, &agent.agent_id)?,
+                        s3: s3.as_deref().map(serde_json::from_str).transpose()?,
+                    })
+                })
+                .unwrap_or(Err(ApiError::forbidden("no access")))
+            };
             let repository = match &repo_id {
                 None => Ok(None),
-                Some(rid) => db
-                    .query_row(
-                        "SELECT r.path, a.sealed, a.sealed_share, r.s3_json FROM repositories r JOIN repo_access a ON a.repository_id = r.id
-                         WHERE r.id = ?1 AND a.agent_id = ?2",
-                        params![rid, agent.agent_id],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?)),
-                    )
-                    .optional()?
-                    .map(|(path, sealed, share, s3)| {
-                        Ok::<_, ApiError>(Some(RepoAccess {
-                            repository_id: Uuid::parse_str(rid).map_err(|_| ApiError::bad("bad repository id"))?,
-                            path,
-                            sealed_secret: serde_json::from_str(&sealed)?,
-                            sealed_share: share.as_deref().map(serde_json::from_str).transpose()?,
-                            gateway: crate::gateway::route(&db, rid, &agent.agent_id)?,
-                            s3: s3.as_deref().map(serde_json::from_str).transpose()?,
-                        }))
-                    })
-                    .unwrap_or(Err(ApiError::forbidden("no access"))),
+                Some(rid) => access_to(rid).map(Some),
+            };
+            // A copy also needs the destination, sealed to this machine.
+            let copy_target = match &kind {
+                JobKind::CopyImages { target_repository_id, .. } => {
+                    match access_to(&target_repository_id.to_string()) {
+                        Ok(a) => Ok(Some(a)),
+                        Err(_) => Err("This machine has not been given access to the destination repository. Grant access on the Repositories page."),
+                    }
+                }
+                _ => Ok(None),
+            };
+            let repository = match (repository, copy_target) {
+                (Ok(r), Ok(c)) => Ok((r, c)),
+                (Err(_), _) => Err("This machine has not been given access to the repository. Grant access on the Repositories page."),
+                (_, Err(e)) => Err(e),
             };
             match repository {
-                Ok(repository) => {
+                Ok((repository, copy_target)) => {
                     db.execute(
                         "UPDATE jobs SET state = 'dispatched', dispatched = ?1 WHERE id = ?2",
                         params![t, id],
@@ -199,12 +216,13 @@ async fn heartbeat(
                         id: Uuid::parse_str(&id).expect("stored uuid"),
                         kind,
                         repository,
+                        copy_target,
                     });
                 }
-                Err(_) => {
+                Err(why) => {
                     db.execute(
-                        "UPDATE jobs SET state = 'failed', finished = ?1, error = 'This machine has not been given access to the repository. Grant access on the Repositories page.' WHERE id = ?2",
-                        params![t, id],
+                        "UPDATE jobs SET state = 'failed', finished = ?1, error = ?2 WHERE id = ?3",
+                        params![t, why, id],
                     )?;
                 }
             }
@@ -302,7 +320,15 @@ async fn update_job(
         ],
     )?;
 
-    if let (Some(rid), Some(images)) = (&repo_id, &u.images) {
+    // A copy reports the images it put in the destination repository.
+    let images_repo = match &kind {
+        Some(JobKind::CopyImages {
+            target_repository_id,
+            ..
+        }) => Some(target_repository_id.to_string()),
+        _ => repo_id.clone(),
+    };
+    if let (Some(rid), Some(images)) = (&images_repo, &u.images) {
         for im in images {
             let inserted = db.execute(
                 "INSERT INTO images (image_id, repository_id, agent_id, machine_id, hostname, created, kind, consistency, captured_bytes, stored_new_bytes, disks_json, label, vm_name, chunks_total, chunks_new, bytes_new_raw, applications_json)
@@ -393,9 +419,17 @@ async fn update_job(
             )?;
         }
     }
-    // Retention runs after each successful plan backup, unless on hold.
+    // Retention runs after each successful plan backup, unless on hold; the
+    // off-site copy, if the plan has one, before it.
     if is_backup && matches!(u.state, JobState::Succeeded | JobState::Warning) {
         if let (Some(pid), Some(rid)) = (&plan_id, &repo_id) {
+            queue_copy(
+                &db,
+                pid,
+                rid,
+                &agent.agent_id,
+                u.images.as_deref().unwrap_or(&[]),
+            )?;
             queue_retention(
                 &db,
                 pid,
@@ -511,6 +545,41 @@ fn check_anomaly(
 }
 
 /// Queue retention for the machines a plan backup just imaged.
+/// The plan's off-site copy of the images just taken, on the same machine.
+fn queue_copy(
+    db: &rusqlite::Connection,
+    plan: &str,
+    repo: &str,
+    agent: &str,
+    images: &[ImageReport],
+) -> rusqlite::Result<()> {
+    let target: Option<String> = db
+        .query_row(
+            "SELECT copy_to_repository_id FROM plans WHERE id = ?1",
+            params![plan],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let (Some(target), false) = (target, images.is_empty()) else {
+        return Ok(());
+    };
+    let Ok(target_repository_id) = Uuid::parse_str(&target) else {
+        return Ok(());
+    };
+    let kind = JobKind::CopyImages {
+        target_repository_id,
+        images: images.iter().map(|i| i.image_id).collect(),
+        full_verify: false,
+    };
+    db.execute(
+        "INSERT INTO jobs (id, agent_id, repository_id, plan_id, kind_json, state, created, requested_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, 'copy')",
+        params![Uuid::new_v4().to_string(), agent, repo, plan, serde_json::to_string(&kind).unwrap_or_default(), now()],
+    )?;
+    Ok(())
+}
+
 fn queue_retention(
     db: &rusqlite::Connection,
     plan: &str,

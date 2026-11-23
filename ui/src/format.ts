@@ -98,6 +98,8 @@ export function jobWhat(k: JobKind): string {
       return "Create repository";
     case "list_images":
       return "Refresh image list";
+    case "copy_images":
+      return k.images?.length ? `Copy ${k.images.length} image${k.images.length === 1 ? "" : "s"} off-site` : "Copy new images off-site";
     case "apply_retention":
       return `Retention: ${retentionText(k.retention)}`;
     case "prune":

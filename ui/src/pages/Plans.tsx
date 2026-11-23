@@ -89,6 +89,7 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
   const [minutes, setMinutes] = useState(15);
   const [s, setS] = useState<BackupSettings>({ rate_limit_mib: 0, verify_sample_percent: 5 });
   const [retention, setRetention] = useState<Retention | null>(RETENTION_PRESETS[1].r);
+  const [copyTo, setCopyTo] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const repoId = repo || usable[0]?.id || "";
 
@@ -99,7 +100,7 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
     if (!what) return;
     setErr(null);
     try {
-      await api.post("/api/plans", { name, agent_id: agentId, repository_id: repoId, job: withSettings(what, s), schedule, enabled: true, retention });
+      await api.post("/api/plans", { name, agent_id: agentId, repository_id: repoId, job: withSettings(what, s), schedule, enabled: true, retention, copy_to_repository_id: copyTo || null });
       onDone();
     } catch (e) {
       setErr((e as Error).message);
@@ -168,6 +169,14 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
       )}
       <div className="muted small">{scheduleText(schedule)} (your local time).</div>
       <RetentionPicker value={retention} onChange={setRetention} />
+      {usable.filter((r) => r.id !== repoId).length > 0 && (
+        <Field label="Off-site copy" hint="After each backup, the machine copies it to this repository too, encrypted for it and verified there. The machine needs access to both.">
+          <select className="input" value={copyTo} onChange={(e) => setCopyTo(e.target.value)}>
+            <option value="">No copy</option>
+            {usable.filter((r) => r.id !== repoId).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </Field>
+      )}
       <Field label="Plan name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} /></Field>
       {agent && <OptionsPicker s={s} onChange={setS} windows={agent.os.family === "windows"} />}
     </Modal>
