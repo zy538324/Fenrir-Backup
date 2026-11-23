@@ -168,7 +168,9 @@ pub fn find_windows(root: &Path) -> Option<(PathBuf, PathBuf)> {
 pub fn hive_is_dirty(path: &Path) -> anyhow::Result<bool> {
     use std::io::Read;
     let mut b = [0u8; 12];
-    std::fs::File::open(path)?.read_exact(&mut b)?;
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut b))
+        .with_context(|| format!("reading {}", path.display()))?;
     if &b[..4] != b"regf" {
         bail!("{} is not a registry hive", path.display());
     }
@@ -541,8 +543,12 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
     vols.sort_by_key(|v| std::cmp::Reverse(v.2));
     let folder = crate::recovery::runtime_dir().join("windows");
     for (vol, _, _) in vols {
-        let Ok(root) = disks::volume_root(&vol, &folder) else {
-            continue;
+        let root = match disks::volume_root(&vol, &folder) {
+            Ok(r) => r,
+            Err(e) => {
+                crate::log::warn(&format!("{vol}: {e}"));
+                continue;
+            }
         };
         let Some((hive_path, drivers)) = find_windows(&root.root) else {
             continue;
@@ -556,10 +562,13 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
             let backup = hive_path.with_file_name(BACKUP_NAME);
             let made = !backup.exists();
             if made {
-                std::fs::copy(&hive_path, &backup).context("keeping a copy of the registry")?;
+                std::fs::copy(&hive_path, &backup).with_context(|| {
+                    format!("keeping a copy of the registry as {}", backup.display())
+                })?;
             }
             let fix = {
-                let h = RegHive::load(&hive_path)?;
+                let h = RegHive::load(&hive_path)
+                    .with_context(|| format!("loading {}", hive_path.display()))?;
                 adapt(&root.root, &vol, &h, &hive_path, &drivers)?
             };
             if made && fix.boot_start.is_empty() && fix.overrides_removed.is_empty() {
