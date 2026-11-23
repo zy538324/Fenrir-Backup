@@ -168,6 +168,42 @@ jobs:
           name: recovery-iso
           path: out
 
+  # S3 storage with Object Lock against a real MinIO server (signatures,
+  # create-only writes, locks enforced): the backend's own tests and a CLI
+  # repository end to end.
+  s3-minio:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      MINIO_ROOT_USER: fenrir-ci
+      MINIO_ROOT_PASSWORD: fenrir-ci-secret-key
+      FENRIR_TEST_S3_KEY: fenrir-ci
+      FENRIR_TEST_S3_SECRET: fenrir-ci-secret-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: MinIO
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/minio" https://dl.min.io/server/minio/release/linux-amd64/minio
+          chmod +x "$RUNNER_TEMP/minio"
+          "$RUNNER_TEMP/minio" --version
+          echo "MINIO=$RUNNER_TEMP/minio" >> "$GITHUB_ENV"
+      - name: S3 backend and CLI on MinIO
+        run: |
+          export FENRIR_TEST_S3="$PWD/ci/minio-start.sh"
+          cargo test --locked -p s3store --test emulator -- --nocapture
+          cargo test --locked -p cli --test cli s3_ -- --nocapture
+      - name: server and agent on MinIO with Object Lock, end to end
+        run: |
+          cargo build --locked -p server -p agent
+          python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q httpx cryptography boto3
+          ./ci/minio-start.sh 19000 > /tmp/minio.log 2>&1 &
+          for i in $(seq 1 30); do curl -s http://127.0.0.1:19000/minio/health/live && break; sleep 1; done
+          /tmp/venv/bin/python ci/e2e-s3.py /tmp/e2e-s3 target/debug/fenrir-server target/debug/fenrir-backup-agent http://127.0.0.1:19000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+      - name: logs
+        if: failure()
+        run: tail -n 60 /tmp/e2e-s3/*.log /tmp/minio.log || true
+
   # Windows PE recovery media, built the way a user builds it: the Windows
   # ADK and its Windows PE add-on installed on a Windows machine, then
   # recovery-env/winpe/New-FenrirWinPE.ps1 with the Windows agent and CLI.

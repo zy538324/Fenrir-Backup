@@ -173,7 +173,10 @@ export interface Repository {
   last_verified_boot: number | null;
   share_auth: "none" | "machine" | "password";
   share_user: string | null;
+  s3: S3Settings | null;
 }
+
+export interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number }
 
 export type Schedule =
   | { type: "interval"; hours: number }

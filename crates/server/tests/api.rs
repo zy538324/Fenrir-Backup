@@ -1366,7 +1366,7 @@ async fn network_share_signin_sealed_per_machine() {
     assert_eq!(s, StatusCode::OK, "{j}");
     let hb = heartbeat(&mut t, &tok2, CAPS, None).await;
     assert!(
-        matches!(&hb.jobs[0].kind, JobKind::CheckAccess { path, sealed_share: Some(_) } if path == unc)
+        matches!(&hb.jobs[0].kind, JobKind::CheckAccess { path, sealed_share: Some(_), .. } if path == unc)
     );
 }
 
@@ -1893,4 +1893,126 @@ async fn recovery_media_is_personalised_and_enrols_recovery_sessions_only() {
         .unwrap()
         .iter()
         .all(|a| a["id"] != id.as_str()));
+}
+
+/// S3 repositories: the settings are checked, travel with the job to the
+/// agent (keys sealed like a share sign-in), an Object Lock must outlast the
+/// maintenance interval, and a NAS gateway is refused.
+#[tokio::test]
+async fn s3_repositories_with_object_lock() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "s3-machine").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let sealed = seal(
+        &key.public_b64(),
+        b"{\"passphrase\":\"p\",\"recovery_key\":null}",
+    )
+    .unwrap();
+    let keys = seal(
+        &key.public_b64(),
+        b"{\"username\":\"AKID\",\"password\":\"secret\"}",
+    )
+    .unwrap();
+    let s3 = json!({ "endpoint": "https://s3.eu-west-2.amazonaws.com", "region": "eu-west-2", "lock_mode": "compliance", "lock_days": 30 });
+    let body = |path: &str, s3: Value, with_keys: bool| {
+        json!({ "name": "Cloud", "path": path, "repo_uuid": uuid::Uuid::new_v4(), "init_agent_id": agent_id,
+                "share_auth": if with_keys { "password" } else { "none" }, "share_user": "AKID", "s3": s3,
+                "access": [{ "agent_id": agent_id, "sealed": sealed, "sealed_share": if with_keys { Some(&keys) } else { None } }] })
+    };
+    for (path, s3v, keys_given, why) in [
+        (
+            "s3://backups/office",
+            Value::Null,
+            true,
+            "needs its endpoint",
+        ),
+        ("s3://Bad_Bucket/x", s3.clone(), true, "bucket name"),
+        ("s3://backups/office", s3.clone(), false, "access key"),
+        (
+            "s3://backups/office",
+            json!({ "endpoint": "https://s3.example/path" }),
+            true,
+            "without a path",
+        ),
+        (
+            "s3://backups/office",
+            json!({ "endpoint": "https://s3.example", "lock_mode": "compliance", "lock_days": 5 }),
+            true,
+            "more often",
+        ),
+        ("/mnt/nas", s3.clone(), true, "s3://"),
+    ] {
+        let (s, v) = t
+            .post("/api/repositories", body(path, s3v, keys_given))
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{path}: {v}");
+        assert!(v.to_string().contains(why), "{why}: {v}");
+    }
+    let (s, r) = t
+        .post(
+            "/api/repositories",
+            body("s3://backups/office", s3.clone(), true),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let repo = r["id"].as_str().unwrap().to_string();
+    let hb = heartbeat(&mut t, &token, CAPS, None).await;
+    let job = &hb.jobs[0];
+    let access = job.repository.as_ref().unwrap();
+    assert_eq!(access.path, "s3://backups/office");
+    let s = access.s3.as_ref().unwrap();
+    assert_eq!(
+        (s.region.as_str(), s.lock_mode.as_deref(), s.lock_days),
+        ("eu-west-2", Some("compliance"), 30)
+    );
+    assert!(access.sealed_share.is_some(), "keys sealed to the machine");
+    let (s, v) = t
+        .agent(
+            &format!("/api/agent/jobs/{}/update", job.id),
+            &token,
+            json!({ "state": "succeeded" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, repos) = t.get("/api/repositories").await;
+    assert_eq!(repos[0]["s3"]["lock_days"], 30);
+
+    // Maintenance must stay more frequent than the lock.
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/maintenance"),
+            json!({ "prune_every_days": 0 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/maintenance"),
+            json!({ "prune_every_days": 14 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    // No NAS gateway for object storage.
+    let (s, v) = t
+        .post(
+            &format!("/api/repositories/{repo}/gateway"),
+            json!({ "agent_id": agent_id, "port": 0 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // Test connection carries the settings too.
+    let (s, _) = t
+        .post(
+            &format!("/api/agents/{agent_id}/check-access"),
+            json!({ "path": "s3://backups/new", "sealed_share": keys, "s3": s3 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let hb = heartbeat(&mut t, &token, CAPS, None).await;
+    assert!(hb
+        .jobs
+        .iter()
+        .any(|j| matches!(&j.kind, JobKind::CheckAccess { s3: Some(_), .. })));
 }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { CheckCircle2, Eye, EyeOff, KeyRound, Loader2, Network, PlugZap, XCircle } from "lucide-react";
-import { api, type Agent, type Job, type Repository } from "../api";
+import { api, type Agent, type Job, type Repository, type S3Settings } from "../api";
 import { bytes } from "../format";
 import { seal } from "../seal";
 import { Field, Modal, Notice, useToast } from "../ui";
@@ -76,20 +76,20 @@ export function ShareFields({ value, onChange, machines, lockUser }: { value: Sh
   );
 }
 
-interface CheckResult { exists: boolean; repository: boolean; writable: boolean; free_bytes: number | null; total_bytes: number | null; share: boolean }
+interface CheckResult { exists: boolean; repository: boolean; writable: boolean; free_bytes: number | null; total_bytes: number | null; share: boolean; s3?: boolean; note?: string }
 
 /** Run a connection test on a machine and show the result. */
-export function TestConnection({ agent, path, signin }: { agent: Agent | undefined; path: string; signin: ShareSignin | null }) {
+export function TestConnection({ agent, path, signin, s3 }: { agent: Agent | undefined; path: string; signin: ShareSignin | null; s3?: S3Settings | null }) {
   const [state, setState] = useState<{ busy: boolean; job?: Job; err?: string; for?: string }>({ busy: false });
   // A result belongs to the folder, machine and sign-in it was tested with.
-  const inputs = JSON.stringify([agent?.id, path.trim(), signin]);
+  const inputs = JSON.stringify([agent?.id, path.trim(), signin, s3]);
   const run = async () => {
     if (!agent) return;
     const tested = inputs;
     setState({ busy: true, for: tested });
     try {
       const sealed_share = signin && signin.mode === "password" ? await sealSignin(agent, signin) : null;
-      const { id } = await api.post<{ id: string }>(`/api/agents/${agent.id}/check-access`, { path, sealed_share });
+      const { id } = await api.post<{ id: string }>(`/api/agents/${agent.id}/check-access`, { path, sealed_share, s3: s3 ?? null });
       for (let i = 0; i < 90; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         const j = await api.get<Job>(`/api/jobs/${id}`);
@@ -117,9 +117,9 @@ export function TestConnection({ agent, path, signin }: { agent: Agent | undefin
       {job && r && job.state !== "failed" && (
         <Notice tone={job.state === "warning" ? "warn" : "ok"}>
           <div className="stack tight">
-            <div className="row" style={{ gap: 6 }}><CheckCircle2 size={15} /> {r.share ? "Signed in to the share and wrote a test file." : "Wrote a test file."}</div>
+            <div className="row" style={{ gap: 6 }}><CheckCircle2 size={15} /> {r.s3 ? `Object storage: ${r.note}.` : r.share ? "Signed in to the share and wrote a test file." : "Wrote a test file."}</div>
             <div className="small">
-              {r.repository ? "A Fenrir-Backup repository is already there." : r.exists ? "The folder exists." : "The folder will be created."}
+              {r.s3 ? (r.repository ? "A Fenrir-Backup repository is already there." : "") : r.repository ? "A Fenrir-Backup repository is already there." : r.exists ? "The folder exists." : "The folder will be created."}
               {r.free_bytes != null && r.total_bytes != null && <> Free space: {bytes(r.free_bytes)} of {bytes(r.total_bytes)}.</>}
             </div>
             {job.warnings.map((w, i) => <div key={i} className="small">{w}</div>)}
@@ -133,7 +133,20 @@ export function TestConnection({ agent, path, signin }: { agent: Agent | undefin
 /** Repository card: how machines sign in to the share; change it. */
 export function ShareSigninRow({ repo, agents, onSaved }: { repo: Repository; agents: Agent[]; onSaved: () => void }) {
   const [open, setOpen] = useState(false);
-  if (!isSharePath(repo.path)) return null;
+  if (!isSharePath(repo.path) && !repo.s3) return null;
+  if (repo.s3) {
+    return (
+      <div className="row wrap" style={{ gap: 8 }}>
+        <Network size={15} style={{ color: "var(--text-2)" }} />
+        <span className="small">
+          Object storage at <span className="mono">{repo.s3.endpoint}</span>, access key <span className="mono">{repo.share_user}</span>
+          {" · "}{repo.s3.lock_mode ? <>Object Lock ({repo.s3.lock_mode}, {repo.s3.lock_days} days): backups cannot be deleted early</> : <>no Object Lock</>}
+        </span>
+        <button className="btn sm ghost" onClick={() => setOpen(true)}><KeyRound size={13} /> Change keys</button>
+        {open && <ShareDialog repo={repo} agents={agents} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); onSaved(); }} />}
+      </div>
+    );
+  }
   const how = repo.share_auth === "password" ? <>signs in as <span className="mono">{repo.share_user}</span></> : repo.share_auth === "machine" ? <>uses each computer's account</> : <>no sign-in (the share must allow the machines as they are)</>;
   return (
     <div className="row wrap" style={{ gap: 8 }}>
@@ -169,13 +182,22 @@ function ShareDialog({ repo, agents, onClose, onSaved }: { repo: Repository; age
   return (
     <Modal
       wide
-      title={`Network sign-in for ${repo.name}`}
+      title={repo.s3 ? `Access keys for ${repo.name}` : `Network sign-in for ${repo.name}`}
       sub={<span className="mono">{repo.path}</span>}
       onClose={onClose}
       foot={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || !signinComplete(s)} onClick={save}>Save for all {machines.length} machine{machines.length === 1 ? "" : "s"}</button></>}
     >
       {err && <Notice tone="bad">{err}</Notice>}
-      <ShareFields value={s} onChange={setS} machines={machines} />
+      {repo.s3 ? (
+        <div className="grid cols-2">
+          <Field label="Access key ID"><input className="input mono" value={s.username} onChange={(e) => setS({ ...s, mode: "password", domain: "", username: e.target.value })} autoComplete="off" /></Field>
+          <Field label="Secret access key" hint="Encrypted in this browser for each machine.">
+            <input className="input mono" type="password" value={s.password} onChange={(e) => setS({ ...s, mode: "password", password: e.target.value })} autoComplete="new-password" />
+          </Field>
+        </div>
+      ) : (
+        <ShareFields value={s} onChange={setS} machines={machines} />
+      )}
       {machines.length > 0 && (
         <Field label="Test from">
           <div className="row wrap" style={{ gap: 8 }}>
@@ -185,8 +207,8 @@ function ShareDialog({ repo, agents, onClose, onSaved }: { repo: Repository; age
           </div>
         </Field>
       )}
-      <TestConnection agent={machines.find((m) => m.id === tester)} path={repo.path} signin={s} />
-      <div className="faint small row" style={{ gap: 6 }}><XCircle size={13} /> Changing the password here does not change it on the server or NAS; change it there first, then here.</div>
+      <TestConnection agent={machines.find((m) => m.id === tester)} path={repo.path} signin={s} s3={repo.s3} />
+      <div className="faint small row" style={{ gap: 6 }}><XCircle size={13} /> {repo.s3 ? "Create the new keys at the storage provider first, then enter them here; remove the old ones afterwards." : "Changing the password here does not change it on the server or NAS; change it there first, then here."}</div>
     </Modal>
   );
 }

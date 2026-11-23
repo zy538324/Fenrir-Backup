@@ -5,6 +5,7 @@ import { ago, bytes, passwordStrength, when } from "../format";
 import { newRecoveryKey, seal, sealSupported } from "../seal";
 import { Empty, Field, Loading, Modal, Notice, Pill, useApi, useToast } from "../ui";
 import { BootVerification } from "./Boot";
+import { emptyS3, s3Complete, S3Fields, s3Path, s3Settings, s3Signin, type S3Form } from "./S3";
 import { emptySignin, isSharePath, sealSignin, ShareFields, ShareSigninRow, signinComplete, signinDisplay, signinFromDisplay, TestConnection, type ShareSignin } from "./Share";
 
 export default function RepositoriesPage() {
@@ -154,6 +155,8 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
   const [pass, setPass] = useState("");
   const [pass2, setPass2] = useState("");
   const [signin, setSignin] = useState<ShareSignin>(emptySignin());
+  const [kind, setKind] = useState<"folder" | "s3">("folder");
+  const [s3, setS3] = useState<S3Form>(emptyS3());
   const [saved, setSaved] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -161,7 +164,9 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
   const recovery = useMemo(() => newRecoveryKey(), []);
   const creatorAgent = agents.find((a) => a.id === creator);
   const winPath = creatorAgent?.os.family === "windows";
-  const share = isSharePath(path);
+  const isS3 = kind === "s3";
+  const share = !isS3 && isSharePath(path);
+  const location = isS3 ? s3Path(s3) : path;
   const chosen = agents.filter((a) => a.id === creator || others.includes(a.id));
 
   const download = () => {
@@ -184,14 +189,15 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
         ids.map(async (id) => {
           const a = agents.find((x) => x.id === id)!;
           const secret = JSON.stringify({ passphrase: pass, recovery_key: id === creator ? recovery.fileContents : null });
-          const sealed_share = share && signin.mode === "password" ? await sealSignin(a, signin) : null;
+          const sealed_share = isS3 ? await sealSignin(a, s3Signin(s3)) : share && signin.mode === "password" ? await sealSignin(a, signin) : null;
           return { agent_id: id, sealed: await seal(a.public_key, secret), sealed_share };
         }),
       );
       await api.post("/api/repositories", {
-        name, path, repo_uuid: recovery.repoId, init_agent_id: creator, access,
-        share_auth: share ? signin.mode : "none",
-        share_user: share && signin.mode === "password" ? signinDisplay(signin) : null,
+        name, path: location, repo_uuid: recovery.repoId, init_agent_id: creator, access,
+        share_auth: isS3 ? "password" : share ? signin.mode : "none",
+        share_user: isS3 ? s3.access_key.trim() : share && signin.mode === "password" ? signinDisplay(signin) : null,
+        s3: isS3 ? s3Settings(s3) : null,
       });
       onDone();
     } catch (e) {
@@ -219,7 +225,7 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
         <>
           {step > 1 && <button className="btn" onClick={() => setStep(step - 1)}>Back</button>}
           <span className="grow" />
-          {step === 1 && <button className="btn primary" disabled={!name.trim() || !path.trim() || !creator || (share && !signinComplete(signin))} onClick={() => setStep(2)}>Continue</button>}
+          {step === 1 && <button className="btn primary" disabled={!name.trim() || !creator || (isS3 ? !s3Complete(s3) : !path.trim() || (share && !signinComplete(signin)))} onClick={() => setStep(2)}>Continue</button>}
           {step === 2 && <button className="btn primary" disabled={pass.length < 12 || pass !== pass2} onClick={() => setStep(3)}>Continue</button>}
           {step === 3 && <button className="btn primary" disabled={!saved || busy} onClick={create}><Lock size={15} /> {busy ? "Encrypting…" : "Create repository"}</button>}
         </>
@@ -234,15 +240,23 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
             </select>
           </Field>
-          <Field label="Folder" hint={<>A local folder (<span className="mono">{winPath ? "D:\\Backups\\Fenrir" : "/srv/backups/fenrir"}</span>) or a network share (<span className="mono">{"\\\\backup-server\\backups\\fenrir"}</span>). The folder must be new or empty; it is created if missing.</>}>
-            <input className="input mono" placeholder={"\\\\backup-server\\backups\\fenrir"} value={path} onChange={(e) => setPath(e.target.value)} />
+          <Field label="Where">
+            <div className="seg" style={{ alignSelf: "flex-start" }}>
+              <button className={!isS3 ? "on" : ""} onClick={() => setKind("folder")}>Folder or network share</button>
+              <button className={isS3 ? "on" : ""} onClick={() => setKind("s3")}>S3 object storage</button>
+            </div>
           </Field>
+          {isS3 && <S3Fields value={s3} onChange={setS3} />}
+          {isS3 && s3Complete(s3) && <TestConnection agent={creatorAgent} path={location} signin={s3Signin(s3)} s3={s3Settings(s3)} />}
+          {!isS3 && <Field label="Folder" hint={<>A local folder (<span className="mono">{winPath ? "D:\\Backups\\Fenrir" : "/srv/backups/fenrir"}</span>) or a network share (<span className="mono">{"\\\\backup-server\\backups\\fenrir"}</span>). The folder must be new or empty; it is created if missing.</>}>
+            <input className="input mono" placeholder={"\\\\backup-server\\backups\\fenrir"} value={path} onChange={(e) => setPath(e.target.value)} />
+          </Field>}
           {share && (
             <Field label="Sign-in to the share">
               <ShareFields value={signin} onChange={setSignin} machines={chosen} />
             </Field>
           )}
-          {path.trim() && <TestConnection agent={creatorAgent} path={path} signin={share ? signin : null} />}
+          {!isS3 && path.trim() && <TestConnection agent={creatorAgent} path={path} signin={share ? signin : null} />}
           {agents.length > 1 && (
             <Field label="Other machines that back up here" hint="You can add more later.">
               <div className="chips">
@@ -336,7 +350,7 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
             <input className="input" type="password" autoComplete="off" value={pass} onChange={(e) => setPass(e.target.value)} />
           </Field>
           {needsSignin && (
-            <Field label={`Share password for ${repo.share_user}`} hint="Encrypted here for that machine only.">
+            <Field label={repo.s3 ? `Secret access key for ${repo.share_user}` : `Share password for ${repo.share_user}`} hint="Encrypted here for that machine only.">
               <input className="input" type="password" autoComplete="off" value={signin.password} onChange={(e) => setSignin({ ...signin, password: e.target.value })} />
             </Field>
           )}
@@ -353,7 +367,7 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
             <Notice tone="warn">This repository uses the Windows computer account to reach the share; this machine is not Windows. Switch the repository to a username and password first (Change sign-in).</Notice>
           )}
           {!via && <div className="muted small">The machine must be able to reach <span className="mono">{repo.path}</span>.</div>}
-          {!via && <TestConnection agent={agents.find((x) => x.id === agent)} path={repo.path} signin={isSharePath(repo.path) && repo.share_auth !== "none" ? { ...signin, mode: repo.share_auth === "machine" ? "machine" : "password" } : null} />}
+          {!via && <TestConnection agent={agents.find((x) => x.id === agent)} path={repo.path} s3={repo.s3} signin={(repo.s3 || isSharePath(repo.path)) && repo.share_auth !== "none" ? { ...signin, mode: repo.share_auth === "machine" ? "machine" : "password" } : null} />}
         </>
       )}
     </Modal>

@@ -743,6 +743,66 @@ impl ShareAuth {
     }
 }
 
+fn is_s3_path(p: &str) -> bool {
+    p.trim().starts_with("s3://")
+}
+
+/// Check S3 settings for `path`; the repository's maintenance interval
+/// must be shorter than its lock so that locks are extended in time.
+fn check_s3(path: &str, s3: Option<&protocol::S3Settings>, prune_every_days: i64) -> ApiResult<()> {
+    match (is_s3_path(path), s3) {
+        (false, None) => Ok(()),
+        (false, Some(_)) => Err(ApiError::bad(
+            "S3 settings need an s3://bucket/prefix location",
+        )),
+        (true, None) => Err(ApiError::bad(
+            "an s3:// location needs its endpoint and region",
+        )),
+        (true, Some(s)) => {
+            let ep = s.endpoint.trim();
+            let host = ep
+                .strip_prefix("https://")
+                .or_else(|| ep.strip_prefix("http://"));
+            if host.is_none_or(|h| {
+                h.trim_end_matches('/').is_empty() || h.trim_end_matches('/').contains('/')
+            }) {
+                return Err(ApiError::bad(
+                    "the endpoint is https://host (or http://host:port), without a path",
+                ));
+            }
+            let bucket = path.trim()["s3://".len()..].split('/').next().unwrap_or("");
+            let bucket_ok = (3..=63).contains(&bucket.len())
+                && bucket.bytes().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.'
+                });
+            if !bucket_ok {
+                return Err(ApiError::bad(
+                    "the bucket name is 3 to 63 lower-case letters, digits, dots or hyphens",
+                ));
+            }
+            match s.lock_mode.as_deref() {
+                None | Some("") | Some("none") => Ok(()),
+                Some("governance") | Some("compliance") => {
+                    if s.lock_days == 0 || s.lock_days > 36_500 {
+                        return Err(ApiError::bad("Object Lock needs 1 to 36500 days"));
+                    }
+                    if prune_every_days == 0 || prune_every_days >= s.lock_days as i64 {
+                        return Err(ApiError::bad(format!(
+                            "with an Object Lock of {} days, maintenance must run more often than that (it extends the locks of backups in use); it runs every {} days",
+                            s.lock_days,
+                            if prune_every_days == 0 { "0 (never)".to_string() } else { prune_every_days.to_string() }
+                        )));
+                    }
+                    Ok(())
+                }
+                Some(_) => Err(ApiError::bad(
+                    "Object Lock mode must be none, governance or compliance",
+                )),
+            }
+        }
+    }
+}
+
 fn is_share_path(p: &str) -> bool {
     let p = p.trim();
     p.starts_with(r"\\") || p.starts_with("//") || p.starts_with("smb://")
@@ -758,6 +818,8 @@ struct NewRepo {
     access: Vec<SealedFor>,
     #[serde(flatten)]
     share: ShareAuth,
+    #[serde(default)]
+    s3: Option<protocol::S3Settings>,
 }
 
 async fn create_repo(
@@ -777,7 +839,13 @@ async fn create_repo(
         ));
     }
     let mode = n.share.mode()?;
-    if mode != "none" && !is_share_path(path) {
+    check_s3(path, n.s3.as_ref(), 7)?;
+    if is_s3_path(path) && mode != "password" {
+        return Err(ApiError::bad(
+            "an S3 repository needs an access key and secret for every machine",
+        ));
+    }
+    if mode != "none" && !is_share_path(path) && !is_s3_path(path) {
         return Err(ApiError::bad(
             r"a share sign-in needs a network path like \\server\share\folder",
         ));
@@ -791,8 +859,8 @@ async fn create_repo(
         let db = st.db();
         let tx = db.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id, share_auth, share_user) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8)",
-            params![id, name, path, n.repo_uuid.to_string(), t, init, mode, n.share.user()],
+            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id, share_auth, share_user, s3_json) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9)",
+            params![id, name, path, n.repo_uuid.to_string(), t, init, mode, n.share.user(), n.s3.as_ref().map(serde_json::to_string).transpose()?],
         )?;
         for x in &n.access {
             let agent = uuid_param(&x.agent_id)?;
@@ -840,7 +908,7 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
             (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id AND i.anomaly IS NOT NULL),
             r.boot_agent_id, r.boot_every_days,
             (SELECT MAX(at) FROM boot_checks b WHERE b.repository_id = r.id AND b.outcome = 'verified'),
-            r.share_auth, r.share_user
+            r.share_auth, r.share_user, r.s3_json
          FROM repositories r ORDER BY r.created",
     )?;
     let mut repos: Vec<Value> = s
@@ -856,6 +924,7 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
                 "boot_agent_id": r.get::<_, Option<String>>(17)?, "boot_every_days": r.get::<_, i64>(18)?,
                 "last_verified_boot": r.get::<_, Option<i64>>(19)?,
                 "share_auth": r.get::<_, String>(20)?, "share_user": r.get::<_, Option<String>>(21)?,
+                "s3": r.get::<_, Option<String>>(22)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -1417,6 +1486,14 @@ async fn set_maintenance(
                 "prune interval must be 0 (never) to 365 days",
             ));
         }
+        let (path, s3): (String, Option<String>) = db.query_row(
+            "SELECT path, s3_json FROM repositories WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let s3: Option<protocol::S3Settings> =
+            s3.as_deref().and_then(|s| serde_json::from_str(s).ok());
+        check_s3(&path, s3.as_ref(), d as i64)?;
         db.execute(
             "UPDATE repositories SET prune_every_days = ?1 WHERE id = ?2",
             params![d, id],
@@ -1980,7 +2057,7 @@ async fn set_share(
         )
         .optional()?
         .ok_or_else(|| ApiError::not_found("no such repository"))?;
-    if mode != "none" && !is_share_path(&path) {
+    if mode != "none" && !is_share_path(&path) && !is_s3_path(&path) {
         return Err(ApiError::bad("this repository is not on a network share"));
     }
     let agents: Vec<String> = db
@@ -2035,6 +2112,8 @@ struct CheckAccessReq {
     path: String,
     #[serde(default)]
     sealed_share: Option<protocol::seal::Sealed>,
+    #[serde(default)]
+    s3: Option<protocol::S3Settings>,
 }
 
 /// Queue a connection test on a machine; poll the job for the result.
@@ -2050,9 +2129,11 @@ async fn check_access(
         return Err(ApiError::bad("enter a folder path"));
     }
     agent_caps(&st.db(), &agent)?;
+    check_s3(path, r.s3.as_ref(), 7)?;
     let kind = JobKind::CheckAccess {
         path: path.to_string(),
         sealed_share: r.sealed_share,
+        s3: r.s3,
     };
     let job = insert_job(&st, &agent, &kind, None, None, &a.username)?;
     Ok(Json(json!({ "id": job })))
@@ -2262,6 +2343,16 @@ async fn set_gateway(
     )?;
     if !exists {
         return Err(ApiError::not_found("no such repository"));
+    }
+    let path: String = db.query_row(
+        "SELECT path FROM repositories WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    if is_s3_path(&path) {
+        return Err(ApiError::bad(
+            "an S3 repository is reached directly by every machine; a gateway is for folders on a NAS",
+        ));
     }
     let Some(gw) = r.agent_id.as_deref().map(uuid_param).transpose()? else {
         let users: i64 = db.query_row(

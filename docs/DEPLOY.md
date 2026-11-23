@@ -155,7 +155,7 @@ machines write to directly: a local disk, a USB disk, or a network share
 (`\\nas\backups\fenrir` on Windows, a mounted share on Linux). On Windows
 the agent runs as LocalSystem, which reaches a share as the computer
 account: grant `DOMAIN\COMPUTERNAME$` write access, or use a local disk.
-Storage on S3 with Object Lock and SFTP arrives with Phase 4.
+Repositories can also be on S3-compatible object storage with Object Lock (below).
 
 ## Alerts
 
@@ -238,6 +238,41 @@ and the new data does not compress), the repository goes **on hold**:
 nothing is deleted or reclaimed until an administrator reviews it and
 types `release`. Backups continue during a hold. You can also place a
 hold by hand.
+
+## Repositories on S3 object storage, with Object Lock
+
+**New repository › S3 object storage** stores backups on Amazon S3, Wasabi,
+Backblaze B2, Cloudflare R2, MinIO or any S3-compatible service. With
+**Object Lock** every backup is immutable for the days you choose: in
+compliance mode nobody can delete or overwrite it before then, not
+ransomware holding the keys, not the storage account's owner, not
+Fenrir-Backup. That is the strongest protection against an attacker who
+gets administrator rights on your network.
+
+1. Create the bucket with **Object Lock enabled** (it can only be turned on
+   when the bucket is created; it also turns on versioning). Do not set a
+   default retention on the bucket: Fenrir-Backup locks each object itself.
+2. Create an access key for Fenrir-Backup only, allowed on that bucket:
+   `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject`,
+   `s3:DeleteObjectVersion`, `s3:GetObjectRetention`, `s3:PutObjectRetention`.
+3. In the web UI: provider, region, bucket, a folder in the bucket, the
+   keys, the lock mode and days. **Test connection** writes a test object
+   and checks that the bucket refuses to delete it. The keys are encrypted
+   in your browser for each machine; the server never sees them.
+
+How locks work with retention: each object written is locked for the lock
+period; every maintenance run (weekly by default, and it must run more often
+than the lock period) moves the lock of everything still in use forward.
+Images your retention no longer keeps are deleted once their lock has run
+out ("kept until its lock expires" in the job), so storage holds at least
+lock-days of changes. The ransomware guard still puts the repository on hold
+on top of this. S3 repositories are reached directly by every machine (no
+NAS gateway needed).
+
+The CLI uses the same storage with `--repo s3://bucket/folder` and
+`FENRIR_S3_ENDPOINT`, `FENRIR_S3_REGION`, `FENRIR_S3_PATH_STYLE=1`,
+`FENRIR_S3_LOCK=compliance:30`, `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` (see docs/CLI.md).
 
 ## Repositories on a network share (NAS, file server)
 

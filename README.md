@@ -50,7 +50,11 @@ today:
   Optional Windows PE media, built with your own Windows ADK, adds third-party
   drivers.
 
-Not yet: S3 and Object Lock (Phase 4), cloning and growing file systems (5),
+* **S3 object storage with Object Lock**: Amazon S3, Wasabi, Backblaze B2,
+  Cloudflare R2, MinIO and other S3-compatible storage; in compliance mode
+  no one can delete a backup before its lock ends, not even with the keys.
+
+Not yet: cloning and growing file systems (5),
 live Linux snapshots (6).
 
 Before relying on it, work through [docs/DEPLOYMENT-TEST-PLAN.md](docs/DEPLOYMENT-TEST-PLAN.md).
@@ -116,7 +120,7 @@ need a matching change in Fenrir Cloud's backup module.
 ## Documentation
 
 * [Deploying the server](docs/DEPLOY.md) · [Format](docs/FORMAT.md) · [CLI](docs/CLI.md) · [Testing](docs/TESTING.md)
-* [Phase 1 design](docs/design/phase-1.md) · [Phase 2 design](docs/design/phase-2.md) · [Management server design](docs/design/management-server.md) · [Phase 3 design](docs/design/phase-3.md)
+* [Phase 1 design](docs/design/phase-1.md) · [Phase 2 design](docs/design/phase-2.md) · [Management server design](docs/design/management-server.md) · [Phase 3 design](docs/design/phase-3.md) · [Phase 4 storage design](docs/design/phase-4-storage.md) · [Phase 5 hardware design](docs/design/phase-5-hardware.md)
 * [Security policy](SECURITY.md) · [NCSC Code of Practice mapping](docs/SECURITY-CODE-OF-PRACTICE.md)
 * [Third-party components](THIRD_PARTY.md)
 

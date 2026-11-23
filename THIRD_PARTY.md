@@ -42,6 +42,8 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | serde | 1.0.229 | MIT OR Apache-2.0 | Serialisation |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 | JSON |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | SHA-256 |
+| hmac | 0.12.1 | MIT OR Apache-2.0 | HMAC-SHA256 for S3 request signing (AWS Signature Version 4) |
+| md-5 | 0.10.6 | MIT OR Apache-2.0 | Content-MD5 header S3 requires for Object Lock uploads (not used for security) |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | Error types |
 | tokio | 1.54.1 | MIT | Server async runtime |
 | tower-http | 0.6.11 | MIT | Static files and security headers |
@@ -208,6 +210,7 @@ Versions are pinned in `ui/package-lock.json`.
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
 | log | 0.4.35 | MIT OR Apache-2.0 |
+| md-5 | 0.10.6 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
 | memchr | 2.8.3 | Unlicense OR MIT |

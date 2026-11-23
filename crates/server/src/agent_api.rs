@@ -171,19 +171,20 @@ async fn heartbeat(
                 None => Ok(None),
                 Some(rid) => db
                     .query_row(
-                        "SELECT r.path, a.sealed, a.sealed_share FROM repositories r JOIN repo_access a ON a.repository_id = r.id
+                        "SELECT r.path, a.sealed, a.sealed_share, r.s3_json FROM repositories r JOIN repo_access a ON a.repository_id = r.id
                          WHERE r.id = ?1 AND a.agent_id = ?2",
                         params![rid, agent.agent_id],
-                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+                        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?)),
                     )
                     .optional()?
-                    .map(|(path, sealed, share)| {
+                    .map(|(path, sealed, share, s3)| {
                         Ok::<_, ApiError>(Some(RepoAccess {
                             repository_id: Uuid::parse_str(rid).map_err(|_| ApiError::bad("bad repository id"))?,
                             path,
                             sealed_secret: serde_json::from_str(&sealed)?,
                             sealed_share: share.as_deref().map(serde_json::from_str).transpose()?,
                             gateway: crate::gateway::route(&db, rid, &agent.agent_id)?,
+                            s3: s3.as_deref().map(serde_json::from_str).transpose()?,
                         }))
                     })
                     .unwrap_or(Err(ApiError::forbidden("no access"))),

@@ -175,6 +175,10 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE repositories ADD COLUMN gateway_agent_id TEXT;
     ALTER TABLE repo_access ADD COLUMN via_gateway INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 6: S3 repositories (protocol::S3Settings as JSON)
+    r#"
+    ALTER TABLE repositories ADD COLUMN s3_json TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
