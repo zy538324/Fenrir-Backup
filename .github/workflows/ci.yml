@@ -197,8 +197,9 @@ jobs:
   # S3 storage with Object Lock against a real MinIO server (signatures,
   # create-only writes, locks enforced): the backend's own tests and a CLI
   # repository end to end.
-  # S3 with Object Lock against an emulator (moto): the backend, the CLI and
-  # a server + agent end to end, with boto3 checking the locks independently.
+  # Object storage against emulators: S3 with Object Lock on moto (the
+  # backend, the CLI and a server + agent end to end, with boto3 checking the
+  # locks independently) and Azure Blob on Azurite.
   s3:
     needs: test
     runs-on: ubuntu-latest
@@ -217,6 +218,15 @@ jobs:
           export FENRIR_TEST_S3="$PWD/ci/s3-start.sh"
           cargo test --locked -p s3store --test emulator -- --nocapture
           cargo test --locked -p cli --test cli s3_ -- --nocapture
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Azure Blob backend on Azurite
+        run: |
+          npm install --prefix /tmp/azurite --no-audit --no-fund azurite@3
+          export AZURITE=/tmp/azurite/node_modules/.bin/azurite-blob
+          export FENRIR_TEST_AZURE="$PWD/ci/azurite-start.sh"
+          cargo test --locked -p azstore -- --nocapture
       - name: server and agent with Object Lock, end to end
         run: |
           cargo build --locked -p server -p agent

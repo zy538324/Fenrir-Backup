@@ -743,8 +743,11 @@ impl ShareAuth {
     }
 }
 
+/// Object storage: S3-compatible (`s3://bucket/prefix`) or Azure Blob
+/// (`azure://container/prefix`). Both use the same settings.
 fn is_s3_path(p: &str) -> bool {
-    p.trim().starts_with("s3://")
+    let p = p.trim();
+    p.starts_with("s3://") || p.starts_with("azure://")
 }
 
 /// Check S3 settings for `path`; the repository's maintenance interval
@@ -753,32 +756,49 @@ fn check_s3(path: &str, s3: Option<&protocol::S3Settings>, prune_every_days: i64
     match (is_s3_path(path), s3) {
         (false, None) => Ok(()),
         (false, Some(_)) => Err(ApiError::bad(
-            "S3 settings need an s3://bucket/prefix location",
+            "object storage settings need an s3://bucket/prefix or azure://container/prefix location",
         )),
         (true, None) => Err(ApiError::bad(
-            "an s3:// location needs its endpoint and region",
+            "an s3:// or azure:// location needs its endpoint",
         )),
         (true, Some(s)) => {
+            let azure = path.trim().starts_with("azure://");
             let ep = s.endpoint.trim();
             let host = ep
                 .strip_prefix("https://")
                 .or_else(|| ep.strip_prefix("http://"));
+            // Azure endpoints may carry the account in the path (the Azurite
+            // emulator); S3 endpoints are a host only.
             if host.is_none_or(|h| {
-                h.trim_end_matches('/').is_empty() || h.trim_end_matches('/').contains('/')
+                h.trim_end_matches('/').is_empty() || (!azure && h.trim_end_matches('/').contains('/'))
             }) {
                 return Err(ApiError::bad(
                     "the endpoint is https://host (or http://host:port), without a path",
                 ));
             }
-            let bucket = path.trim()["s3://".len()..].split('/').next().unwrap_or("");
-            let bucket_ok = (3..=63).contains(&bucket.len())
-                && bucket.bytes().all(|c| {
-                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.'
-                });
-            if !bucket_ok {
-                return Err(ApiError::bad(
-                    "the bucket name is 3 to 63 lower-case letters, digits, dots or hyphens",
-                ));
+            if azure {
+                let c = path.trim()["azure://".len()..].split('/').next().unwrap_or("");
+                let ok = (3..=63).contains(&c.len())
+                    && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    && !c.starts_with('-')
+                    && !c.ends_with('-')
+                    && !c.contains("--");
+                if !ok {
+                    return Err(ApiError::bad(
+                        "the container name is 3 to 63 lower-case letters, digits or single hyphens",
+                    ));
+                }
+            } else {
+                let bucket = path.trim()["s3://".len()..].split('/').next().unwrap_or("");
+                let bucket_ok = (3..=63).contains(&bucket.len())
+                    && bucket.bytes().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'.'
+                    });
+                if !bucket_ok {
+                    return Err(ApiError::bad(
+                        "the bucket name is 3 to 63 lower-case letters, digits, dots or hyphens",
+                    ));
+                }
             }
             match s.lock_mode.as_deref() {
                 None | Some("") | Some("none") => Ok(()),
@@ -2355,7 +2375,7 @@ async fn set_gateway(
     )?;
     if is_s3_path(&path) {
         return Err(ApiError::bad(
-            "an S3 repository is reached directly by every machine; a gateway is for folders on a NAS",
+            "a repository on object storage is reached directly by every machine; a gateway is for folders on a NAS",
         ));
     }
     let Some(gw) = r.agent_id.as_deref().map(uuid_param).transpose()? else {

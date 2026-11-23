@@ -1953,6 +1953,7 @@ async fn s3_repositories_with_object_lock() {
             "more often",
         ),
         ("/mnt/nas", s3.clone(), true, "s3://"),
+        ("azure://Bad--Name/x", s3.clone(), true, "container name"),
     ] {
         let (s, v) = t
             .post("/api/repositories", body(path, s3v, keys_given))
@@ -2025,4 +2026,15 @@ async fn s3_repositories_with_object_lock() {
         .jobs
         .iter()
         .any(|j| matches!(&j.kind, JobKind::CheckAccess { s3: Some(_), .. })));
+
+    // Azure Blob uses the same settings; its endpoint may name the account
+    // in the path (the Azurite emulator).
+    let azure = json!({ "endpoint": "http://127.0.0.1:10000/devstoreaccount1", "region": "", "lock_mode": "compliance", "lock_days": 30 });
+    let (s, r) = t
+        .post(
+            "/api/repositories",
+            body("azure://backups/office", azure, true),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
 }

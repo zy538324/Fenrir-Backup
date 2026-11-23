@@ -34,9 +34,12 @@ const PROVIDERS: { id: string; name: string; endpoint: (region: string) => strin
   { id: "b2", name: "Backblaze B2", endpoint: (r) => `https://s3.${r}.backblazeb2.com`, region: "eu-central-003", path_style: false, regionHint: "from the bucket's endpoint, e.g. eu-central-003" },
   { id: "r2", name: "Cloudflare R2", endpoint: () => "https://<account-id>.r2.cloudflarestorage.com", region: "auto", path_style: true },
   { id: "other", name: "MinIO or other S3-compatible", endpoint: () => "https://minio.example.lan:9000", region: "us-east-1", path_style: true },
+  { id: "azure", name: "Azure Blob Storage", endpoint: () => "https://<account>.blob.core.windows.net", region: "", path_style: false },
 ];
 
-export const s3Path = (f: S3Form) => `s3://${f.bucket.trim()}${f.prefix.trim() ? "/" + f.prefix.trim().replace(/^\/+|\/+$/g, "") : ""}`;
+const isAzure = (f: S3Form) => f.provider === "azure";
+
+export const s3Path = (f: S3Form) => `${isAzure(f) ? "azure" : "s3"}://${f.bucket.trim()}${f.prefix.trim() ? "/" + f.prefix.trim().replace(/^\/+|\/+$/g, "") : ""}`;
 
 export const s3Settings = (f: S3Form): S3Settings => ({
   endpoint: f.endpoint.trim().replace(/\/+$/, ""),
@@ -48,7 +51,7 @@ export const s3Settings = (f: S3Form): S3Settings => ({
 
 export const s3Complete = (f: S3Form) =>
   /^https?:\/\/[^/\s<>]+$/.test(f.endpoint.trim().replace(/\/+$/, "")) &&
-  /^[a-z0-9.-]{3,63}$/.test(f.bucket.trim()) &&
+  (isAzure(f) ? /^[a-z0-9](?!.*--)[a-z0-9-]{1,61}[a-z0-9]$/ : /^[a-z0-9.-]{3,63}$/).test(f.bucket.trim()) &&
   f.access_key.trim() !== "" && f.secret_key !== "" &&
   (f.lock_mode === "none" || (f.lock_days > 7 && f.lock_days <= 36500));
 
@@ -69,33 +72,33 @@ export function S3Fields({ value: f, onChange }: { value: S3Form; onChange: (f: 
             {PROVIDERS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </Field>
-        <Field label="Region" hint={prov.regionHint}>
+        {!isAzure(f) && <Field label="Region" hint={prov.regionHint}>
           <input className="input mono" value={f.region} onChange={(e) => set({ region: e.target.value, endpoint: prov.id === "aws" || prov.id === "wasabi" || prov.id === "b2" ? prov.endpoint(e.target.value.trim()) : f.endpoint })} />
-        </Field>
+        </Field>}
       </div>
       <Field label="Endpoint" hint="https://host (or http://host:port on a private network), without a path.">
         <input className="input mono" value={f.endpoint} onChange={(e) => set({ endpoint: e.target.value })} />
       </Field>
       <div className="grid cols-2">
-        <Field label="Bucket" hint="It must exist. For Object Lock it must have been created with Object Lock enabled.">
+        <Field label={isAzure(f) ? "Container" : "Bucket"} hint={isAzure(f) ? "It must exist. For immutable backups, enable version-level immutability on it (and versioning on the account)." : "It must exist. For Object Lock it must have been created with Object Lock enabled."}>
           <input className="input mono" value={f.bucket} onChange={(e) => set({ bucket: e.target.value.toLowerCase() })} placeholder="company-backups" />
         </Field>
         <Field label="Folder in the bucket" hint="Must be empty; several repositories can share a bucket.">
           <input className="input mono" value={f.prefix} onChange={(e) => set({ prefix: e.target.value })} placeholder="fenrir" />
         </Field>
       </div>
-      <label className="check">
+      {!isAzure(f) && <label className="check">
         <input type="checkbox" checked={f.path_style} onChange={(e) => set({ path_style: e.target.checked })} />
         <span>Path-style addresses<div className="faint small">https://host/bucket instead of https://bucket.host. Needed by MinIO and most self-hosted storage.</div></span>
-      </label>
+      </label>}
       <div className="grid cols-2">
-        <Field label="Access key ID"><input className="input mono" value={f.access_key} onChange={(e) => set({ access_key: e.target.value })} autoComplete="off" /></Field>
-        <Field label="Secret access key" hint="Encrypted in this browser for each machine; the server never sees it.">
+        <Field label={isAzure(f) ? "Storage account name" : "Access key ID"}><input className="input mono" value={f.access_key} onChange={(e) => set(isAzure(f) ? { access_key: e.target.value, endpoint: `https://${e.target.value.trim() || "<account>"}.blob.core.windows.net` } : { access_key: e.target.value })} autoComplete="off" /></Field>
+        <Field label={isAzure(f) ? "Account key or SAS token" : "Secret access key"} hint="Encrypted in this browser for each machine; the server never sees it.">
           <input className="input mono" type="password" value={f.secret_key} onChange={(e) => set({ secret_key: e.target.value })} autoComplete="off" />
         </Field>
       </div>
       <div className="grid cols-2">
-        <Field label="Immutable backups (Object Lock)">
+        <Field label={isAzure(f) ? "Immutable backups (immutability policy)" : "Immutable backups (Object Lock)"}>
           <select className="input" value={f.lock_mode} onChange={(e) => set({ lock_mode: e.target.value as S3Form["lock_mode"] })}>
             <option value="compliance">Compliance: nobody can delete a backup early</option>
             <option value="governance">Governance: only special admin rights can</option>
