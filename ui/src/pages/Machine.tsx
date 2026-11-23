@@ -381,14 +381,25 @@ export function WhatPicker({ agent, inventory, value, onChange }: { agent: Agent
       </Field>
     );
   }
-  if (agent.capabilities.includes("backup_system")) {
-    return <Notice tone="info">The whole system: every partition on the system disk, through a Volume Shadow Copy snapshot so open files and databases are captured consistently.</Notice>;
+  const both = agent.capabilities.includes("backup_system") && agent.capabilities.includes("backup_disks");
+  if (agent.capabilities.includes("backup_system") && (!both || value?.type !== "backup_disks")) {
+    return (
+      <div className="stack">
+        {both && <WhatToggle system onChange={(sys) => onChange(sys ? { type: "backup_system", settings } : { type: "backup_disks", paths: [], settings })} />}
+        {both ? (
+          <Notice tone="info">The running system: every disk holding its file systems. Logical volumes are captured through LVM snapshots and small partitions such as /boot while briefly frozen, so the image is consistent. The volume group needs free space for the snapshots (10 % of each volume, at least 64 MiB); a system without LVM is backed up from the recovery media instead.</Notice>
+        ) : (
+          <Notice tone="info">The whole system: every partition on the system disk, through a Volume Shadow Copy snapshot so open files and databases are captured consistently.</Notice>
+        )}
+      </div>
+    );
   }
   const disks = inventory?.disks ?? [];
   const paths = value?.type === "backup_disks" ? value.paths : [];
   return (
-    <Field label="Disks" hint="Disks in use by the running system cannot be imaged until live Linux snapshots arrive. Unmounted and secondary disks work today.">
+    <Field label="Disks" hint="Disks in use by the running system are imaged with “Running system”; here, unmounted and secondary disks.">
       <div className="stack tight">
+        {both && <WhatToggle system={false} onChange={(sys) => onChange(sys ? { type: "backup_system", settings } : { type: "backup_disks", paths: [], settings })} />}
         {disks.map((d) => (
           <label key={d.path} className="check">
             <input
@@ -406,6 +417,15 @@ export function WhatPicker({ agent, inventory, value, onChange }: { agent: Agent
         {disks.length === 0 && <div className="muted small">The agent has not reported any disks.</div>}
       </div>
     </Field>
+  );
+}
+
+function WhatToggle({ system, onChange }: { system: boolean; onChange: (system: boolean) => void }) {
+  return (
+    <div className="seg" style={{ alignSelf: "flex-start" }}>
+      <button className={system ? "on" : ""} onClick={() => onChange(true)}>Running system</button>
+      <button className={!system ? "on" : ""} onClick={() => onChange(false)}>Selected disks</button>
+    </div>
   );
 }
 

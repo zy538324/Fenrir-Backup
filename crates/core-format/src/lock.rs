@@ -300,7 +300,11 @@ mod tests {
             assert!(!locks.values().next().unwrap().is_empty());
             std::thread::sleep(Duration::from_millis(5));
             rounds += 1;
-            assert!(std::time::Instant::now() < deadline, "refreshed {} times", *l.seq.lock().unwrap());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "refreshed {} times",
+                *l.seq.lock().unwrap()
+            );
         }
         drop(l);
         assert!(list_locks(&*b).unwrap().is_empty());

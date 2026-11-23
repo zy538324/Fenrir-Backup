@@ -2078,6 +2078,7 @@ dependencies = [
  "core-format",
  "engine",
  "libc",
+ "serde_json",
  "tempfile",
 ]
 

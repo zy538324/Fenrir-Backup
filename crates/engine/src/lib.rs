@@ -7,6 +7,7 @@
 
 pub mod backup;
 pub mod bootfix;
+pub mod composite;
 pub mod control;
 pub mod fit;
 pub mod layout;

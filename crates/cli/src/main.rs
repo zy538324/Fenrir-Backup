@@ -122,17 +122,27 @@ struct CommonBackup {
 
 #[derive(Subcommand)]
 enum BackupCmd {
-    /// Image the running Windows system (VSS, application-consistent).
+    /// Image the running system: Windows through VSS (application-consistent),
+    /// Linux through LVM snapshots and frozen copies (crash-consistent).
     System {
         #[command(flatten)]
         common: CommonBackup,
-        /// Also include this physical disk number. Repeatable.
+        /// Windows: also include this physical disk number. Repeatable.
         #[arg(long = "include-disk")]
         include_disk: Vec<u32>,
         /// Use the VSS FULL backup type (writers may truncate logs).
         /// Default is COPY, which leaves other backup tools' chains intact.
         #[arg(long)]
         vss_full: bool,
+        /// Linux: image these whole disks instead of the ones holding the
+        /// system's mounts. Repeatable.
+        #[arg(long = "disk")]
+        disks: Vec<PathBuf>,
+        /// Linux: read what cannot be snapshotted live (a large non-LVM
+        /// root, LUKS, RAID) and mark the image inconsistent, instead of
+        /// refusing.
+        #[arg(long)]
+        allow_inconsistent: bool,
     },
     /// Image block devices or raw image files that are not in use.
     Disk {
@@ -329,7 +339,28 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             common,
             include_disk,
             vss_full,
-        }) => backup_system(ctx, common, include_disk, vss_full),
+            disks,
+            allow_inconsistent,
+        }) => {
+            if cfg!(windows) && (!disks.is_empty() || allow_inconsistent) {
+                return Err(CliError::usage(
+                    "--disk and --allow-inconsistent are for Linux; on Windows use --include-disk",
+                ));
+            }
+            if !cfg!(windows) && (!include_disk.is_empty() || vss_full) {
+                return Err(CliError::usage(
+                    "--include-disk and --vss-full are for Windows; on Linux use --disk",
+                ));
+            }
+            backup_system(
+                ctx,
+                common,
+                include_disk,
+                vss_full,
+                disks,
+                allow_inconsistent,
+            )
+        }
         Cmd::Image(ImageCmd::List) => image_list(ctx),
         Cmd::Image(ImageCmd::Show { image }) => {
             let repo = open_repo(ctx)?;
@@ -761,6 +792,8 @@ fn backup_system(
     common: CommonBackup,
     include_disk: Vec<u32>,
     vss_full: bool,
+    _disks: Vec<PathBuf>,
+    _allow_inconsistent: bool,
 ) -> R<Outcome> {
     let repo = if common.dry_run {
         None
@@ -810,10 +843,101 @@ fn backup_system(
     Ok(out)
 }
 
-#[cfg(not(windows))]
-fn backup_system(_ctx: &Ctx, _c: CommonBackup, _d: Vec<u32>, _f: bool) -> R<Outcome> {
+#[cfg(target_os = "linux")]
+fn backup_system(
+    ctx: &Ctx,
+    common: CommonBackup,
+    _include_disk: Vec<u32>,
+    _vss_full: bool,
+    disks: Vec<PathBuf>,
+    allow_inconsistent: bool,
+) -> R<Outcome> {
+    use snapshot_linux::live;
+    let state = PathBuf::from("/var/lib/fenrir-backup");
+    let _ = std::fs::create_dir_all(&state);
+    for l in live::remove_leftover_snapshots(&state) {
+        eprintln!("{l}");
+    }
+    let repo = if common.dry_run {
+        None
+    } else {
+        Some(open_repo(ctx)?)
+    };
+    if !ctx.json {
+        eprintln!("Taking snapshots...");
+    }
+    let temp = if Path::new("/var/tmp").is_dir() {
+        PathBuf::from("/var/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let lb = live::prepare(&live::LiveOptions {
+        disks,
+        allow_inconsistent,
+        state_dir: state,
+        temp_dir: temp,
+        exclude_paths: ctx.repo.iter().filter(|p| p.is_dir()).cloned().collect(),
+    })
+    .map_err(|e| CliError::new(ExitCode::Safety, e.to_string()))?;
+    if common.dry_run {
+        let out = dry_run(&lb.sources());
+        let w = lb.warnings.clone();
+        let finish = lb.finish();
+        let mut out = out?;
+        out.warnings.splice(0..0, w);
+        if let Err(e) = finish {
+            out.warnings.push(e);
+        }
+        return Ok(out);
+    }
+    let repo = repo.expect("opened when not a dry run");
+    let machine_id = local_machine_id();
+    if machine_id.is_empty() {
+        return Err(CliError::usage(
+            "could not determine a machine ID (/etc/machine-id)",
+        ));
+    }
+    let meta = engine::ImageMeta {
+        machine: MachineInfo {
+            machine_id,
+            hostname: hostname(),
+        },
+        consistency: lb.consistency,
+        os: lb.os.clone(),
+        boot: lb.boot.clone(),
+        drivers: vec![],
+        label: common.label.clone(),
+        warnings: lb.warnings.clone(),
+        vm: None,
+    };
+    let pr = progress_printer(ctx.json);
+    let result = engine::backup(
+        &repo,
+        &lb.sources(),
+        meta,
+        &backup_options(&common),
+        &JobControl::new(),
+        &pr,
+    );
+    let finish = lb.finish();
+    let mut out = report_outcome(result?);
+    if let Err(e) = finish {
+        out.warnings.push(format!("image stored, but {e}"));
+    }
+    Ok(out)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn backup_system(
+    _ctx: &Ctx,
+    _c: CommonBackup,
+    _d: Vec<u32>,
+    _f: bool,
+    _l: Vec<PathBuf>,
+    _a: bool,
+) -> R<Outcome> {
     Err(CliError::usage(
-        "`backup system` uses VSS and runs on Windows. On Linux, image unmounted disks with `backup disk` (live Linux snapshots arrive in a later release).",
+        "`backup system` runs on Windows (VSS) and Linux (LVM snapshots). Here, image unmounted disks with `backup disk`.",
     ))
 }
 

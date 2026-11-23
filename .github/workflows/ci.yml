@@ -288,6 +288,25 @@ jobs:
           sudo tail -n 60 /tmp/e2e-recovery/*.log || true
           sudo sh -c 'tail -c 4000 /tmp/e2e-recovery/*.serial' | tr -d '\r' || true
 
+  # Live image of a running Linux system: real LVM on a loop disk, mounted
+  # and written to during the backup (docs/design/phase-6.md).
+  live-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: tools
+        run: sudo apt-get update && sudo apt-get install -y lvm2 fdisk e2fsprogs util-linux
+      - name: build
+        run: cargo build --release --locked -p cli
+      - name: run
+        run: sudo ci/e2e-live-linux.sh /tmp/e2e-live target/release/fenrir-backup
+      - name: state
+        if: failure()
+        run: |
+          sudo lsblk -o NAME,TYPE,FSTYPE,MOUNTPOINT,SIZE || true
+          sudo lvs -a || true
+
   # Server bundles: fenrir-server + web UI + agent builds for every
   # platform and the recovery ISO, ready to unpack and run. SHA256SUMS covers
   # every file.
