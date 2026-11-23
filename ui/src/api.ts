@@ -101,7 +101,7 @@ export interface Retention { keep_last?: number; keep_daily?: number; keep_weekl
 export type RestoreTarget =
   | { type: "vhdx"; directory: string }
   | { type: "hyperv_vm"; name: string; directory: string; switch?: string | null; start: boolean }
-  | { type: "disk"; device: string; disk: number; confirm: string };
+  | { type: "disk"; device: string; disk: number; confirm: string; grow?: boolean };
 
 export interface BackupSettings { label?: string | null; rate_limit_mib?: number; vss_full?: boolean; verify_sample_percent?: number | null }
 

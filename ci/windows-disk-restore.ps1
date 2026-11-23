@@ -110,7 +110,7 @@ Check ($LASTCODE -ne 0 -and "$($r.error.message)" -match 'in use') "refused whil
 Check ((Get-Volume -DriveLetter $o).FileSystemLabel -eq 'OLDDATA') 'nothing written after the refusal'
 $open.Close()
 
-$r = Fenrir @('restore', 'disk', '--image', $image, '--target', $target, '--yes', '--fit', '--boot-fixup')
+$r = Fenrir @('restore', 'disk', '--image', $image, '--target', $target, '--yes', '--fit', '--boot-fixup', '--grow')
 if ($LASTCODE -ne 0) { $r | ConvertTo-Json -Depth 8 | Write-Host }
 Check ($LASTCODE -eq 0) 'restored onto the new disk once it was free'
 Check ($r.result.boot.added -contains '\EFI\BOOT\BOOTX64.EFI') 'fallback boot loader added'
@@ -126,6 +126,11 @@ if (-not $data.DriveLetter) { $data | Add-PartitionAccessPath -AssignDriveLetter
 $n = $data.DriveLetter
 Check ((Get-Volume -DriveLetter $n).FileSystemLabel -eq 'FENRIRSRC') 'the restored NTFS volume'
 Check ((Get-Content "${n}:\marker.txt") -eq 'restored by fenrir') 'its files'
+# --grow: the NTFS volume was the last partition and fills the larger disk.
+Check ($r.result.grow.filesystem_grown) "the restored NTFS file system was grown ($($r.result.grow.notes -join '; '))"
+$vol = Get-Volume -DriveLetter $n
+Check ($data.Size -gt 300MB) "the last partition fills the disk ($([math]::Round($data.Size / 1MB)) MB)"
+Check ($vol.Size -gt $data.Size - 4MB) "the NTFS volume fills the partition ($([math]::Round($vol.Size / 1MB)) MB)"
 $disk = Get-Disk -Number $new
 Check ($disk.Size -eq 320MB) 'the GPT covers the larger disk'
 

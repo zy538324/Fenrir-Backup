@@ -168,13 +168,32 @@ pub fn find_windows(root: &Path) -> Option<(PathBuf, PathBuf)> {
 pub fn hive_is_dirty(path: &Path) -> anyhow::Result<bool> {
     use std::io::Read;
     let mut b = [0u8; 12];
-    std::fs::File::open(path)
-        .and_then(|mut f| f.read_exact(&mut b))
+    while_locked(|| std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut b)))
         .with_context(|| format!("reading {}", path.display()))?;
     if &b[..4] != b"regf" {
         bail!("{} is not a registry hive", path.display());
     }
     Ok(b[4..8] != b[8..12])
+}
+
+/// Run `f` again while the file it opens is held by another program (on a
+/// volume Windows has just mounted, the indexer or a virus scanner often
+/// opens files for a moment): sharing or lock violations, for up to a minute.
+pub fn while_locked<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let start = std::time::Instant::now();
+    loop {
+        match f() {
+            // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+            Err(e)
+                if matches!(e.raw_os_error(), Some(32) | Some(33))
+                    && cfg!(windows)
+                    && start.elapsed() < std::time::Duration::from_secs(60) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(500))
+            }
+            r => return r,
+        }
+    }
 }
 
 /// The original SYSTEM hive, kept next to it before it is changed.
@@ -207,7 +226,8 @@ pub fn adapt(
     if !p.boot_start.is_empty() || !p.overrides.is_empty() {
         let backup = hive_path.with_file_name(BACKUP_NAME);
         if !backup.exists() {
-            std::fs::copy(hive_path, &backup).context("keeping a copy of the registry")?;
+            while_locked(|| std::fs::copy(hive_path, &backup))
+                .context("keeping a copy of the registry")?;
         }
         let set: Vec<(String, String, u32)> = p
             .boot_start
@@ -420,11 +440,19 @@ fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
 impl RegHive {
     pub fn load(path: &Path) -> anyhow::Result<RegHive> {
         let p = path.to_string_lossy().to_string();
-        let o = reg(&["load", OFFLINE, &p]).context("running reg.exe")?;
-        if !o.status.success() {
-            bail!("reg load: {}", String::from_utf8_lossy(&o.stderr).trim());
+        // A program that had the file open for a moment (see while_locked).
+        for _ in 0..60 {
+            let o = reg(&["load", OFFLINE, &p]).context("running reg.exe")?;
+            if o.status.success() {
+                return Ok(RegHive);
+            }
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            if !err.contains("used by another process") {
+                bail!("reg load: {err}");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
-        Ok(RegHive)
+        bail!("reg load: {p} stayed in use by another program")
     }
 
     fn query(&self, key: &str, name: &str) -> Option<(String, String)> {
@@ -562,7 +590,7 @@ pub fn adapt_restored_disk(device: &str) -> anyhow::Result<Option<WindowsFix>> {
             let backup = hive_path.with_file_name(BACKUP_NAME);
             let made = !backup.exists();
             if made {
-                std::fs::copy(&hive_path, &backup).with_context(|| {
+                while_locked(|| std::fs::copy(&hive_path, &backup)).with_context(|| {
                     format!("keeping a copy of the registry as {}", backup.display())
                 })?;
             }

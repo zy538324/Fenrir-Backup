@@ -171,44 +171,35 @@ jobs:
   # S3 storage with Object Lock against a real MinIO server (signatures,
   # create-only writes, locks enforced): the backend's own tests and a CLI
   # repository end to end.
-  s3-minio:
+  # S3 with Object Lock against an emulator (moto): the backend, the CLI and
+  # a server + agent end to end, with boto3 checking the locks independently.
+  s3:
     needs: test
     runs-on: ubuntu-latest
     env:
-      MINIO_ROOT_USER: fenrir-ci
-      MINIO_ROOT_PASSWORD: fenrir-ci-secret-key
       FENRIR_TEST_S3_KEY: fenrir-ci
       FENRIR_TEST_S3_SECRET: fenrir-ci-secret-key
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: MinIO
+      - name: S3 emulator
         run: |
-          # dl.min.io no longer serves the binary: take it from the server's
-          # container image (a pinned release, else the newest published).
-          img=minio/minio:RELEASE.2025-04-22T22-12-26Z
-          docker pull -q "$img" || { img=minio/minio:latest; docker pull -q "$img"; }
-          id=$(docker create "$img")
-          docker cp "$id:/usr/bin/minio" "$RUNNER_TEMP/minio"
-          docker rm "$id" >/dev/null
-          chmod +x "$RUNNER_TEMP/minio"
-          "$RUNNER_TEMP/minio" --version
-          echo "MINIO=$RUNNER_TEMP/minio" >> "$GITHUB_ENV"
-      - name: S3 backend and CLI on MinIO
+          python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q "moto[server]" httpx cryptography boto3
+          echo "MOTO_SERVER=/tmp/venv/bin/moto_server" >> "$GITHUB_ENV"
+      - name: S3 backend and CLI
         run: |
-          export FENRIR_TEST_S3="$PWD/ci/minio-start.sh"
+          export FENRIR_TEST_S3="$PWD/ci/s3-start.sh"
           cargo test --locked -p s3store --test emulator -- --nocapture
           cargo test --locked -p cli --test cli s3_ -- --nocapture
-      - name: server and agent on MinIO with Object Lock, end to end
+      - name: server and agent with Object Lock, end to end
         run: |
           cargo build --locked -p server -p agent
-          python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q httpx cryptography boto3
-          ./ci/minio-start.sh 19000 > /tmp/minio.log 2>&1 &
-          for i in $(seq 1 30); do curl -s http://127.0.0.1:19000/minio/health/live && break; sleep 1; done
-          /tmp/venv/bin/python ci/e2e-s3.py /tmp/e2e-s3 target/debug/fenrir-server target/debug/fenrir-backup-agent http://127.0.0.1:19000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+          ./ci/s3-start.sh 19000 > /tmp/s3.log 2>&1 &
+          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:19000/ && break; sleep 1; done
+          /tmp/venv/bin/python ci/e2e-s3.py /tmp/e2e-s3 target/debug/fenrir-server target/debug/fenrir-backup-agent http://127.0.0.1:19000 "$FENRIR_TEST_S3_KEY" "$FENRIR_TEST_S3_SECRET"
       - name: logs
         if: failure()
-        run: tail -n 60 /tmp/e2e-s3/*.log /tmp/minio.log || true
+        run: tail -n 60 /tmp/e2e-s3/*.log /tmp/s3.log || true
 
   # Windows PE recovery media, built the way a user builds it: the Windows
   # ADK and its Windows PE add-on installed on a Windows machine, then
@@ -312,6 +303,20 @@ jobs:
         run: |
           sudo lsblk -o NAME,TYPE,FSTYPE,MOUNTPOINT,SIZE || true
           sudo lvs -a || true
+
+  # Growing onto a larger disk and cloning, with real ext4 and NTFS
+  # (docs/design/phase-5-grow-clone.md).
+  grow-clone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: tools
+        run: sudo apt-get update && sudo apt-get install -y e2fsprogs ntfs-3g dosfstools fdisk
+      - name: build
+        run: cargo build --release --locked -p cli
+      - name: run
+        run: sudo ci/e2e-grow-clone.sh /tmp/e2e-grow target/release/fenrir-backup
 
   # Server bundles: fenrir-server + web UI + agent builds for every
   # platform and the recovery ISO, ready to unpack and run. SHA256SUMS covers

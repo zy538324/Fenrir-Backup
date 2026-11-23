@@ -62,6 +62,7 @@ export function RestoreDialog({ image, preferAgent, onClose }: { image: Image; p
   const [disk, setDisk] = useState(0);
   const [device, setDevice] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [grow, setGrow] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const toast = useToast();
@@ -73,7 +74,7 @@ export function RestoreDialog({ image, preferAgent, onClose }: { image: Image; p
       : kind === "hyperv_vm"
         ? { type: "hyperv_vm", name: vmName.trim(), directory, switch: sw.trim() || null, start }
         : kind === "disk"
-          ? { type: "disk", device: device.trim(), disk, confirm: confirm.trim() }
+          ? { type: "disk", device: device.trim(), disk, confirm: confirm.trim(), grow }
           : null;
   const ready =
     !!agent && !!target &&
@@ -193,6 +194,10 @@ export function RestoreDialog({ image, preferAgent, onClose }: { image: Image; p
               <Field label={free.length > 0 ? "Or another device or image file" : "Target device or image file"} hint="Not in use and not the running system's disk.">
                 <input className="input mono" value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }} placeholder={isWin ? "\\\\.\\PhysicalDrive1" : "/dev/sdc"} />
               </Field>
+              <label className="check">
+                <input type="checkbox" checked={grow} onChange={(e) => setGrow(e.target.checked)} />
+                <span>Use the whole disk<div className="faint small">On a larger disk, the last partition gets the extra space and its file system is grown (NTFS, ext4, LVM; XFS and Btrfs grow once mounted).</div></span>
+              </label>
               <Notice tone="bad">
                 Everything on <span className="mono">{device || "the target"}</span> will be permanently replaced. Type the device path again to confirm.
               </Notice>
