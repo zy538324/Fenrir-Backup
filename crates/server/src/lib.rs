@@ -9,6 +9,7 @@ pub mod anomaly;
 pub mod auth;
 pub mod db;
 pub mod downloads;
+pub mod gateway;
 pub mod notify;
 pub mod schedule;
 pub mod tls;
@@ -54,6 +55,8 @@ pub struct AppState {
     pub db: Mutex<Connection>,
     pub cfg: Config,
     pub login_failures: Mutex<HashMap<String, (u32, Instant)>>,
+    /// NAS gateway relay (in memory).
+    pub relay: gateway::Relay,
 }
 
 pub type Shared = Arc<AppState>;
@@ -65,6 +68,7 @@ impl AppState {
             db: Mutex::new(conn),
             cfg,
             login_failures: Mutex::new(HashMap::new()),
+            relay: gateway::Relay::default(),
         }))
     }
 
@@ -159,6 +163,7 @@ pub fn sha256_hex(s: &[u8]) -> String {
 pub fn router(state: Shared) -> Router {
     let api = ui_api::routes()
         .merge(agent_api::routes())
+        .merge(gateway::routes())
         .merge(downloads::routes());
     let mut app = Router::new()
         .merge(api)

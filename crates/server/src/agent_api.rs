@@ -176,7 +176,7 @@ async fn heartbeat(
                             path,
                             sealed_secret: serde_json::from_str(&sealed)?,
                             sealed_share: share.as_deref().map(serde_json::from_str).transpose()?,
-                            gateway: None,
+                            gateway: crate::gateway::route(&db, rid, &agent.agent_id)?,
                         }))
                     })
                     .unwrap_or(Err(ApiError::forbidden("no access"))),
@@ -210,6 +210,7 @@ async fn heartbeat(
         .collect();
     drop(stmt);
     let auto_update = crate::db::get_setting::<UpdateSettings>(&db, UPDATE_KEY).enabled();
+    let gateway = crate::gateway::config(&db, &agent.agent_id)?;
     // Someone is browsing this machine's backups: poll every second for three minutes.
     let browsing: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM jobs WHERE agent_id = ?1 AND created > ?2 AND kind_json LIKE '{\"type\":\"browse_files%')",
@@ -227,7 +228,7 @@ async fn heartbeat(
         poll_seconds: if browsing { 1 } else { st.cfg.poll_seconds },
         cancel,
         update,
-        gateway: None,
+        gateway,
     }))
 }
 
@@ -529,6 +530,16 @@ fn queue_retention(
         retention,
         dry_run: false,
     };
+    // Served append-only through a gateway: only the gateway deletes old images.
+    let agent: String = db
+        .query_row(
+            "SELECT COALESCE((SELECT r.gateway_agent_id FROM repositories r JOIN agents g ON g.id = r.gateway_agent_id
+                              WHERE r.id = ?1 AND g.revoked = 0), ?2)",
+            params![repo, agent],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| agent.to_string());
+    let agent = agent.as_str();
     db.execute(
         "INSERT INTO jobs (id, agent_id, repository_id, plan_id, kind_json, state, created, requested_by)
          VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, 'retention')",

@@ -159,7 +159,8 @@ export interface Repository {
   images: number;
   stored_bytes: number;
   last_image: number | null;
-  agents: { id: string; name: string }[];
+  agents: { id: string; name: string; via_gateway?: boolean }[];
+  gateway: { agent_id: string; name: string; online: boolean; port: number; address: string | null; addresses: string[] } | null;
   hold: boolean;
   hold_reason: string | null;
   hold_since: number | null;

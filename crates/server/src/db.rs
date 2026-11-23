@@ -168,6 +168,13 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE repositories ADD COLUMN share_user TEXT;
     ALTER TABLE repo_access ADD COLUMN sealed_share TEXT;
     "#,
+    // 5: NAS gateway
+    r#"
+    ALTER TABLE agents ADD COLUMN gateway_port INTEGER;
+    ALTER TABLE agents ADD COLUMN gateway_address TEXT;
+    ALTER TABLE repositories ADD COLUMN gateway_agent_id TEXT;
+    ALTER TABLE repo_access ADD COLUMN via_gateway INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

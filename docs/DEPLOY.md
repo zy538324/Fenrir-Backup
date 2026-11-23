@@ -268,6 +268,36 @@ Linux machines mount the share privately (`/run/fenrir-backup-agent/smb`) and ne
 the `cifs-utils` package. macOS machines cannot use share repositories yet:
 use a folder the system has mounted.
 
+## Remote machines through a gateway
+
+A repository on a NAS can be served to machines that cannot reach the NAS
+(laptops at home, another site). On the Repositories page click **Serve
+through a gateway** and pick an enrolled machine on the NAS's network that already
+has access; then **Give access** to a remote machine and tick **Through the
+gateway**.
+
+* **Relay** (always on): the remote machine sends its requests to this
+  server, which passes them to the gateway. Nothing to open on any firewall.
+* **Direct** (optional): give the gateway a port (8475 suggested) and,
+  when it sits behind NAT, the address remote machines should use
+  (`backup.example.com:8475`). Machines try it first and fall back to the
+  relay. On Windows the agent adds the firewall rule "Fenrir-Backup
+  gateway" for domain and private networks.
+
+Requests are encrypted and signed between the two agents (X25519 + AES-256-GCM),
+so neither the relay nor the network can read or forge them. Remote machines
+can only add data: deletion goes through the gateway, which also runs
+retention and space reclamation for the repository.
+
+## Restoring single files
+
+**Files** next to an image (on the machine's page) opens an image's NTFS and ext2/3/4 volumes on any
+machine with access to the repository, decrypted there with the
+repository key (nothing readable goes through the server). Tick files or
+folders and restore them to a folder on any machine with access: into a new
+folder, keeping their paths, or next to the originals with a choice of
+rename, skip or overwrite.
+
 ## Boot verification (booting backups as VMs)
 
 A **boot host** starts images as virtual machines to prove they boot. Any
@@ -285,8 +315,13 @@ straight from the repository (nothing is copied), writes go to a
 temporary overlay that is deleted afterwards, and its network is isolated:
 it cannot reach your LAN or the internet, so a booted copy never clashes
 with the real machine. Hyper-V hosts can run boot checks too; they copy
-the image to a scratch folder under `C:\ProgramData\Fenrir-Backup\agent\boot-checks`
-first, so they need free space for the whole image.
+the image to a folder first, so they need free space for the whole image:
+choose the folder in **Test boot** (for example the volume your VMs live
+on), or leave it empty for `C:\ProgramData\Fenrir-Backup\agent\boot-checks`.
+On a Hyper-V host, **Keep it running** leaves the VM in Hyper-V Manager,
+switched off from the network, until you click **Stop** on the Boot page
+(which deletes the VM and its folder): a way to restore a machine as a VM and
+check it by hand.
 
 Give the boot host access to the repository, then either click **Test
 boot** next to an image, or turn on **Boot verification** for the

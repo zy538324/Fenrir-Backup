@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Database, Download, KeyRound, Lock, PauseCircle, Plus, ShieldAlert, ShieldCheck, Sparkles, Trash2, UserPlus, X } from "lucide-react";
+import { Database, Download, KeyRound, Lock, PauseCircle, Plus, ShieldAlert, ShieldCheck, Sparkles, Trash2, UserPlus, X, Network } from "lucide-react";
 import { api, type Agent, type Repository } from "../api";
 import { ago, bytes, passwordStrength, when } from "../format";
 import { newRecoveryKey, seal, sealSupported } from "../seal";
@@ -85,6 +85,7 @@ export default function RepositoriesPage() {
                   {r.status === "ready" && <Maintenance repo={r} agents={agents.data!} onChange={repos.reload} />}
                 </div>
                 <ShareSigninRow repo={r} agents={agents.data!} onSaved={repos.reload} />
+                {r.status === "ready" && <GatewayRow repo={r} agents={agents.data!} onSaved={repos.reload} />}
                 {r.status === "ready" && <BootVerification repo={r} agents={agents.data!} onSaved={repos.reload} />}
                 <div className="row">
                   <span className="faint small mono">ID {r.repo_uuid.slice(0, 8)}</span>
@@ -288,7 +289,8 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
   const candidates = agents.filter((a) => !repo.agents.some((x) => x.id === a.id));
   const [agent, setAgent] = useState(candidates[0]?.id ?? "");
   const [pass, setPass] = useState("");
-  const needsSignin = repo.share_auth === "password";
+  const [via, setVia] = useState(!!repo.gateway);
+  const needsSignin = repo.share_auth === "password" && !via;
   const [signin, setSignin] = useState<ShareSignin>(() => signinFromDisplay(repo.share_user));
   const [err, setErr] = useState<string | null>(null);
   const toast = useToast();
@@ -307,7 +309,7 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
                 const a = agents.find((x) => x.id === agent)!;
                 const sealed = await seal(a.public_key, JSON.stringify({ passphrase: pass, recovery_key: null }));
                 const sealed_share = needsSignin ? await sealSignin(a, signin) : null;
-                await api.post(`/api/repositories/${repo.id}/access`, { agent_id: agent, sealed, sealed_share });
+                await api.post(`/api/repositories/${repo.id}/access`, { agent_id: agent, sealed, sealed_share, via_gateway: via });
                 toast("ok", `${a.name} can now use ${repo.name}`);
                 onDone();
               } catch (e) {
@@ -338,11 +340,20 @@ function GrantDialog({ repo, agents, onClose, onDone }: { repo: Repository; agen
               <input className="input" type="password" autoComplete="off" value={signin.password} onChange={(e) => setSignin({ ...signin, password: e.target.value })} />
             </Field>
           )}
-          {repo.share_auth === "machine" && agents.find((x) => x.id === agent)?.os.family !== "windows" && (
+          {repo.gateway && (
+            <label className="check">
+              <input type="checkbox" checked={via} onChange={(e) => setVia(e.target.checked)} />
+              <span>
+                Through the gateway ({repo.gateway.name})
+                <div className="faint small">For machines outside the network that cannot reach {repo.path} themselves. They can add backups and restore, but never delete: old backups are removed only by the gateway's retention.</div>
+              </span>
+            </label>
+          )}
+          {!via && repo.share_auth === "machine" && agents.find((x) => x.id === agent)?.os.family !== "windows" && (
             <Notice tone="warn">This repository uses the Windows computer account to reach the share; this machine is not Windows. Switch the repository to a username and password first (Change sign-in).</Notice>
           )}
-          <div className="muted small">The machine must be able to reach <span className="mono">{repo.path}</span>.</div>
-          <TestConnection agent={agents.find((x) => x.id === agent)} path={repo.path} signin={isSharePath(repo.path) && repo.share_auth !== "none" ? { ...signin, mode: repo.share_auth === "machine" ? "machine" : "password" } : null} />
+          {!via && <div className="muted small">The machine must be able to reach <span className="mono">{repo.path}</span>.</div>}
+          {!via && <TestConnection agent={agents.find((x) => x.id === agent)} path={repo.path} signin={isSharePath(repo.path) && repo.share_auth !== "none" ? { ...signin, mode: repo.share_auth === "machine" ? "machine" : "password" } : null} />}
         </>
       )}
     </Modal>
@@ -449,5 +460,84 @@ function Maintenance({ repo, agents, onChange }: { repo: Repository; agents: Age
         </div>
       </div>
     </details>
+  );
+}
+
+/** NAS gateway: one machine next to the repository serves it to machines elsewhere. */
+function GatewayRow({ repo, agents, onSaved }: { repo: Repository; agents: Agent[]; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const g = repo.gateway;
+  const users = repo.agents.filter((a) => a.via_gateway).map((a) => a.name);
+  return (
+    <div className="row wrap" style={{ gap: 8 }}>
+      <Network size={15} style={{ color: "var(--text-2)" }} />
+      <span className="small">
+        {g ? (
+          <>Gateway: <strong>{g.name}</strong>{!g.online && <> (offline)</>} serves it to {users.join(", ") || "no machines yet"} · {g.port ? `direct on ${g.addresses.join(", ") || `port ${g.port}`}, otherwise relayed` : "relayed through this server"}</>
+        ) : (
+          <>Machines outside this network can back up here through a gateway.</>
+        )}
+      </span>
+      <button className="btn sm ghost" onClick={() => setOpen(true)}>{g ? "Gateway settings" : "Serve through a gateway"}</button>
+      {open && <GatewayDialog repo={repo} agents={agents} onClose={() => setOpen(false)} onSaved={() => { setOpen(false); onSaved(); }} />}
+    </div>
+  );
+}
+
+function GatewayDialog({ repo, agents, onClose, onSaved }: { repo: Repository; agents: Agent[]; onClose: () => void; onSaved: () => void }) {
+  const pool = agents.filter((a) => repo.agents.some((x) => x.id === a.id && !x.via_gateway) && a.capabilities.includes("gateway"));
+  const [id, setId] = useState(repo.gateway?.agent_id ?? pool[0]?.id ?? "");
+  const [direct, setDirect] = useState(repo.gateway ? repo.gateway.port > 0 : true);
+  const [port, setPort] = useState(repo.gateway?.port || 8475);
+  const [address, setAddress] = useState(repo.gateway?.address ?? "");
+  const [err, setErr] = useState<string | null>(null);
+  const toast = useToast();
+  const save = async (body: Record<string, unknown>, msg: string) => {
+    try {
+      await api.post(`/api/repositories/${repo.id}/gateway`, body);
+      toast("ok", msg);
+      onSaved();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+  return (
+    <Modal wide title={`Serve ${repo.name} through a gateway`} onClose={onClose}
+      foot={<>
+        {repo.gateway && <button className="btn danger" onClick={() => save({}, "Gateway removed")}>Stop serving</button>}
+        <button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn primary" disabled={!id} onClick={() => save({ agent_id: id, port: direct ? port : 0, address: address.trim() || null }, "Gateway saved")}>Save</button>
+      </>}>
+      {err && <Notice tone="bad">{err}</Notice>}
+      <div className="muted">
+        One machine inside the network where the NAS is serves this repository to machines you choose elsewhere: laptops at home, a branch office.
+        They connect to it directly when they can reach it (same network, VPN or a forwarded port), and through this server otherwise, so no port has to be opened.
+      </div>
+      <Notice tone="info">
+        Everything is encrypted between the two machines; this server only passes on what it cannot read. Machines that use the gateway can add backups and
+        restore, but cannot delete them, so ransomware on a laptop cannot erase its history. Retention and space reclamation run on the gateway.
+      </Notice>
+      {pool.length === 0 ? (
+        <Notice tone="warn">No machine with direct access to <span className="mono">{repo.path}</span> can be a gateway yet. Give the machine next to the NAS access first (and let its agent update).</Notice>
+      ) : (
+        <>
+          <Field label="Gateway machine">
+            <select className="input" value={id} onChange={(e) => setId(e.target.value)}>
+              {pool.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
+            </select>
+          </Field>
+          <label className="check">
+            <input type="checkbox" checked={direct} onChange={(e) => setDirect(e.target.checked)} />
+            <span>Accept direct connections on port <input className="input" type="number" min={1024} max={65535} value={port} disabled={!direct} style={{ width: 100, display: "inline-block" }} onChange={(e) => setPort(Number(e.target.value))} />
+              <div className="faint small">On Windows the agent adds a firewall rule for Domain and Private networks. Without it, or from anywhere else, machines use the relay.</div>
+            </span>
+          </label>
+          <Field label="Address from outside (optional)" hint="host:port reachable from the other machines, e.g. a forwarded port or VPN address.">
+            <input className="input" value={address} placeholder="backup.example.com:8475" onChange={(e) => setAddress(e.target.value)} />
+          </Field>
+          <div className="faint small">Then give each remote machine access with “Through the gateway” ticked.</div>
+        </>
+      )}
+    </Modal>
   );
 }

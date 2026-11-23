@@ -71,6 +71,7 @@ pub fn routes() -> Router<Shared> {
         .route("/api/repositories/{id}/share", post(set_share))
         .route("/api/agents/{id}/check-access", post(check_access))
         .route("/api/images/{id}/browse", post(browse_files))
+        .route("/api/repositories/{id}/gateway", post(set_gateway))
         .route("/api/images/{id}/restore-files", post(restore_files))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/settings/test-notification", post(test_notification))
@@ -82,6 +83,9 @@ fn uuid_param(s: &str) -> ApiResult<String> {
         .map(|u| u.to_string())
         .map_err(|_| ApiError::bad("invalid id"))
 }
+
+/// A repository's gateway: agent id, name, port, address, last seen.
+type GatewayRow = (String, String, Option<i64>, Option<String>, Option<i64>);
 
 // ---------- session ----------
 
@@ -702,6 +706,9 @@ struct SealedFor {
     /// Network share sign-in sealed to this agent (share_auth = password).
     #[serde(default)]
     sealed_share: Option<protocol::seal::Sealed>,
+    /// Reach the repository through its gateway (NAS gateway).
+    #[serde(default)]
+    via_gateway: bool,
 }
 
 /// How agents sign in to a repository on a network share.
@@ -855,14 +862,30 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
     for r in &mut repos {
         let rid = r["id"].as_str().unwrap_or_default().to_string();
         let mut a = db.prepare(
-            "SELECT a.id, COALESCE(a.display_name, a.hostname) FROM repo_access x JOIN agents a ON a.id = x.agent_id WHERE x.repository_id = ?1 AND a.revoked = 0",
+            "SELECT a.id, COALESCE(a.display_name, a.hostname), x.via_gateway FROM repo_access x JOIN agents a ON a.id = x.agent_id WHERE x.repository_id = ?1 AND a.revoked = 0",
         )?;
         let agents: Vec<Value> = a
             .query_map(params![rid], |r| {
-                Ok(json!({ "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)? }))
+                Ok(json!({ "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "via_gateway": r.get::<_, i64>(2)? != 0 }))
             })?
             .collect::<Result<_, _>>()?;
         r["agents"] = json!(agents);
+        drop(a);
+        let gw: Option<GatewayRow> = db
+            .query_row(
+                "SELECT a.id, COALESCE(a.display_name, a.hostname), a.gateway_port, a.gateway_address, a.last_seen
+                 FROM repositories r JOIN agents a ON a.id = r.gateway_agent_id WHERE r.id = ?1",
+                params![rid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        r["gateway"] = match gw {
+            Some((gid, name, port, address, seen)) => json!({
+                "agent_id": gid, "name": name, "online": online(&st, seen), "port": port.unwrap_or(0),
+                "address": address, "addresses": crate::gateway::addresses(&db, &gid)?,
+            }),
+            None => Value::Null,
+        };
     }
     Ok(Json(repos))
 }
@@ -884,6 +907,24 @@ async fn grant_access(
         )
         .optional()?;
     let mode = mode.ok_or_else(|| ApiError::not_found("no such repository"))?;
+    if x.via_gateway {
+        let gw: Option<String> = db.query_row(
+            "SELECT gateway_agent_id FROM repositories WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if gw.is_none() || gw.as_deref() == Some(agent.as_str()) {
+            return Err(ApiError::bad(
+                "set up a gateway for this repository first (and choose another machine than the gateway)",
+            ));
+        }
+    }
+    // Through the gateway, only the gateway signs in to the share.
+    let mode = if x.via_gateway {
+        "none".to_string()
+    } else {
+        mode
+    };
     if mode == "password" && x.sealed_share.is_none() {
         return Err(ApiError::bad(
             "this repository is on a network share: enter the share password for the machine too",
@@ -898,9 +939,9 @@ async fn grant_access(
         _ => None,
     };
     db.execute(
-        "INSERT INTO repo_access (repository_id, agent_id, sealed, granted, sealed_share) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(repository_id, agent_id) DO UPDATE SET sealed = excluded.sealed, granted = excluded.granted, sealed_share = excluded.sealed_share",
-        params![id, agent, serde_json::to_string(&x.sealed)?, now(), share],
+        "INSERT INTO repo_access (repository_id, agent_id, sealed, granted, sealed_share, via_gateway) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(repository_id, agent_id) DO UPDATE SET sealed = excluded.sealed, granted = excluded.granted, sealed_share = excluded.sealed_share, via_gateway = excluded.via_gateway",
+        params![id, agent, serde_json::to_string(&x.sealed)?, now(), share, x.via_gateway],
     )
     .map_err(|_| ApiError::bad("unknown repository or machine"))?;
     audit(
@@ -919,6 +960,19 @@ async fn revoke_access(
 ) -> ApiResult<Json<Value>> {
     let (id, agent) = (uuid_param(&id)?, uuid_param(&agent)?);
     let db = st.db();
+    let gw: Option<String> = db
+        .query_row(
+            "SELECT gateway_agent_id FROM repositories WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    if gw.as_deref() == Some(agent.as_str()) {
+        return Err(ApiError::bad(
+            "that machine is this repository's gateway: stop serving through it first",
+        ));
+    }
     db.execute(
         "DELETE FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2",
         params![id, agent],
@@ -1340,6 +1394,16 @@ async fn set_maintenance(
         if !ok {
             return Err(ApiError::bad(
                 "that machine has no access to this repository",
+            ));
+        }
+        let gw: Option<String> = db.query_row(
+            "SELECT gateway_agent_id FROM repositories WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        if gw.as_ref().is_some_and(|g| g != &agent) {
+            return Err(ApiError::bad(
+                "this repository is served through a gateway: its maintenance runs on the gateway",
             ));
         }
         db.execute(
@@ -2146,4 +2210,118 @@ async fn restore_files(
         ),
     );
     Ok(Json(json!({ "id": job })))
+}
+
+// ---------- NAS gateway ----------
+
+#[derive(Deserialize)]
+struct GatewayReq {
+    /// The gateway machine; None stops serving through a gateway.
+    #[serde(default)]
+    agent_id: Option<String>,
+    /// Port for direct connections; 0 = relay only.
+    #[serde(default)]
+    port: Option<u16>,
+    /// "host:port" reachable from outside the gateway's network.
+    #[serde(default)]
+    address: Option<String>,
+}
+
+/// Serve a repository through a gateway agent, or stop.
+async fn set_gateway(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<GatewayReq>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let db = st.db();
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM repositories WHERE id = ?1)",
+        params![id],
+        |x| x.get(0),
+    )?;
+    if !exists {
+        return Err(ApiError::not_found("no such repository"));
+    }
+    let Some(gw) = r.agent_id.as_deref().map(uuid_param).transpose()? else {
+        let users: i64 = db.query_row(
+            "SELECT COUNT(*) FROM repo_access WHERE repository_id = ?1 AND via_gateway = 1",
+            params![id],
+            |x| x.get(0),
+        )?;
+        if users > 0 {
+            return Err(ApiError::bad(format!(
+                "{users} machine(s) reach this repository through the gateway; remove their access first"
+            )));
+        }
+        db.execute(
+            "UPDATE repositories SET gateway_agent_id = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        audit(&db, &a.username, "repository.gateway_removed", &id);
+        return Ok(Json(json!({ "ok": true })));
+    };
+    let direct: Option<i64> = db
+        .query_row(
+            "SELECT via_gateway FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2",
+            params![id, gw],
+            |x| x.get(0),
+        )
+        .optional()?;
+    if direct != Some(0) {
+        return Err(ApiError::bad(
+            "the gateway must be a machine with direct access to the repository (give it access first)",
+        ));
+    }
+    let caps = agent_caps(&db, &gw)?;
+    if !caps.iter().any(|c| c == "gateway") {
+        return Err(ApiError::bad(
+            "that machine's backup agent is too old to be a gateway; it updates itself shortly",
+        ));
+    }
+    let port = r.port.unwrap_or(crate::gateway::DEFAULT_PORT);
+    if port != 0 && port < 1024 {
+        return Err(ApiError::bad(
+            "the port must be 1024 to 65535, or 0 to use the relay only",
+        ));
+    }
+    let address = r
+        .address
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(addr) = &address {
+        let ok = addr.len() <= 255
+            && addr.rsplit_once(':').is_some_and(|(h, p)| {
+                !h.is_empty()
+                    && p.parse::<u16>().is_ok_and(|p| p > 0)
+                    && h.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || ".-[]:".contains(c))
+            });
+        if !ok {
+            return Err(ApiError::bad(
+                "the extra address must look like host:port, e.g. nas-gw.example.com:8475",
+            ));
+        }
+    }
+    // Retention and space reclamation run on the gateway.
+    db.execute(
+        "UPDATE repositories SET gateway_agent_id = ?1, maintenance_agent_id = ?1 WHERE id = ?2",
+        params![gw, id],
+    )?;
+    db.execute(
+        "UPDATE agents SET gateway_port = ?1, gateway_address = ?2 WHERE id = ?3",
+        params![
+            if port == 0 { None } else { Some(port as i64) },
+            address,
+            gw
+        ],
+    )?;
+    audit(
+        &db,
+        &a.username,
+        "repository.gateway_set",
+        &format!("{id} via {gw} port {port}"),
+    );
+    Ok(Json(json!({ "ok": true })))
 }

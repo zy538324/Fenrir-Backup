@@ -1540,3 +1540,231 @@ async fn hyperv_boot_test_keeps_the_vm_in_a_chosen_folder() {
         }
     );
 }
+
+async fn gw_heartbeat(t: &mut T, token: &str, inv: Value) -> HeartbeatResponse {
+    let (s, v) = t
+        .agent("/api/agent/heartbeat", token, json!({ "inventory": inv }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    serde_json::from_value(v).unwrap()
+}
+
+/// A raw agent request (binary body), as the gateway relay uses.
+async fn raw(
+    st: &Shared,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Option<String>, Vec<u8>) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, "backup.test:8443")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from(body))
+        .unwrap();
+    let resp = router(st.clone()).oneshot(req).await.unwrap();
+    let s = resp.status();
+    let rid = resp
+        .headers()
+        .get("X-Relay-Id")
+        .map(|v| v.to_str().unwrap().to_string());
+    (
+        s,
+        rid,
+        resp.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+}
+
+#[tokio::test]
+async fn nas_gateway_routes_relays_and_keeps_retention_on_the_gateway() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let gw_key = AgentKey::generate();
+    let (gw, gw_token) = enroll(&mut t, &gw_key, "nas-gw").await;
+    let caps: Vec<&str> = CAPS.iter().copied().chain(["gateway"]).collect();
+    let mut inv = inventory(&caps);
+    inv["gateway_addresses"] = json!(["192.168.1.20:8475"]);
+    gw_heartbeat(&mut t, &gw_token, inv.clone()).await;
+    let repo = ready_repo(&mut t, &gw_key, &gw, &gw_token).await;
+    gw_heartbeat(&mut t, &gw_token, inv.clone()).await;
+    let laptop_key = AgentKey::generate();
+    let (laptop, laptop_token) = enroll(&mut t, &laptop_key, "laptop").await;
+    heartbeat(&mut t, &laptop_token, CAPS, None).await;
+    let sealed = seal(&laptop_key.public_b64(), b"{\"passphrase\":\"p\"}").unwrap();
+
+    // Through the gateway needs a gateway; the gateway needs direct access.
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/access"),
+            json!({ "agent_id": laptop, "sealed": sealed, "via_gateway": true }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/gateway"),
+            json!({ "agent_id": laptop }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v) = t
+        .post(
+            &format!("/api/repositories/{repo}/gateway"),
+            json!({ "agent_id": gw, "port": 8475, "address": "backup.example.com:18475" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = t
+        .post(
+            &format!("/api/repositories/{repo}/access"),
+            json!({ "agent_id": laptop, "sealed": sealed, "via_gateway": true }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // The gateway learns what to serve and to whom; the laptop how to reach it.
+    let cfg = gw_heartbeat(&mut t, &gw_token, inv.clone())
+        .await
+        .gateway
+        .unwrap();
+    assert_eq!(cfg.listen_port, 8475);
+    assert_eq!(cfg.repositories[0].repository_id.to_string(), repo);
+    assert_eq!(
+        cfg.repositories[0].clients[0].public_key,
+        laptop_key.public_b64()
+    );
+    assert!(heartbeat(&mut t, &laptop_token, CAPS, None)
+        .await
+        .gateway
+        .is_none());
+    t.post(
+        &format!("/api/agents/{laptop}/jobs"),
+        json!({ "kind": { "type": "backup_disks", "paths": ["/dev/sda"] }, "repository_id": repo }),
+    )
+    .await;
+    let spec = heartbeat(&mut t, &laptop_token, CAPS, None)
+        .await
+        .jobs
+        .remove(0);
+    let route = spec.repository.as_ref().unwrap().gateway.clone().unwrap();
+    assert_eq!(route.agent_id.to_string(), gw);
+    assert_eq!(route.public_key, gw_key.public_b64());
+    assert_eq!(
+        route.addresses,
+        vec![
+            "backup.example.com:18475".to_string(),
+            "192.168.1.20:8475".into()
+        ]
+    );
+    t.agent(
+        &format!("/api/agent/jobs/{}/update", spec.id),
+        &laptop_token,
+        json!({ "state": "succeeded" }),
+    )
+    .await;
+    let (_, repos) = t.get("/api/repositories").await;
+    let r = repos
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == repo)
+        .unwrap();
+    assert_eq!(r["gateway"]["agent_id"], gw);
+    assert_eq!(r["maintenance_agent_id"], gw);
+
+    // A plan backup by the laptop: retention is queued on the gateway.
+    let (_, plan) = t.post("/api/plans", json!({ "name": "Laptop", "agent_id": laptop, "repository_id": repo,
+        "job": { "type": "backup_disks", "paths": ["/dev/sda"] }, "schedule": { "type": "manual" }, "retention": { "keep_last": 2 } })).await;
+    t.post(
+        &format!("/api/plans/{}/run", plan["id"].as_str().unwrap()),
+        json!({}),
+    )
+    .await;
+    complete_next(
+        &mut t,
+        &laptop_token,
+        json!({ "state": "succeeded", "images": [image(1, 30, 30 << 20, 12 << 20)] }),
+    )
+    .await
+    .unwrap();
+    assert!(heartbeat(&mut t, &laptop_token, CAPS, None)
+        .await
+        .jobs
+        .is_empty());
+    let j = gw_heartbeat(&mut t, &gw_token, inv.clone())
+        .await
+        .jobs
+        .remove(0);
+    assert!(
+        matches!(j.kind, JobKind::ApplyRetention { .. }),
+        "{:?}",
+        j.kind
+    );
+
+    // Relay: the laptop's message reaches the gateway, its answer comes back byte for byte.
+    let st = t.st.clone();
+    let (lt, gwid) = (laptop_token.clone(), gw.clone());
+    let sender = tokio::spawn(async move {
+        raw(
+            &st,
+            "POST",
+            &format!("/api/agent/relay/{gwid}"),
+            &lt,
+            b"\x01sealed-request".to_vec(),
+        )
+        .await
+    });
+    let (s, rid, body) = raw(&t.st, "GET", "/api/agent/relay/next", &gw_token, vec![]).await;
+    assert_eq!(
+        (s, body.as_slice()),
+        (StatusCode::OK, &b"\x01sealed-request"[..])
+    );
+    let (s, _, _) = raw(
+        &t.st,
+        "POST",
+        &format!("/api/agent/relay/reply/{}", rid.unwrap()),
+        &gw_token,
+        b"\x01sealed-answer".to_vec(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _, body) = sender.await.unwrap();
+    assert_eq!(
+        (s, body.as_slice()),
+        (StatusCode::OK, &b"\x01sealed-answer"[..])
+    );
+    // Others may not use the gateway; it cannot be removed from under its clients.
+    let other = AgentKey::generate();
+    let (_, other_token) = enroll(&mut t, &other, "other").await;
+    let (s, _, _) = raw(
+        &t.st,
+        "POST",
+        &format!("/api/agent/relay/{gw}"),
+        &other_token,
+        b"x".to_vec(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = t
+        .post(&format!("/api/repositories/{repo}/gateway"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _, _) = t
+        .req(
+            "DELETE",
+            &format!("/api/repositories/{repo}/access/{gw}"),
+            None,
+            None,
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}

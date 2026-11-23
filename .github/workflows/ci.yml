@@ -378,6 +378,24 @@ jobs:
           Get-Content server.out, server.err -Tail 40 -ErrorAction SilentlyContinue
           Get-Content C:\ProgramData\Fenrir-Backup\agent\agent.log -Tail 30 -ErrorAction SilentlyContinue
 
+  # NAS gateway end to end: the real server and two real agents (the second
+  # with its own machine-id), backing up through the relay and then directly.
+  gateway-e2e:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        run: cargo build --locked -p server -p agent
+      - name: run
+        run: |
+          python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q httpx cryptography
+          sudo /tmp/venv/bin/python ci/e2e-gateway.py /tmp/e2e target/debug/fenrir-server target/debug/fenrir-backup-agent
+      - name: logs
+        if: failure()
+        run: sudo tail -n 80 /tmp/e2e/*.log
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
