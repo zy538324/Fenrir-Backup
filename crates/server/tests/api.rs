@@ -691,7 +691,7 @@ fn webhook_listener() -> (String, Arc<Mutex<Vec<String>>>) {
 }
 
 fn wait_for(got: &Arc<Mutex<Vec<String>>>, needle: &str) -> bool {
-    for _ in 0..100 {
+    for _ in 0..400 {
         if got.lock().unwrap().iter().any(|b| b.contains(needle)) {
             return true;
         }

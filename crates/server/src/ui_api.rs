@@ -1700,6 +1700,7 @@ async fn create_boot_check(
         keep_running: r.keep_running,
         memory_mb: r.memory_mb,
         cpus: r.cpus,
+        directory: None,
     };
     let job = insert_job(&st, &agent, &kind, Some(&repo), None, &a.username)?;
     audit(

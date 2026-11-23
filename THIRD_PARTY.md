@@ -27,10 +27,12 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | crc32fast | 1.5.5 | MIT OR Apache-2.0 | GPT CRC32 |
 | ed25519-dalek | 2.2.0 | BSD-3-Clause | Manifest signatures |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 | OS random numbers |
+| ext4-view | 1.0.0 | MIT OR Apache-2.0 | Reading ext2/3/4 volumes inside images (file restore) |
 | hex | 0.4.3 | MIT OR Apache-2.0 | Hex encoding |
 | hkdf | 0.12.4 | MIT OR Apache-2.0 | Sealed secrets key derivation |
 | libc | 0.2.191 | MIT OR Apache-2.0 | Linux block-device ioctls |
 | libsqlite3-sys | 0.40.0 | MIT | Bundled SQLite (the SQLite C source is public domain) |
+| ntfs | 0.4.0 | MIT OR Apache-2.0 | Reading NTFS volumes inside images (file restore) |
 | rcgen | 0.13.2 | MIT OR Apache-2.0 | Self-signed server certificate |
 | ring | 0.17.14 | Apache-2.0 AND ISC | Cryptographic primitives for rustls (Apache-2.0 AND ISC) |
 | rpassword | 7.5.5 | Apache-2.0 | Passphrase prompt without echo |
@@ -84,6 +86,7 @@ Versions are pinned in `ui/package-lock.json`.
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
 | arc-swap | 1.9.5 | MIT OR Apache-2.0 |
 | argon2 | 0.5.3 | MIT OR Apache-2.0 |
+| array-init | 2.1.0 | MIT OR Apache-2.0 |
 | arrayvec | 0.7.8 | MIT OR Apache-2.0 |
 | asn1-rs | 0.6.2 | MIT OR Apache-2.0 |
 | asn1-rs-derive | 0.5.1 | MIT OR Apache-2.0 |
@@ -97,11 +100,15 @@ Versions are pinned in `ui/package-lock.json`.
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64 | 0.23.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
+| binrw | 0.11.3 | MIT |
+| binrw_derive | 0.11.3 | MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 |
 | blake2 | 0.10.6 | MIT OR Apache-2.0 |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.4 | MIT OR Apache-2.0 |
+| bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
+| byteorder | 1.5.0 | Unlicense OR MIT |
 | bytes | 1.12.2 | MIT |
 | cc | 1.11.3 | MIT OR Apache-2.0 |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 |
@@ -115,8 +122,11 @@ Versions are pinned in `ui/package-lock.json`.
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
 | const-oid | 0.9.6 | Apache-2.0 OR MIT |
 | constant_time_eq | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
+| convert_case | 0.4.0 | MIT |
 | cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
 | cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
+| crc | 3.4.0 | MIT OR Apache-2.0 |
+| crc-catalog | 2.5.0 | MIT OR Apache-2.0 |
 | crc32fast | 1.5.5 | MIT OR Apache-2.0 |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
 | ctr | 0.9.2 | MIT OR Apache-2.0 |
@@ -126,6 +136,7 @@ Versions are pinned in `ui/package-lock.json`.
 | der | 0.7.10 | Apache-2.0 OR MIT |
 | der-parser | 9.0.0 | MIT/Apache-2.0 |
 | deranged | 0.5.9 | MIT OR Apache-2.0 |
+| derive_more | 0.99.20 | MIT |
 | digest | 0.10.7 | MIT OR Apache-2.0 |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
 | ed25519 | 2.2.3 | Apache-2.0 OR MIT |
@@ -133,8 +144,10 @@ Versions are pinned in `ui/package-lock.json`.
 | either | 1.19.0 | MIT OR Apache-2.0 |
 | email-encoding | 0.4.3 | MIT OR Apache-2.0 |
 | email_address | 0.2.10 | MIT OR Apache-2.0 |
+| enumn | 0.1.14 | MIT OR Apache-2.0 |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT |
 | errno | 0.3.15 | MIT OR Apache-2.0 |
+| ext4-view | 1.0.0 | MIT OR Apache-2.0 |
 | fallible-iterator | 0.3.0 | MIT/Apache-2.0 |
 | fallible-streaming-iterator | 0.1.9 | MIT/Apache-2.0 |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT |
@@ -156,6 +169,7 @@ Versions are pinned in `ui/package-lock.json`.
 | h2 | 0.4.20 | MIT |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 |
 | hashlink | 0.12.2 | MIT OR Apache-2.0 |
+| heck | 0.4.1 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
 | hex | 0.4.3 | MIT OR Apache-2.0 |
 | hkdf | 0.12.4 | MIT OR Apache-2.0 |
@@ -194,12 +208,15 @@ Versions are pinned in `ui/package-lock.json`.
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
 | memchr | 2.8.3 | Unlicense OR MIT |
+| memoffset | 0.9.1 | MIT |
 | mime | 0.3.18 | MIT OR Apache-2.0 |
 | mime_guess | 2.0.5 | MIT |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
 | mio | 1.2.5 | MIT |
 | nom | 7.1.3 | MIT |
 | nom | 8.0.0 | MIT |
+| nt-string | 0.1.2 | MIT OR Apache-2.0 |
+| ntfs | 0.4.0 | MIT OR Apache-2.0 |
 | nu-ansi-term | 0.50.3 | MIT |
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 |
@@ -224,6 +241,7 @@ Versions are pinned in `ui/package-lock.json`.
 | quoted_printable | 0.5.2 | 0BSD |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
+| ntfs | 0.4.0 | MIT OR Apache-2.0 | Reading NTFS volumes inside images (file restore) |
 | rcgen | 0.13.2 | MIT OR Apache-2.0 |
 | regex-automata | 0.4.19 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.12 | MIT OR Apache-2.0 |
@@ -259,7 +277,9 @@ Versions are pinned in `ui/package-lock.json`.
 | sqlite-wasm-rs | 0.6.3 | MIT |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | strsim | 0.11.1 | MIT |
+| strum_macros | 0.24.3 | MIT |
 | subtle | 2.6.1 | BSD-3-Clause |
+| syn | 1.0.109 | MIT OR Apache-2.0 |
 | syn | 2.0.119 | MIT OR Apache-2.0 |
 | syn | 3.0.10 | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Apache-2.0 |

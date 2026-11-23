@@ -193,6 +193,7 @@ pub fn run_boot_checks(state: &Shared) -> rusqlite::Result<usize> {
             keep_running: false,
             memory_mb: None,
             cpus: None,
+            directory: None,
         })
         .unwrap_or_default();
         db.execute(

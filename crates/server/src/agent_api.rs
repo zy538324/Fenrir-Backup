@@ -176,6 +176,7 @@ async fn heartbeat(
                             path,
                             sealed_secret: serde_json::from_str(&sealed)?,
                             sealed_share: share.as_deref().map(serde_json::from_str).transpose()?,
+                            gateway: None,
                         }))
                     })
                     .unwrap_or(Err(ApiError::forbidden("no access"))),
@@ -220,6 +221,7 @@ async fn heartbeat(
         poll_seconds: st.cfg.poll_seconds,
         cancel,
         update,
+        gateway: None,
     }))
 }
 
