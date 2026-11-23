@@ -661,3 +661,19 @@ pub struct ImageApplication {
 pub struct ErrorBody {
     pub error: String,
 }
+
+#[cfg(test)]
+mod progress_tests {
+    use super::JobProgress;
+
+    #[test]
+    fn progress_rate_and_time_left() {
+        assert_eq!(JobProgress::estimate(0, 100, 10.0), (0, None));
+        assert_eq!(JobProgress::estimate(50, 100, 0.5), (0, None), "too early");
+        assert_eq!(
+            JobProgress::estimate(100 << 20, 400 << 20, 10.0),
+            (10 << 20, Some(30))
+        );
+        assert_eq!(JobProgress::estimate(5, 5, 2.0), (2, Some(0)));
+    }
+}
