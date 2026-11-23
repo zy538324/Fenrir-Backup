@@ -92,6 +92,17 @@ cd ui && npm ci && npm run build
 | `docs/design` | One design note per phase |
 | `fuzz` | Fuzz targets |
 
+## Shared with Fenrir Cloud
+
+The agent, CLI, engine, formats, file browsing, boot checks and recovery
+environment are also used by the Fenrir Platform, which manages backups
+from its own console (zy538324/AntiVirus, folder `backup/`). This
+repository is their single source: change them here, then bring them
+across with `python3 backup/sync-upstream.py <this checkout>` in the
+AntiVirus repository. Its CI fails if the copy drifts. The server and web
+UI here (`crates/server`, `ui/`) are this product's own; new backup features
+need a matching change in Fenrir Cloud's backup module.
+
 ## Documentation
 
 * [Deploying the server](docs/DEPLOY.md) · [Format](docs/FORMAT.md) · [CLI](docs/CLI.md) · [Testing](docs/TESTING.md)
