@@ -129,7 +129,8 @@ Check ((Get-Content "${n}:\marker.txt") -eq 'restored by fenrir') 'its files'
 # --grow: the NTFS volume was the last partition and fills the larger disk.
 Check ($r.result.grow.filesystem_grown) "the restored NTFS file system was grown ($($r.result.grow.notes -join '; '))"
 $vol = Get-Volume -DriveLetter $n
-Check ($data.Size -gt 300MB) "the last partition fills the disk ($([math]::Round($data.Size / 1MB)) MB)"
+$end = $data.Offset + $data.Size
+Check ($end -gt 316MB) "the last partition reaches the end of the disk (ends at $([math]::Round($end / 1MB)) MB of 320)"
 Check ($vol.Size -gt $data.Size - 4MB) "the NTFS volume fills the partition ($([math]::Round($vol.Size / 1MB)) MB)"
 $disk = Get-Disk -Number $new
 Check ($disk.Size -eq 320MB) 'the GPT covers the larger disk'
