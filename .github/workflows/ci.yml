@@ -184,7 +184,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: MinIO
         run: |
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/minio" https://dl.min.io/server/minio/release/linux-amd64/minio
+          # dl.min.io no longer serves the binary: take it from the server's
+          # container image (a pinned release, else the newest published).
+          img=minio/minio:RELEASE.2025-04-22T22-12-26Z
+          docker pull -q "$img" || { img=minio/minio:latest; docker pull -q "$img"; }
+          id=$(docker create "$img")
+          docker cp "$id:/usr/bin/minio" "$RUNNER_TEMP/minio"
+          docker rm "$id" >/dev/null
           chmod +x "$RUNNER_TEMP/minio"
           "$RUNNER_TEMP/minio" --version
           echo "MINIO=$RUNNER_TEMP/minio" >> "$GITHUB_ENV"
