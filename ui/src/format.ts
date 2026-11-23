@@ -96,6 +96,12 @@ export function jobWhat(k: JobKind): string {
       return k.keep_running ? "Boot as VM and keep running" : "Boot test in an isolated VM";
     case "stop_vm":
       return "Power off a VM";
+    case "check_access":
+      return `Test connection to ${k.path}`;
+    case "browse_files":
+      return k.volume ? `Browse ${k.path}` : "Open a backup to browse its files";
+    case "restore_files":
+      return `${k.paths.length} item${k.paths.length === 1 ? "" : "s"} to ${k.target}`;
   }
 }
 

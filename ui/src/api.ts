@@ -76,8 +76,11 @@ export type JobKind =
   | { type: "apply_retention"; machine_ids: string[]; retention: Retention; dry_run?: boolean }
   | { type: "prune"; dry_run?: boolean }
   | { type: "restore"; image_id: string; disks: number[]; target: RestoreTarget }
-  | { type: "boot_check"; image_id: string; keep_running?: boolean; memory_mb?: number | null; cpus?: number | null }
-  | { type: "stop_vm"; session_id: string };
+  | { type: "boot_check"; image_id: string; keep_running?: boolean; memory_mb?: number | null; cpus?: number | null; directory?: string | null }
+  | { type: "stop_vm"; session_id: string }
+  | { type: "check_access"; path: string }
+  | { type: "browse_files"; image_id: string; volume: { disk: number; partition: number } | null; path: string }
+  | { type: "restore_files"; image_id: string; volume: { disk: number; partition: number }; paths: string[]; target: string; keep_structure?: boolean; conflict?: string };
 
 export type BootOutcome = "verified" | "screen" | "failed";
 export interface BootCheck {

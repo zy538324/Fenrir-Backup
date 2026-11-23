@@ -210,6 +210,12 @@ async fn heartbeat(
         .collect();
     drop(stmt);
     let auto_update = crate::db::get_setting::<UpdateSettings>(&db, UPDATE_KEY).enabled();
+    // Someone is browsing this machine's backups: poll every second for three minutes.
+    let browsing: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM jobs WHERE agent_id = ?1 AND created > ?2 AND kind_json LIKE '{\"type\":\"browse_files%')",
+        params![agent.agent_id, t - 180],
+        |r| r.get(0),
+    )?;
     drop(db);
     let update = if auto_update {
         crate::downloads::update_offer(&st, &req.inventory)
@@ -218,7 +224,7 @@ async fn heartbeat(
     };
     Ok(Json(HeartbeatResponse {
         jobs,
-        poll_seconds: st.cfg.poll_seconds,
+        poll_seconds: if browsing { 1 } else { st.cfg.poll_seconds },
         cancel,
         update,
         gateway: None,
@@ -392,15 +398,23 @@ async fn update_job(
         let settings: notify::NotifySettings = crate::db::get_setting(&db, notify::KEY);
         let link = Some(format!("/machines/{}", agent.agent_id));
         match u.state {
-            JobState::Failed => events.push(notify::Event {
-                severity: notify::Severity::Error,
-                subject: format!("{label} failed: {agent_name}"),
-                body: format!(
-                    "{label} on {agent_name} failed.\n\n{}",
-                    u.error.clone().unwrap_or_default()
-                ),
-                link,
-            }),
+            // Browsing and connection tests show their errors where they were started.
+            JobState::Failed
+                if !matches!(
+                    kind,
+                    Some(JobKind::BrowseFiles { .. } | JobKind::CheckAccess { .. })
+                ) =>
+            {
+                events.push(notify::Event {
+                    severity: notify::Severity::Error,
+                    subject: format!("{label} failed: {agent_name}"),
+                    body: format!(
+                        "{label} on {agent_name} failed.\n\n{}",
+                        u.error.clone().unwrap_or_default()
+                    ),
+                    link,
+                })
+            }
             JobState::Warning if settings.on_warning && is_backup => events.push(notify::Event {
                 severity: notify::Severity::Warning,
                 subject: format!("{label} completed with warnings: {agent_name}"),

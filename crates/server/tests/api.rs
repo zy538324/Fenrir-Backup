@@ -749,7 +749,16 @@ fn image(n: u64, new: u64, raw: u64, stored: u64) -> ImageReport {
 
 /// Run the next dispatched job to completion with `update`.
 async fn complete_next(t: &mut T, token: &str, update: Value) -> Option<JobSpec> {
-    let hb = heartbeat(t, token, CAPS, None).await;
+    complete_next_with(t, token, CAPS, update).await
+}
+
+async fn complete_next_with(
+    t: &mut T,
+    token: &str,
+    caps: &[&str],
+    update: Value,
+) -> Option<JobSpec> {
+    let hb = heartbeat(t, token, caps, None).await;
     let j = hb.jobs.into_iter().next()?;
     let (s, v) = t
         .agent(&format!("/api/agent/jobs/{}/update", j.id), token, update)
@@ -1347,5 +1356,131 @@ async fn network_share_signin_sealed_per_machine() {
     let hb = heartbeat(&mut t, &tok2, CAPS, None).await;
     assert!(
         matches!(&hb.jobs[0].kind, JobKind::CheckAccess { path, sealed_share: Some(_) } if path == unc)
+    );
+}
+
+#[tokio::test]
+async fn browse_and_restore_files() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    let caps: Vec<&str> = CAPS.iter().copied().chain(["restore_files"]).collect();
+    heartbeat(&mut t, &token, &caps, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+    let (s, j) = t.post(&format!("/api/agents/{agent_id}/jobs"), json!({ "kind": { "type": "backup_disks", "paths": ["/dev/sda"] }, "repository_id": repo })).await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+    let im = image(1, 30, 30 << 20, 12 << 20);
+    complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "images": [im] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        heartbeat(&mut t, &token, &caps, None).await.poll_seconds,
+        15
+    );
+
+    // Volumes, then a folder; the machine polls every second meanwhile.
+    let (s, v) = t
+        .post(&format!("/api/images/{}/browse", im.image_id), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["agent_id"], agent_id);
+    let hb = heartbeat(&mut t, &token, &caps, None).await;
+    assert_eq!(hb.poll_seconds, 1);
+    assert_eq!(
+        hb.jobs[0].kind,
+        JobKind::BrowseFiles {
+            image_id: im.image_id,
+            volume: None,
+            path: "/".into()
+        }
+    );
+    t.agent(
+        &format!("/api/agent/jobs/{}/update", hb.jobs[0].id),
+        &token,
+        json!({ "state": "succeeded", "result": { "volumes": [] } }),
+    )
+    .await;
+    let (s, _) = t
+        .post(
+            &format!("/api/images/{}/browse", im.image_id),
+            json!({ "disk": 0, "partition": 2, "path": "/Users/../x" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = t
+        .post(
+            &format!("/api/images/{}/browse", im.image_id),
+            json!({ "disk": 0, "partition": 2, "path": "/Users" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let j = complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "result": { "listing": { "path": "/Users" } } }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        j.kind,
+        JobKind::BrowseFiles {
+            image_id: im.image_id,
+            volume: Some(VolumeRef {
+                disk: 0,
+                partition: 2
+            }),
+            path: "/Users".into()
+        }
+    );
+
+    // Restore files; a failed browse sends no alert (nothing to check here, but it must not error).
+    let (s, v) = t.post(&format!("/api/images/{}/restore-files", im.image_id), json!({
+        "disk": 0, "partition": 2, "paths": ["/Users/anna/report.txt"], "target": "C:\\Restored", "conflict": "rename" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let j = complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "result": { "files": 1 } }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        j.kind,
+        JobKind::RestoreFiles {
+            image_id: im.image_id,
+            volume: VolumeRef {
+                disk: 0,
+                partition: 2
+            },
+            paths: vec!["/Users/anna/report.txt".into()],
+            target: "C:\\Restored".into(),
+            keep_structure: true,
+            conflict: "rename".into()
+        }
+    );
+    let (s, _) = t
+        .post(
+            &format!("/api/images/{}/restore-files", im.image_id),
+            json!({
+        "disk": 0, "partition": 2, "paths": ["/x"], "target": "C:\\R", "conflict": "explode" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // An agent without file restore is told to update.
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let (s, v) = t
+        .post(&format!("/api/images/{}/browse", im.image_id), json!({}))
+        .await;
+    assert!(
+        s == StatusCode::BAD_REQUEST && v["error"].as_str().unwrap().contains("too old"),
+        "{v}"
     );
 }

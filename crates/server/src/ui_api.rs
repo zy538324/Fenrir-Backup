@@ -70,6 +70,8 @@ pub fn routes() -> Router<Shared> {
         )
         .route("/api/repositories/{id}/share", post(set_share))
         .route("/api/agents/{id}/check-access", post(check_access))
+        .route("/api/images/{id}/browse", post(browse_files))
+        .route("/api/images/{id}/restore-files", post(restore_files))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/settings/test-notification", post(test_notification))
         .route("/api/notifications", get(list_notifications))
@@ -1955,5 +1957,178 @@ async fn check_access(
         sealed_share: r.sealed_share,
     };
     let job = insert_job(&st, &agent, &kind, None, None, &a.username)?;
+    Ok(Json(json!({ "id": job })))
+}
+
+// ---------- file-level restore ----------
+
+/// The machine that reads an image for browsing or file restore: the one
+/// asked for, else the machine the image came from, else any online machine
+/// with access. Returns (agent id, name, online).
+fn file_agent(
+    st: &Shared,
+    image_id: &str,
+    want: Option<&str>,
+) -> ApiResult<(String, String, String, bool)> {
+    let db = st.db();
+    let (repo, owner): (String, Option<String>) = db
+        .query_row(
+            "SELECT repository_id, agent_id FROM images WHERE image_id = ?1",
+            params![image_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("no such image"))?;
+    let mut s = db.prepare(
+        "SELECT a.id, COALESCE(a.display_name, a.hostname), a.last_seen FROM agents a
+         JOIN repo_access x ON x.agent_id = a.id AND x.repository_id = ?1 WHERE a.revoked = 0",
+    )?;
+    let mut candidates: Vec<(String, String, bool)> = s
+        .query_map(params![repo], |r| {
+            Ok((r.get(0)?, r.get(1)?, online(st, r.get(2)?)))
+        })?
+        .collect::<Result<_, _>>()?;
+    drop(s);
+    let chosen = match want {
+        Some(w) => {
+            let w = uuid_param(w)?;
+            candidates.into_iter().find(|c| c.0 == w).ok_or_else(|| {
+                ApiError::bad(
+                    "that machine has no access to the image's repository; give it access first",
+                )
+            })?
+        }
+        None => {
+            candidates.sort_by_key(|c| (Some(&c.0) != owner.as_ref(), !c.2));
+            candidates
+                .into_iter()
+                .next()
+                .ok_or_else(|| ApiError::bad("no machine has access to this image's repository"))?
+        }
+    };
+    let caps = agent_caps(&db, &chosen.0)?;
+    if !caps.iter().any(|c| c == "restore_files") {
+        return Err(ApiError::bad(format!(
+            "the backup agent on {} is too old to browse files; it updates itself shortly",
+            chosen.1
+        )));
+    }
+    Ok((chosen.0, chosen.1, repo, chosen.2))
+}
+
+fn volume_of(disk: Option<u32>, partition: Option<u32>) -> ApiResult<Option<protocol::VolumeRef>> {
+    match (disk, partition) {
+        (None, None) => Ok(None),
+        (Some(disk), Some(partition)) if partition >= 1 => {
+            Ok(Some(protocol::VolumeRef { disk, partition }))
+        }
+        _ => Err(ApiError::bad("choose a volume")),
+    }
+}
+
+#[derive(Deserialize)]
+struct BrowseReq {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    disk: Option<u32>,
+    #[serde(default)]
+    partition: Option<u32>,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// List an image's volumes (no volume given) or one folder; poll the job for the listing.
+async fn browse_files(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<BrowseReq>,
+) -> ApiResult<Json<Value>> {
+    let image_id: Uuid = id.parse().map_err(|_| ApiError::bad("invalid image id"))?;
+    let (agent, name, repo, is_online) =
+        file_agent(&st, &image_id.to_string(), r.agent_id.as_deref())?;
+    let path = r.path.unwrap_or_else(|| "/".into());
+    if path.len() > 4000 || path.split(['/', '\\']).any(|c| c == "..") {
+        return Err(ApiError::bad("invalid folder"));
+    }
+    let volume = volume_of(r.disk, r.partition)?;
+    let kind = JobKind::BrowseFiles {
+        image_id,
+        volume,
+        path,
+    };
+    let job = insert_job(&st, &agent, &kind, Some(&repo), None, &a.username)?;
+    if volume.is_none() {
+        audit(
+            &st.db(),
+            &a.username,
+            "files.browsed",
+            &format!("image {image_id} on {name}"),
+        );
+    }
+    Ok(Json(
+        json!({ "id": job, "agent_id": agent, "agent_name": name, "agent_online": is_online }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct RestoreFilesReq {
+    #[serde(default)]
+    agent_id: Option<String>,
+    disk: u32,
+    partition: u32,
+    paths: Vec<String>,
+    target: String,
+    #[serde(default = "yes")]
+    keep_structure: bool,
+    #[serde(default)]
+    conflict: Option<String>,
+}
+
+/// Copy chosen files and folders out of a backup into a folder on a machine.
+async fn restore_files(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<RestoreFilesReq>,
+) -> ApiResult<Json<Value>> {
+    let image_id: Uuid = id.parse().map_err(|_| ApiError::bad("invalid image id"))?;
+    let (agent, name, repo, _) = file_agent(&st, &image_id.to_string(), r.agent_id.as_deref())?;
+    let volume = volume_of(Some(r.disk), Some(r.partition))?.expect("both given");
+    let paths: Vec<String> = r
+        .paths
+        .into_iter()
+        .filter(|p| !p.trim_matches('/').is_empty())
+        .collect();
+    if paths.is_empty() || paths.len() > 1000 || paths.iter().any(|p| p.len() > 4000) {
+        return Err(ApiError::bad("choose 1 to 1000 files or folders"));
+    }
+    let target = r.target.trim().to_string();
+    if target.is_empty() || target.len() > 1000 {
+        return Err(ApiError::bad("choose the folder to restore into"));
+    }
+    let conflict = r.conflict.unwrap_or_else(|| "rename".into());
+    if !["rename", "skip", "overwrite"].contains(&conflict.as_str()) {
+        return Err(ApiError::bad("existing files: rename, skip or overwrite"));
+    }
+    let kind = JobKind::RestoreFiles {
+        image_id,
+        volume,
+        paths: paths.clone(),
+        target: target.clone(),
+        keep_structure: r.keep_structure,
+        conflict: conflict.clone(),
+    };
+    let job = insert_job(&st, &agent, &kind, Some(&repo), None, &a.username)?;
+    audit(
+        &st.db(),
+        &a.username,
+        "files.restore_requested",
+        &format!(
+            "{} item(s) of image {image_id} on {name} to {target} ({conflict})",
+            paths.len()
+        ),
+    );
     Ok(Json(json!({ "id": job })))
 }

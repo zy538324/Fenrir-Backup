@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, CalendarClock, Database, HardDrive, Layers, Pencil, Play, Rocket, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, CalendarClock, Database, FolderOpen, HardDrive, Layers, Pencil, Play, Rocket, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
 import { RestoreDialog } from "./Restore";
+import { FileBrowser } from "./Files";
 import { BootCheckDialog, BootPill, BootResultDialog, RunningVmsCard } from "./Boot";
 import { api, type Agent, type AgentDetail, type BackupSettings, type Image, type Inventory, type JobKind, type Repository, type Vm } from "../api";
 import { ago, bytes, consistencyLabel, duration, health, jobWhat, osLabel, scheduleText, until, when } from "../format";
@@ -225,6 +226,7 @@ function ImagesTable({ detail }: { detail: AgentDetail }) {
   const [restoring, setRestoring] = useState<Image | null>(null);
   const [booting, setBooting] = useState<Image | null>(null);
   const [results, setResults] = useState<Image | null>(null);
+  const [files, setFiles] = useState<Image | null>(null);
   if (detail.images.length === 0)
     return <div className="card"><Empty icon={<Database size={24} />} title="No backups yet">Images appear here after the first backup finishes.</Empty></div>;
   return (
@@ -248,6 +250,7 @@ function ImagesTable({ detail }: { detail: AgentDetail }) {
               <td><BootPill check={i.boot_check} onClick={() => setResults(i)} /></td>
               <td>{i.repository_name}</td>
               <td style={{ textAlign: "right" }} className="nowrap">
+                <button className="btn sm ghost" title="Browse the files in this backup and restore some of them" onClick={() => setFiles(i)}><FolderOpen size={13} /> Files</button>{" "}
                 <button className="btn sm ghost" title="Start this backup as an isolated VM and check that it boots" onClick={() => setBooting(i)}><Rocket size={13} /> Test boot</button>{" "}
                 <button className="btn sm" onClick={() => setRestoring(i)}><RotateCcw size={13} /> Restore</button>
               </td>
@@ -258,6 +261,7 @@ function ImagesTable({ detail }: { detail: AgentDetail }) {
       {restoring && <RestoreDialog image={restoring} onClose={() => setRestoring(null)} />}
       {booting && <BootCheckDialog image={booting} onClose={() => setBooting(null)} />}
       {results && <BootResultDialog image={results} onClose={() => setResults(null)} />}
+      {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
     </div>
   );
 }

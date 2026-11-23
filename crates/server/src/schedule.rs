@@ -131,6 +131,12 @@ pub fn run_due(state: &Shared) -> rusqlite::Result<usize> {
 pub fn run_maintenance(state: &Shared) -> rusqlite::Result<usize> {
     let t = now();
     let db = state.db();
+    // Folder listings name files: keep them a day.
+    db.execute(
+        "UPDATE jobs SET result_json = NULL WHERE finished < ?1 AND result_json IS NOT NULL
+           AND kind_json LIKE '{\"type\":\"browse_files%'",
+        params![t - 86_400],
+    )?;
     let mut stmt = db.prepare(
         "SELECT r.id, r.maintenance_agent_id FROM repositories r JOIN agents a ON a.id = r.maintenance_agent_id
          JOIN repo_access x ON x.repository_id = r.id AND x.agent_id = a.id
