@@ -101,6 +101,8 @@ jobs:
           if (-not $p.ok) { exit 1 }
           $snap = $p.result.disks.partitions | Where-Object { $_.capture -eq 'snapshot_bitmap' }
           if (-not $snap) { Write-Error 'no partition was captured through a VSS snapshot'; exit 1 }
+          $p.warnings | ForEach-Object { Write-Host "warning: $_" }
+          exit 0
       - name: whole-disk restore on Windows (volumes locked; storage drivers prepared)
         shell: pwsh
         run: ./ci/windows-disk-restore.ps1 -Cli target/release/fenrir-backup.exe -Agent target/release/fenrir-backup-agent.exe

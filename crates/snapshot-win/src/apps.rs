@@ -225,6 +225,11 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("Hyper-V backup"));
+        assert_eq!(
+            summary(&s.report[..1]),
+            None,
+            "leaving the Hyper-V writer out is on purpose, not a warning"
+        );
         assert!(s.report[1]
             .note
             .as_ref()
