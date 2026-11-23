@@ -526,6 +526,13 @@ async fn enrollment_repository_and_job_lifecycle() {
         chunks_total: 0,
         chunks_new: 0,
         bytes_new_raw: 0,
+        applications: vec![protocol::ImageApplication {
+            writer: "SqlServerWriter".into(),
+            component: "WEB01\\sales".into(),
+            caption: "sales".into(),
+            included: true,
+            note: None,
+        }],
     };
     let (s, _) = t
         .agent(
@@ -546,6 +553,8 @@ async fn enrollment_repository_and_job_lifecycle() {
     assert_eq!(s, StatusCode::CONFLICT);
     let (_, imgs) = t.get(&format!("/api/images?agent_id={agent_id}")).await;
     assert_eq!(imgs.as_array().unwrap().len(), 1);
+    assert_eq!(imgs[0]["applications"][0]["writer"], "SqlServerWriter");
+    assert_eq!(imgs[0]["applications"][0]["included"], true);
     let (_, ov) = t.get("/api/overview").await;
     assert_eq!(
         ov["last_24h"]["succeeded"], 1,
@@ -751,6 +760,7 @@ fn image(n: u64, new: u64, raw: u64, stored: u64) -> ImageReport {
         chunks_total: 1000,
         chunks_new: new,
         bytes_new_raw: raw,
+        applications: vec![],
     }
 }
 

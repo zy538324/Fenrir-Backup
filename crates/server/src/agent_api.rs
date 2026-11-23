@@ -305,8 +305,8 @@ async fn update_job(
     if let (Some(rid), Some(images)) = (&repo_id, &u.images) {
         for im in images {
             let inserted = db.execute(
-                "INSERT INTO images (image_id, repository_id, agent_id, machine_id, hostname, created, kind, consistency, captured_bytes, stored_new_bytes, disks_json, label, vm_name, chunks_total, chunks_new, bytes_new_raw)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                "INSERT INTO images (image_id, repository_id, agent_id, machine_id, hostname, created, kind, consistency, captured_bytes, stored_new_bytes, disks_json, label, vm_name, chunks_total, chunks_new, bytes_new_raw, applications_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT(image_id) DO NOTHING",
                 params![
                     im.image_id.to_string(),
@@ -324,7 +324,10 @@ async fn update_job(
                     im.vm_name,
                     im.chunks_total as i64,
                     im.chunks_new as i64,
-                    im.bytes_new_raw as i64
+                    im.bytes_new_raw as i64,
+                    (!im.applications.is_empty())
+                        .then(|| serde_json::to_string(&im.applications))
+                        .transpose()?
                 ],
             )?;
             if inserted == 1 && is_backup {

@@ -3,7 +3,7 @@ import { ArrowLeft, CalendarClock, Database, FolderOpen, HardDrive, Layers, Life
 import { RestoreDialog } from "./Restore";
 import { FileBrowser } from "./Files";
 import { BootCheckDialog, BootPill, BootResultDialog, RunningVmsCard } from "./Boot";
-import { api, type Agent, type AgentDetail, type BackupSettings, type Image, type Inventory, type JobKind, type Repository, type Vm } from "../api";
+import { api, type Agent, type AgentDetail, type BackupSettings, type Image, type ImageApplication, type Inventory, type JobKind, type Repository, type Vm } from "../api";
 import { ago, bytes, consistencyLabel, duration, health, jobWhat, osLabel, scheduleText, until, when } from "../format";
 import { Empty, Field, Link, Loading, Modal, Notice, OsBadge, Pill, ProgressBar, StatePill, useApi, useRoute, useToast } from "../ui";
 
@@ -293,6 +293,7 @@ function ImagesTable({ detail }: { detail: AgentDetail }) {
               <td>
                 <Pill tone={consistencyLabel(i.consistency).tone}>{consistencyLabel(i.consistency).text}</Pill>
                 {i.anomaly && <div style={{ marginTop: 4 }} title={i.anomaly}><Pill tone="bad">Possible ransomware</Pill></div>}
+                <AppsLine apps={i.applications} />
               </td>
               <td style={{ textAlign: "right" }}>{bytes(i.captured_bytes)}</td>
               <td style={{ textAlign: "right" }}>{bytes(i.stored_new_bytes)}</td>
@@ -425,6 +426,23 @@ function WhatToggle({ system, onChange }: { system: boolean; onChange: (system: 
     <div className="seg" style={{ alignSelf: "flex-start" }}>
       <button className={system ? "on" : ""} onClick={() => onChange(true)}>Running system</button>
       <button className={!system ? "on" : ""} onClick={() => onChange(false)}>Selected disks</button>
+    </div>
+  );
+}
+
+/** Applications the snapshot was coordinated with: "SQL Server, Exchange", or which were not. */
+function AppsLine({ apps }: { apps?: ImageApplication[] }) {
+  if (!apps || apps.length === 0) return null;
+  const pretty = (w: string) => w.replace(/^Microsoft /, "").replace(/ VSS Writer$| Writer$/i, "").replace(/^SqlServerWriter$/, "SQL Server");
+  const writers = [...new Set(apps.map((a) => a.writer))];
+  const missing = apps.filter((a) => !a.included);
+  const title = apps.map((a) => `${a.included ? "✓" : "✗"} ${pretty(a.writer)}: ${a.caption || a.component}${a.note ? ` (${a.note})` : ""}`).join("\n");
+  const named = writers.filter((w) => !/^(System|Registry|COM\+ REGDB|WMI|Task Scheduler|VSS Metadata Store|Performance Counters|ASR|Shadow Copy Optimization|BITS|IIS Config|IIS Metabase|MSSearch Service|FRS|DFS Replication|NTDS|Cluster)/i.test(pretty(w)));
+  return (
+    <div className="faint small" style={{ marginTop: 4 }} title={title}>
+      {missing.length === 0
+        ? <>Applications: {named.length ? named.map(pretty).join(", ") : "Windows system state"}</>
+        : <span style={{ color: "var(--warn, inherit)" }}>{missing.length} application component{missing.length === 1 ? "" : "s"} not coordinated</span>}
     </div>
   );
 }

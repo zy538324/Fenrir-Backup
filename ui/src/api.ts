@@ -146,7 +146,11 @@ export interface Image {
   chunks_total: number;
   chunks_new: number;
   boot_check: BootCheck | null;
+  applications?: ImageApplication[];
 }
+
+/** An application component (VSS writer) the backup was coordinated with. */
+export interface ImageApplication { writer: string; component: string; caption?: string; included: boolean; note?: string | null }
 
 export interface Repository {
   id: string;

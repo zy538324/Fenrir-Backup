@@ -1275,6 +1275,7 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
     let mut s = db.prepare(
         "SELECT i.image_id, i.repository_id, r.name, i.agent_id, i.machine_id, i.hostname, i.created, i.kind, i.consistency,
             i.captured_bytes, i.stored_new_bytes, i.disks_json, i.label, i.vm_name, i.anomaly, i.chunks_total, i.chunks_new,
+            i.applications_json,
             (SELECT json_object('id', b.id, 'at', b.at, 'outcome', b.outcome, 'method', b.method, 'seconds', b.seconds,
                     'firmware', b.firmware, 'accel', b.accel, 'message', b.message, 'has_screenshot', b.screenshot IS NOT NULL)
                FROM boot_checks b WHERE b.image_id = i.image_id ORDER BY b.at DESC, b.id DESC LIMIT 1)
@@ -1292,7 +1293,10 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
                 "disks": serde_json::from_str::<Value>(&r.get::<_, String>(11)?).unwrap_or(json!([])),
                 "label": r.get::<_, Option<String>>(12)?, "vm_name": r.get::<_, Option<String>>(13)?,
                 "anomaly": r.get::<_, Option<String>>(14)?, "chunks_total": r.get::<_, i64>(15)?, "chunks_new": r.get::<_, i64>(16)?,
-                "boot_check": boot_json(r.get::<_, Option<String>>(17)?),
+                "applications": r.get::<_, Option<String>>(17)?
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .unwrap_or(json!([])),
+                "boot_check": boot_json(r.get::<_, Option<String>>(18)?),
             }))
         })?
         .collect::<Result<_, _>>()?;

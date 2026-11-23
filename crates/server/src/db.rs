@@ -179,6 +179,10 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE repositories ADD COLUMN s3_json TEXT;
     "#,
+    // 7: application components coordinated with each image (VSS writers).
+    r#"
+    ALTER TABLE images ADD COLUMN applications_json TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

@@ -105,6 +105,32 @@ jobs:
         shell: pwsh
         run: ./ci/windows-disk-restore.ps1 -Cli target/release/fenrir-backup.exe -Agent target/release/fenrir-backup-agent.exe
 
+  # Application-aware backup with a real SQL Server Express: the SQL writer
+  # records the backup, and the restored database attaches and checks clean
+  # (docs/design/app-aware.md).
+  windows-sql:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p cli --locked
+      - name: SQL Server Express
+        shell: pwsh
+        run: |
+          for ($i = 1; $i -le 3; $i++) {
+            choco install sql-server-express -y --no-progress
+            if (Get-Service 'MSSQL$SQLEXPRESS' -ErrorAction SilentlyContinue) { break }
+            Start-Sleep -Seconds 30
+          }
+          Get-Service 'MSSQL$SQLEXPRESS', SQLWriter | Format-Table Name, Status
+          if (-not (Get-Command sqlcmd -ErrorAction SilentlyContinue)) { choco install sqlcmd -y --no-progress }
+      - name: application-aware backup and restore
+        shell: pwsh
+        run: |
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + $env:Path
+          ./ci/windows-sql-app-aware.ps1 -Cli target/release/fenrir-backup.exe
+
   # Agent, CLI and server binaries for every platform the server offers
   # downloads for. Linux builds are static (musl) so one binary runs on
   # any distribution.
