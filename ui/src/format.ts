@@ -135,6 +135,10 @@ export const JOB_STATE_TEXT: Record<JobState, string> = {
 
 /** Health of a machine as one word for the UI. */
 export function health(a: Agent): { tone: Tone; text: string } {
+  if (a.role === "recovery") {
+    if (a.running_job) return { tone: "info", text: a.running_job.label };
+    return a.online ? { tone: "info", text: "Ready to restore" } : { tone: "neutral", text: "Ended" };
+  }
   if (a.running_job) return { tone: "info", text: "Backing up" };
   if (!a.online) return { tone: "neutral", text: "Offline" };
   if (!a.last_backup) return { tone: "warn", text: "No backup yet" };
@@ -146,6 +150,7 @@ export function health(a: Agent): { tone: Tone; text: string } {
 
 export function osLabel(a: { role: string; os: { family: string; name: string; version: string } }): string {
   if (a.role === "hyperv") return `Hyper-V host · ${a.os.name || "Windows"}`;
+  if (a.role === "recovery") return "Booted from recovery media";
   return [a.os.name || a.os.family, a.os.version].filter(Boolean).join(" ");
 }
 

@@ -4,8 +4,9 @@ Open-source disk imaging and recovery for Windows 10/11 and Linux:
 full system images with incrementals, bare-metal restore, boot-from-backup as
 a VM, file-level restore, cloning, and ransomware-resistant storage.
 
-**Status:** Phase 1 (format, Windows VSS imaging, verify, restore), the
-management server and web UI, and Phase 3 (boot from backup). What works
+**Status:** Phase 1 (format, Windows VSS imaging, verify, restore), Phase 2
+(recovery media, bare-metal restore), the management server and web UI,
+and Phase 3 (boot from backup). What works
 today:
 
 * **Web app** (`fenrir-server`): a dashboard for every machine, backup plans
@@ -40,8 +41,15 @@ today:
 * Deduplicated, signed, verifiable images (format: [docs/FORMAT.md](docs/FORMAT.md)),
   and a CLI (`fenrir-backup`) for scripting.
 
-Not yet: recovery media and bare-metal restore (Phase 2), S3 and Object Lock (4),
-dissimilar-hardware restore and cloning (5), live Linux snapshots (6).
+* **Recovery media and bare-metal restore**: a bootable ISO (UEFI with
+  Secure Boot, and BIOS) downloaded from the web UI with this server's
+  settings in it. A machine started from it appears as a recovery session;
+  restore any backup onto its disk, larger or smaller, and it is made
+  bootable on the new hardware. Works without a server too, from a menu on
+  the screen.
+
+Not yet: S3 and Object Lock (Phase 4), dissimilar-hardware driver injection
+and cloning (5), live Linux snapshots (6), WinPE media.
 
 Before relying on it, work through [docs/DEPLOYMENT-TEST-PLAN.md](docs/DEPLOYMENT-TEST-PLAN.md).
 
@@ -106,7 +114,7 @@ need a matching change in Fenrir Cloud's backup module.
 ## Documentation
 
 * [Deploying the server](docs/DEPLOY.md) · [Format](docs/FORMAT.md) · [CLI](docs/CLI.md) · [Testing](docs/TESTING.md)
-* [Phase 1 design](docs/design/phase-1.md) · [Management server design](docs/design/management-server.md) · [Phase 3 design](docs/design/phase-3.md)
+* [Phase 1 design](docs/design/phase-1.md) · [Phase 2 design](docs/design/phase-2.md) · [Management server design](docs/design/management-server.md) · [Phase 3 design](docs/design/phase-3.md)
 * [Security policy](SECURITY.md) · [NCSC Code of Practice mapping](docs/SECURITY-CODE-OF-PRACTICE.md)
 * [Third-party components](THIRD_PARTY.md)
 

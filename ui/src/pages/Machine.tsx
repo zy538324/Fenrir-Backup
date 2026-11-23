@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, CalendarClock, Database, FolderOpen, HardDrive, Layers, Pencil, Play, Rocket, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, CalendarClock, Database, FolderOpen, HardDrive, Layers, LifeBuoy, Pencil, Play, Rocket, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
 import { RestoreDialog } from "./Restore";
 import { FileBrowser } from "./Files";
 import { BootCheckDialog, BootPill, BootResultDialog, RunningVmsCard } from "./Boot";
@@ -21,6 +21,7 @@ export default function MachinePage({ id }: { id: string }) {
   const h = health(a);
   const inv = data.inventory;
   const canBackup = a.capabilities.some((c) => c.startsWith("backup_"));
+  const isRecovery = a.role === "recovery";
 
   return (
     <div className="page">
@@ -38,19 +39,20 @@ export default function MachinePage({ id }: { id: string }) {
             <span className="faint">· {a.online ? "online" : `last seen ${ago(a.last_seen)}`}</span>
           </div>
         </div>
-        <div className="row">
+        {!isRecovery && <div className="row">
           <button className="btn" onClick={() => setDialog("verify")} disabled={!!a.running_job || data.repositories.length === 0}>
             <ShieldCheck size={16} /> Verify
           </button>
           <button className="btn primary" onClick={() => { setPreselect([]); setDialog("backup"); }} disabled={!canBackup || !!a.running_job}>
             <Play size={16} /> Back up now
           </button>
-        </div>
+        </div>}
       </div>
 
       {a.running_job && <RunningCard agent={a} onCancel={async () => { await api.post(`/api/jobs/${a.running_job!.id}/cancel`); toast("ok", "Cancelling…"); reload(); }} />}
       {inv?.notes.map((n, i) => <Notice key={i} tone="info">{n}</Notice>)}
-      {data.repositories.length === 0 && (
+      {isRecovery && <RecoveryCard agent={a} inv={inv} />}
+      {!isRecovery && data.repositories.length === 0 && (
         <Notice tone="warn">
           This machine has no repository to back up to yet. <Link to="/repositories">Create one or grant access</Link>.
         </Notice>
@@ -74,7 +76,7 @@ export default function MachinePage({ id }: { id: string }) {
             <h3 style={{ marginBottom: 12 }}>Details</h3>
             <dl className="kv">
               <dt>Hostname</dt><dd>{a.hostname}</dd>
-              <dt>Role</dt><dd>{a.role === "hyperv" ? "Hyper-V host" : a.role === "server" ? "Server" : "Workstation"}</dd>
+              <dt>Role</dt><dd>{a.role === "hyperv" ? "Hyper-V host" : a.role === "server" ? "Server" : a.role === "recovery" ? "Recovery session (restores only)" : "Workstation"}</dd>
               <dt>System</dt><dd>{a.os.name} {a.os.version}</dd>
               <dt>Architecture</dt><dd>{a.os.arch}</dd>
               <dt>Agent</dt><dd>{a.agent_version}</dd>
@@ -175,6 +177,53 @@ function VmTable({ vms, disabled, onBackup }: { vms: Vm[]; disabled: boolean; on
   );
 }
 
+/** A machine booted from recovery media: choose an image to put on it. */
+function RecoveryCard({ agent, inv }: { agent: Agent; inv: Inventory | null }) {
+  const images = useApi<Image[]>("/api/images");
+  const [q, setQ] = useState("");
+  const [restore, setRestore] = useState<Image | null>(null);
+  const list = (images.data ?? [])
+    .filter((i) => !q || `${i.vm_name ?? ""} ${i.hostname} ${i.label ?? ""} ${i.repository_name}`.toLowerCase().includes(q.toLowerCase()))
+    .sort((x, y) => y.created - x.created)
+    .slice(0, 50);
+  const free = (inv?.disks ?? []).filter((d) => !d.system && !d.in_use);
+  return (
+    <div className="card">
+      <div className="card-head"><LifeBuoy size={17} /><h2>Restore onto this machine</h2></div>
+      <div className="card-body stack">
+        <div className="muted small">
+          {agent.name} was started from the recovery media
+          {inv?.firmware && <> in {inv.firmware === "uefi" ? `UEFI mode${inv.secure_boot ? " with Secure Boot" : ""}` : "legacy BIOS mode"}</>}.
+          {" "}Choose a backup to put on one of its disks ({free.length ? free.map((d) => `${d.path} ${bytes(d.size)}`).join(", ") : "none found yet"}).
+          The disk may be larger, or smaller if the backed-up partitions fit. Afterwards remove the recovery medium and restart.
+        </div>
+        {!agent.online && <Notice tone="warn">This session has ended. Start the machine from the recovery media again.</Notice>}
+        <input className="input" placeholder="Search backups by machine, label or repository" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div className="table-wrap">
+          <table className="table">
+            <thead><tr><th>Machine</th><th>Taken</th><th style={{ textAlign: "right" }}>Disks</th><th>Repository</th><th /></tr></thead>
+            <tbody>
+              {list.map((i) => (
+                <tr key={i.image_id}>
+                  <td><strong>{i.vm_name ?? i.hostname}</strong>{i.label && <span className="faint small"> · {i.label}</span>}</td>
+                  <td>{when(i.created)}</td>
+                  <td style={{ textAlign: "right" }}>{i.disks.map((d) => bytes(d)).join(" + ")}</td>
+                  <td>{i.repository_name}</td>
+                  <td style={{ textAlign: "right" }}>
+                    <button className="btn sm" disabled={!agent.online} onClick={() => setRestore(i)}><RotateCcw size={13} /> Restore here</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {images.data && list.length === 0 && <div className="muted small">No backups found.</div>}
+      </div>
+      {restore && <RestoreDialog image={restore} preferAgent={agent.id} onClose={() => setRestore(null)} />}
+    </div>
+  );
+}
+
 function DiskTable({ inv }: { inv: Inventory }) {
   return (
     <div className="card">
@@ -186,9 +235,9 @@ function DiskTable({ inv }: { inv: Inventory }) {
             {inv.disks.map((d) => (
               <tr key={d.path}>
                 <td className="mono">{d.path}</td>
-                <td>{d.model || <span className="faint">—</span>}</td>
+                <td>{d.model || <span className="faint">—</span>}{d.serial && <span className="faint small"> · {d.serial}</span>}</td>
                 <td style={{ textAlign: "right" }}>{bytes(d.size)}</td>
-                <td>{d.system && <Pill tone="neutral">system disk</Pill>}</td>
+                <td>{d.system ? <Pill tone="neutral">system disk</Pill> : d.in_use ? <Pill tone="neutral">in use</Pill> : null}</td>
               </tr>
             ))}
           </tbody>

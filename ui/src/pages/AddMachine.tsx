@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Ban, CheckCircle2, Download, Fingerprint, Loader2, RefreshCw } from "lucide-react";
+import { Ban, CheckCircle2, Download, Fingerprint, LifeBuoy, Loader2, RefreshCw } from "lucide-react";
 import { api, type Agent, type Downloads, type EnrollmentToken, type Platform } from "../api";
 import { bytes, when } from "../format";
 import { Command, Field, Link, Loading, Notice, OsBadge, useApi } from "../ui";
@@ -129,7 +129,72 @@ export default function AddMachinePage() {
           )}
         </div>
       </div>
+      <RecoveryMediaCard available={base.data.recovery?.available ?? false} size={base.data.recovery?.size ?? null} />
       <Links />
+    </div>
+  );
+}
+
+/** Recovery media: a bootable ISO that connects to this server by itself. */
+function RecoveryMediaCard({ available, size }: { available: boolean; size: number | null }) {
+  const [days, setDays] = useState(30);
+  const [dl, setDl] = useState<Downloads | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const create = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const t = await api.post<EnrollmentToken>("/api/enrollment-tokens", { role: "recovery", expires_days: days, label: "Recovery media" });
+      setDl(await api.get<Downloads>(`/api/downloads?token=${encodeURIComponent(t.token)}`));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card">
+      <div className="card-head"><LifeBuoy size={17} /><h2>Recovery media (bare-metal restore)</h2></div>
+      <div className="card-body stack">
+        <div className="muted">
+          For a machine that no longer starts, or new hardware: start it from this USB stick or ISO, and it appears under Machines as a recovery session.
+          Give it access to a repository and restore a backup onto its disk from here. Works with Secure Boot on. Nothing on the machine is touched until you confirm a restore.
+        </div>
+        {!available ? (
+          <Notice tone="warn">The recovery ISO has not been copied to this server yet. Place <span className="mono">fenrir-recovery.iso</span> from the release in the server's <span className="mono">agents/recovery</span> folder; see the deployment guide.</Notice>
+        ) : !dl ? (
+          <div className="row wrap">
+            <select className="input" style={{ width: 180 }} value={days} onChange={(e) => setDays(Number(e.target.value))} aria-label="Valid for">
+              <option value={7}>Valid 7 days</option>
+              <option value={30}>Valid 30 days</option>
+              <option value={90}>Valid 90 days</option>
+            </select>
+            <button className="btn primary" onClick={create} disabled={busy}>
+              {busy ? <Loader2 size={16} className="spin" /> : <Download size={16} />} Create recovery media
+            </button>
+            {size && <span className="faint small">{bytes(size)}</span>}
+          </div>
+        ) : (
+          <>
+            <div className="row wrap">
+              <a className="btn primary" href={dl.recovery.iso_url!} download="fenrir-recovery.iso"><Download size={16} /> Download fenrir-recovery.iso</a>
+              <a className="btn" href={dl.recovery.settings_url!} download="fenrir-recovery.json"><Download size={15} /> Settings file only</a>
+              <button className="btn ghost" onClick={() => setDl(null)}><RefreshCw size={14} /> New link</button>
+            </div>
+            <ol className="steps">
+              <li><span>Write the ISO to a USB stick (balenaEtcher, Rufus in DD mode, or <span className="mono">dd</span>), or attach it to a VM as a DVD.</span></li>
+              <li><span>Start the machine from it (boot menu: usually F12, F11, F8 or Esc). Wired network connects by itself; Wi-Fi and fixed addresses are under Network settings on its screen.</span></li>
+              <li><span>It appears under Machines › Recovery sessions within a minute. Open it and choose a backup to restore.</span></li>
+            </ol>
+            <div className="faint small">
+              The ISO contains this server's address and an enrolment code for recovery sessions until it expires (revoke it below). It cannot read backups on its own: a session gets access only when you give it.
+              Already have a stick from another download? Put the settings file in the root of any USB stick, and choose "Look for server settings on a USB stick" on the recovery screen.
+            </div>
+          </>
+        )}
+        {err && <Notice tone="bad">{err}</Notice>}
+      </div>
     </div>
   );
 }
@@ -150,7 +215,7 @@ function Links() {
             {active.map((t) => (
               <tr key={t.id}>
                 <td>{t.label}</td>
-                <td>{t.role === "hyperv" ? "Hyper-V host" : t.role === "workstation" ? "Desktop or laptop" : "Server"}</td>
+                <td>{t.role === "hyperv" ? "Hyper-V host" : t.role === "workstation" ? "Desktop or laptop" : t.role === "recovery" ? "Recovery media" : "Server"}</td>
                 <td className="nowrap">{when(t.created)}</td>
                 <td className="nowrap">{when(t.expires)}</td>
                 <td>{t.uses}</td>

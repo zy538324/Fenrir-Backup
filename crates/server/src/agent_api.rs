@@ -44,15 +44,22 @@ async fn enroll(
     }
     let t = now();
     let db = st.db();
-    let tok: Option<(String, i64, i64)> = db
+    let tok: Option<(String, i64, i64, String)> = db
         .query_row(
-            "SELECT id, expires, revoked FROM enrollment_tokens WHERE token_hash = ?1",
+            "SELECT id, expires, revoked, role FROM enrollment_tokens WHERE token_hash = ?1",
             params![sha256_hex(req.token.as_bytes())],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let (tok_id, expires, revoked) =
+    let (tok_id, expires, revoked, tok_role) =
         tok.ok_or_else(|| ApiError::forbidden("enrollment token not recognised"))?;
+    // Recovery tokens (on recovery media) enrol recovery sessions only, and
+    // recovery sessions need one.
+    if (tok_role == "recovery") != (req.role == protocol::AgentRole::Recovery) {
+        return Err(ApiError::forbidden(
+            "this enrollment token is for recovery media only, or this agent needs one",
+        ));
+    }
     if revoked != 0 || expires < t {
         return Err(ApiError::forbidden(
             "enrollment token has expired or was revoked; create a new download",

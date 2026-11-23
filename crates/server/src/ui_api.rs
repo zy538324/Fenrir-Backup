@@ -639,7 +639,7 @@ async fn create_token(
     Json(n): Json<NewToken>,
 ) -> ApiResult<Json<Value>> {
     let role = AgentRole::parse(&n.role)
-        .ok_or_else(|| ApiError::bad("role must be workstation, server or hyperv"))?;
+        .ok_or_else(|| ApiError::bad("role must be workstation, server, hyperv or recovery"))?;
     if !(1..=90).contains(&n.expires_days) {
         return Err(ApiError::bad("expiry must be 1 to 90 days"));
     }
@@ -1513,6 +1513,7 @@ async fn create_restore(
             "restore_disk"
         }
     };
+    let target = r.target.clone();
     let kind = JobKind::Restore {
         image_id: r.image_id,
         disks: r.disks,
@@ -1525,14 +1526,32 @@ async fn create_restore(
             params![agent],
             |x| Ok((x.get(0)?, x.get(1)?)),
         )?;
-        let caps: Vec<String> = caps
-            .and_then(|s| serde_json::from_str::<Inventory>(&s).ok())
-            .map(|i| i.capabilities)
+        let inv = caps.and_then(|s| serde_json::from_str::<Inventory>(&s).ok());
+        let caps: Vec<String> = inv
+            .as_ref()
+            .map(|i| i.capabilities.clone())
             .unwrap_or_default();
         if revoked != 0 || !caps.iter().any(|c| c == need) {
             return Err(ApiError::bad(
                 "that machine cannot perform this kind of restore",
             ));
+        }
+        // A disk device must be one the machine reported, and not its system
+        // disk or a disk in use (e.g. the recovery medium). Image files are
+        // checked by the agent.
+        let is_device = |p: &str| p.starts_with("/dev/") || p.starts_with(r"\\.\");
+        if let protocol::RestoreTarget::Disk { device, .. } = &target {
+            if is_device(device) {
+                let d = inv
+                    .as_ref()
+                    .and_then(|i| i.disks.iter().find(|d| &d.path == device))
+                    .ok_or_else(|| ApiError::bad("that disk is not one the machine reported"))?;
+                if d.system || d.in_use {
+                    return Err(ApiError::bad(
+                    "that disk is in use on the machine (its system disk, the recovery medium, or mounted)",
+                ));
+                }
+            }
         }
         let access: bool = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM repo_access WHERE repository_id = ?1 AND agent_id = ?2)",

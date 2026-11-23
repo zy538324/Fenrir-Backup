@@ -298,6 +298,52 @@ folders and restore them to a folder on any machine with access: into a new
 folder, keeping their paths, or next to the originals with a choice of
 rename, skip or overwrite.
 
+## Recovery media (bare-metal restore)
+
+For a machine that no longer starts, has a new disk, or is replaced by new
+hardware. The server bundle includes `agents/recovery/fenrir-recovery.iso`
+(Docker: mount a folder holding it at `/opt/fenrir/agents/recovery`).
+
+1. **Add machines › Recovery media › Create recovery media**, then
+   download `fenrir-recovery.iso`. The download carries this server's
+   address, certificate fingerprint and an enrolment code for recovery
+   sessions (valid 7–90 days; revoke it in the list of links). Write it to
+   a USB stick with balenaEtcher, Rufus (DD mode) or `dd`, or attach it to a
+   VM as a DVD.
+2. Start the machine from it. Secure Boot can stay on. Wired networks with
+   DHCP connect by themselves; **Network settings** on its screen handles
+   Wi-Fi and fixed addresses.
+3. It appears under **Machines › Recovery sessions**. Open it, choose a
+   backup, give the session access (the passphrase is encrypted in your
+   browser for that session only), pick the disk and type its name to
+   confirm. A repository on a NAS the session cannot reach is served to it
+   through the NAS's gateway machine (above).
+4. When the restore finishes, remove the stick and restart.
+
+What the restore does for new hardware: the target disk may be larger (the
+partition table moves to its end; the extra space is left unallocated, to
+add with Disk Management or `growpart`) or smaller if every partition fits.
+On UEFI systems it adds the fallback boot loader `\EFI\BOOT\BOOTX64.EFI`
+when missing and a firmware boot entry. If the machine started in a
+different firmware mode (UEFI vs legacy BIOS) from the backed-up system,
+the job says which setting to change. BitLocker volumes are restored still
+encrypted, and Windows asks for the BitLocker recovery key on first start
+on new hardware. Drivers for different storage controllers are not added
+yet (Phase 5).
+
+Without a server (or without network): choose **Restore from a repository
+here** on the recovery screen. It reads a repository from a USB disk or an
+SMB share (read-only), asks for the passphrase or a recovery-key file,
+and restores onto a disk you choose and confirm by typing its name. A stock
+ISO, or one whose link expired, can still connect to a server: put the
+settings file from **Recovery media › Settings file only** in the root of
+any USB stick and choose **Look for server settings on a USB stick**.
+
+The recovery system never writes to a disk except the one you confirm, and
+the stick it runs from, and disks with anything mounted, are refused by the
+server and by the agent. Sessions end when the machine restarts and are
+removed from the list after a week.
+
 ## Boot verification (booting backups as VMs)
 
 A **boot host** starts images as virtual machines to prove they boot. Any

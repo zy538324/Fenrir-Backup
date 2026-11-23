@@ -1,6 +1,6 @@
 # Phase 2 design note: recovery media and bare-metal restore
 
-Status: in progress.
+Status: done except WinPE (§6, deferred).
 
 Goal: a machine whose disk has died, been wiped or been encrypted by
 ransomware can be put back from a backup without any operating system on it.
@@ -16,7 +16,7 @@ wizard on the machine's screen.
 | Recovery agent mode (`fenrir-backup-agent recovery`) | `crates/agent` | permissive deps only |
 | Restore to a different-size disk, boot fix-ups | `crates/engine` (`fit.rs`, `bootfix.rs`) | adds `fatfs` (MIT) |
 | Personalised ISO download, recovery machines, restore-to-disk flow | `crates/server`, `ui/`, and Fenrir Cloud | none new |
-| Optional WinPE media builder | `recovery-env/winpe/` PowerShell, run by the user with their own Microsoft ADK | WinPE is never redistributed |
+| Optional WinPE media builder (deferred, §6) | `recovery-env/winpe/` PowerShell, run by the user with their own Microsoft ADK | WinPE is never redistributed |
 
 ## 2. Recovery ISO
 
@@ -149,7 +149,14 @@ target's name to confirm. It runs
 `fenrir-backup restore disk ... --yes` with `--fit` and `--boot-fixup`
 (new CLI flags matching §4), showing progress.
 
-## 6. WinPE (optional)
+## 6. WinPE (optional; deferred)
+
+Not in the first release of this phase: writing a whole disk from Windows
+needs every volume on it locked and dismounted first (Windows refuses raw
+writes to mounted volumes), which the agent does not do yet. The Linux ISO
+covers the machines it can boot; this remains for storage that only has
+Windows drivers.
+
 
 `recovery-env/winpe/New-FenrirWinPE.ps1` on a Windows PC with the Windows
 ADK and WinPE add-on: `copype amd64`, mounts `boot.wim`, adds the Windows

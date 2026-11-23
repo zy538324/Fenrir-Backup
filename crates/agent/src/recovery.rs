@@ -140,6 +140,8 @@ pub fn run(config: Option<PathBuf>) -> anyhow::Result<()> {
             format!("recovery:{id}"),
         )
     };
+    // The name the server shows, also in the inventory.
+    std::env::set_var("FENRIR_RECOVERY_NAME", &host);
     let stop = Arc::new(AtomicBool::new(false));
     let mut enrolled_with: Option<String> = None;
     loop {

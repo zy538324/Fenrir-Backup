@@ -878,7 +878,11 @@ async fn retention_anomaly_hold_and_notifications() {
         .unwrap()
         .contains("ransomware"));
     assert_eq!(repos[0]["anomalies"], 1);
-    assert!(wait_for(&got, "Possible ransomware"), "webhook alert sent");
+    assert!(
+        wait_for(&got, "Possible ransomware"),
+        "webhook alert sent; received: {:?}",
+        got.lock().unwrap()
+    );
 
     // On hold: the queued retention job is not dispatched, prune refused.
     assert!(heartbeat(&mut t, &token, CAPS, None).await.jobs.is_empty());
@@ -1774,4 +1778,119 @@ async fn nas_gateway_routes_relays_and_keeps_retention_on_the_gateway() {
         )
         .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// Recovery media: the ISO download carries this server's settings in its
+/// placeholder block (and nothing else changes), the settings file works
+/// for a stick, and recovery tokens enrol recovery sessions only.
+#[tokio::test]
+async fn recovery_media_is_personalised_and_enrols_recovery_sessions_only() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    // A stand-in ISO: noise with the placeholder across a 1 MiB boundary.
+    let mut iso: Vec<u8> = (0..3u32 << 20)
+        .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+        .collect();
+    let at = (1 << 20) - 2048;
+    iso[at..at + 4096].copy_from_slice(&protocol::recovery::placeholder());
+    let dir = t._dir.path().join("agents").join("recovery");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("fenrir-recovery.iso"), &iso).unwrap();
+
+    let (_, rt) = t
+        .post(
+            "/api/enrollment-tokens",
+            json!({ "label": "stick", "role": "recovery", "expires_days": 30 }),
+        )
+        .await;
+    let rtok = rt["token"].as_str().unwrap().to_string();
+    let (_, cat) = t.get(&format!("/api/downloads?token={rtok}")).await;
+    assert_eq!(cat["recovery"]["available"], true);
+    assert_eq!(cat["recovery"]["size"], iso.len());
+    let iso_url = cat["recovery"]["iso_url"].as_str().unwrap();
+    let path = iso_url.strip_prefix("https://backup.test:8443").unwrap();
+
+    let (s, _, body) = raw(&t.st, "GET", path, "", vec![]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(body.len(), iso.len());
+    assert_eq!(&body[..at], &iso[..at]);
+    assert_eq!(&body[at + 4096..], &iso[at + 4096..]);
+    let cfg = protocol::recovery::parse(&body[at..at + 4096])
+        .unwrap()
+        .unwrap();
+    assert_eq!(cfg.server, "https://backup.test:8443");
+    assert_eq!(cfg.token, rtok);
+    assert_eq!(cfg.pin, "ab".repeat(32));
+
+    let (s, _, js) = raw(
+        &t.st,
+        "GET",
+        &format!("/recovery/{rtok}/fenrir-recovery.json"),
+        "",
+        vec![],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(protocol::recovery::parse(&js).unwrap().unwrap(), cfg);
+
+    // An ordinary token does not give recovery media, and the other way round.
+    let (_, st) = t
+        .post("/api/enrollment-tokens", json!({ "role": "server" }))
+        .await;
+    let stok = st["token"].as_str().unwrap();
+    let (s, _, _) = raw(
+        &t.st,
+        "GET",
+        &format!("/recovery/{stok}/fenrir-recovery.iso"),
+        "",
+        vec![],
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    let key = AgentKey::generate();
+    let enroll = |token: &str, role: AgentRole| {
+        serde_json::to_value(EnrollRequest {
+            protocol: PROTOCOL_VERSION,
+            token: token.into(),
+            hostname: "recovery-abc".into(),
+            machine_id: "recovery:abc".into(),
+            os: OsSummary::default(),
+            role,
+            agent_version: "0.1.0".into(),
+            public_key: key.public_b64(),
+        })
+        .unwrap()
+    };
+    let (s, _) = t
+        .agent("/api/agent/enroll", "", enroll(&rtok, AgentRole::Server))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = t
+        .agent("/api/agent/enroll", "", enroll(stok, AgentRole::Recovery))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = t
+        .agent("/api/agent/enroll", "", enroll(&rtok, AgentRole::Recovery))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let id = v["agent_id"].as_str().unwrap().to_string();
+
+    // Gone a week: removed, and no offline alert is due for it.
+    t.st.db()
+        .execute(
+            "UPDATE agents SET last_seen = last_seen - 8 * 86400 WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+    assert_eq!(
+        server::schedule::expire_recovery_sessions(&t.st).unwrap(),
+        1
+    );
+    let (_, agents) = t.get("/api/agents").await;
+    assert!(agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a["id"] != id.as_str()));
 }

@@ -214,8 +214,13 @@ pub fn run(
             drop(t);
             let mut u = done(JobState::Succeeded);
             let mut result = serde_json::to_value(&r)?;
-            let uefi = m.boot.firmware == core_format::manifest::Firmware::Uefi;
-            if uefi {
+            let need = image_firmware(&m, d);
+            let uefi = need == Some("uefi");
+            if d.partition_table
+                .partitions
+                .iter()
+                .any(|p| p.role == core_format::partition::PartitionRole::Esp)
+            {
                 rep.progress("making it bootable", 1, 1, device);
                 match engine::bootfix::fix_restored_disk(Path::new(device), d) {
                     Ok(Some(fix)) => {
@@ -233,17 +238,15 @@ pub fn run(
                 }
             }
             if ctx.cfg.role == "recovery" {
-                let (fw, _) = crate::inventory::firmware();
-                let need = if uefi { "uefi" } else { "bios" };
-                if m.boot.firmware != core_format::manifest::Firmware::Unknown
-                    && fw.as_deref().is_some_and(|f| f != need)
-                {
-                    u.warnings.push(format!(
-                        "This machine started in {} mode but the backed-up system boots with {}. Change the boot mode in the firmware settings ({}) before starting it.",
-                        fw.unwrap_or_default().to_uppercase(),
-                        need.to_uppercase(),
-                        if uefi { "turn off CSM / legacy boot" } else { "turn on CSM / legacy boot" }
-                    ));
+                if let (Some(need), (Some(fw), _)) = (need, crate::inventory::firmware()) {
+                    if fw != need {
+                        u.warnings.push(format!(
+                            "This machine started in {} mode but the backed-up system boots with {}. Change the boot mode in the firmware settings ({}) before starting it.",
+                            fw.to_uppercase(),
+                            need.to_uppercase(),
+                            if uefi { "turn off CSM / legacy boot" } else { "turn on CSM / legacy boot" }
+                        ));
+                    }
                 }
             }
             if !u.warnings.is_empty() {
@@ -251,6 +254,33 @@ pub fn run(
             }
             u.result = Some(result);
             Ok(u)
+        }
+    }
+}
+
+/// How the backed-up system boots: as recorded at backup, else inferred
+/// from the disk (an EFI system partition means UEFI; an MBR disk without
+/// one means BIOS).
+pub fn image_firmware(
+    m: &ManifestBody,
+    d: &core_format::manifest::DiskImage,
+) -> Option<&'static str> {
+    use core_format::manifest::Firmware;
+    use core_format::partition::{PartitionRole, Scheme};
+    match m.boot.firmware {
+        Firmware::Uefi => Some("uefi"),
+        Firmware::Bios => Some("bios"),
+        Firmware::Unknown => {
+            let esp = d
+                .partition_table
+                .partitions
+                .iter()
+                .any(|p| p.role == PartitionRole::Esp);
+            match (esp, d.partition_table.scheme) {
+                (true, _) => Some("uefi"),
+                (false, Scheme::Mbr) => Some("bios"),
+                _ => None,
+            }
         }
     }
 }

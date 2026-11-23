@@ -3,6 +3,9 @@
 use protocol::{DiskSummary, Inventory, OsSummary};
 
 pub fn hostname() -> String {
+    if let Ok(n) = std::env::var("FENRIR_RECOVERY_NAME") {
+        return n;
+    }
     std::env::var("COMPUTERNAME")
         .ok()
         .or_else(|| {

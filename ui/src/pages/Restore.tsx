@@ -31,7 +31,7 @@ const KINDS: { id: Kind; cap: string; title: string; text: string; icon: React.R
   },
 ];
 
-export function RestoreDialog({ image, onClose }: { image: Image; onClose: () => void }) {
+export function RestoreDialog({ image, preferAgent, onClose }: { image: Image; preferAgent?: string; onClose: () => void }) {
   const agents = useApi<Agent[]>("/api/agents");
   const repos = useApi<Repository[]>("/api/repositories");
   const repo = repos.data?.find((r) => r.id === image.repository_id);
@@ -43,7 +43,7 @@ export function RestoreDialog({ image, onClose }: { image: Image; onClose: () =>
   );
   const hasAccess = (id: string) => !!repo?.agents.some((x) => x.id === id);
   const [agentId, setAgentId] = useState("");
-  const agent = candidates.find((a) => a.id === agentId) ?? candidates.find((a) => a.id === image.agent_id) ?? candidates[0];
+  const agent = candidates.find((a) => a.id === agentId) ?? candidates.find((a) => a.id === preferAgent) ?? candidates.find((a) => a.id === image.agent_id) ?? candidates[0];
   const needsAccess = !!agent && !hasAccess(agent.id);
   const shareSignin = repo?.share_auth === "password";
   const [pass, setPass] = useState("");
@@ -100,7 +100,7 @@ export function RestoreDialog({ image, onClose }: { image: Image; onClose: () =>
     }
   };
 
-  const disks = detail.data?.inventory?.disks ?? [];
+  const free = (detail.data?.inventory?.disks ?? []).filter((d) => !d.system && !d.in_use);
   return (
     <Modal
       wide
@@ -124,7 +124,7 @@ export function RestoreDialog({ image, onClose }: { image: Image; onClose: () =>
         <>
           <Field label="Restore on" hint="The machine that reads the backup and writes the result.">
             <select className="input" value={agent?.id} onChange={(e) => { setAgentId(e.target.value); setKind(null); setDir(""); }}>
-              {candidates.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " — Hyper-V" : ""}{hasAccess(a.id) ? "" : " — no access yet"}{a.online ? "" : " (offline)"}</option>)}
+              {candidates.map((a) => <option key={a.id} value={a.id}>{a.name}{a.capabilities.includes("restore_hyperv") ? " — Hyper-V" : ""}{a.role === "recovery" ? " — recovery session" : ""}{hasAccess(a.id) ? "" : " — no access yet"}{a.online ? "" : " (offline)"}</option>)}
             </select>
           </Field>
           {needsAccess && (shareSignin ? (
@@ -173,11 +173,25 @@ export function RestoreDialog({ image, onClose }: { image: Image; onClose: () =>
                   </select>
                 </Field>
               )}
-              <Field label="Target device or image file" hint={`Must be at least ${bytes(image.disks[disk] ?? 0)}, not in use and not the running system's disk.`}>
-                <input className="input mono" list="target-disks" value={device} onChange={(e) => setDevice(e.target.value)} placeholder="/dev/sdc" />
-                <datalist id="target-disks">
-                  {disks.filter((d) => !d.system).map((d) => <option key={d.path} value={d.path}>{`${d.model} ${bytes(d.size)}`}</option>)}
-                </datalist>
+              {detail.data?.inventory?.firmware && agent?.role === "recovery" && (
+                <div className="muted small">
+                  {agent.name} started in {detail.data.inventory.firmware === "uefi" ? "UEFI mode" : "legacy BIOS mode"}. A system backed up from a {detail.data.inventory.firmware === "uefi" ? "BIOS" : "UEFI"} machine needs that mode switched in the firmware settings before it starts; the restore says so if it does.
+                </div>
+              )}
+              {free.length > 0 && (
+                <Field label="Disk to overwrite" hint={`The image disk is ${bytes(image.disks[disk] ?? 0)}. A larger disk keeps the extra space unallocated; a smaller one works if the partitions fit. Disks in use (system disk, recovery medium) are not offered.`}>
+                  <div className="stack tight">
+                    {free.map((d) => (
+                      <label key={d.path} className="check card" style={{ padding: "10px 12px", borderColor: device === d.path ? "var(--danger, var(--accent))" : undefined }}>
+                        <input type="radio" name="target-disk" checked={device === d.path} onChange={() => { setDevice(d.path); setConfirm(""); }} />
+                        <span><span className="mono">{d.path}</span> · {bytes(d.size)}{d.model && <> · {d.model}</>}{d.serial && <span className="faint small"> · {d.serial}</span>}</span>
+                      </label>
+                    ))}
+                  </div>
+                </Field>
+              )}
+              <Field label={free.length > 0 ? "Or another device or image file" : "Target device or image file"} hint="Not in use and not the running system's disk.">
+                <input className="input mono" value={device} onChange={(e) => { setDevice(e.target.value); setConfirm(""); }} placeholder="/dev/sdc" />
               </Field>
               <Notice tone="bad">
                 Everything on <span className="mono">{device || "the target"}</span> will be permanently replaced. Type the device path again to confirm.

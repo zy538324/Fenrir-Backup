@@ -108,6 +108,7 @@ pub fn routes() -> Router<Shared> {
         .route("/install/{token}/{platform}/{file}", get(setup_exe))
         .route("/uninstall/{platform}", get(uninstaller))
         .route("/agent/{target}/{file}", get(binary))
+        .route("/recovery/{token}/{file}", get(recovery_media))
 }
 
 fn binary_path(st: &Shared, t: &Target) -> PathBuf {
@@ -283,9 +284,176 @@ async fn catalogue(
             })
         })
         .collect();
+    let iso = recovery_iso_path(&st);
+    let iso_size = std::fs::metadata(&iso).ok().map(|m| m.len());
+    let recovery = json!({
+        "available": iso_size.is_some(),
+        "size": iso_size,
+        "iso_url": token.as_ref().map(|t| format!("{url}/recovery/{t}/{RECOVERY_ISO}")),
+        "settings_url": token.as_ref().map(|t| format!("{url}/recovery/{t}/{RECOVERY_SETTINGS}")),
+    });
     Ok(Json(
-        json!({ "server_url": url, "pinned": pin.is_some(), "cert_sha256": st.cfg.tls.as_ref().map(|t| t.cert_sha256.clone()), "platforms": platforms }),
+        json!({ "server_url": url, "pinned": pin.is_some(), "cert_sha256": st.cfg.tls.as_ref().map(|t| t.cert_sha256.clone()), "platforms": platforms, "recovery": recovery }),
     ))
+}
+
+// ---------- recovery media (design: phase-2 §2) ----------
+
+const RECOVERY_ISO: &str = "fenrir-recovery.iso";
+const RECOVERY_SETTINGS: &str = "fenrir-recovery.json";
+
+/// The stock recovery ISO, built by CI (`recovery-env/build.sh`).
+pub fn recovery_iso_path(st: &Shared) -> PathBuf {
+    st.cfg.agents_dir.join("recovery").join(RECOVERY_ISO)
+}
+
+/// Offset of the personalisation block in the ISO at `path`, cached per
+/// file version.
+fn iso_block_offset(path: &std::path::Path) -> std::io::Result<Option<u64>> {
+    use std::collections::HashMap;
+    use std::io::Read;
+    use std::sync::Mutex;
+    use std::time::SystemTime;
+    type Cache = HashMap<PathBuf, (SystemTime, u64, Option<u64>)>;
+    static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+    let meta = std::fs::metadata(path)?;
+    let key = (meta.modified()?, meta.len());
+    if let Some((m, l, o)) = CACHE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .get(path)
+    {
+        if (*m, *l) == key {
+            return Ok(*o);
+        }
+    }
+    // Scan sector by sector; the block (two sectors) is the marker followed
+    // by spaces.
+    let mut f = std::io::BufReader::with_capacity(1 << 20, std::fs::File::open(path)?);
+    let mut sector = [0u8; 2048];
+    let mut pending: Option<(u64, [u8; 2048])> = None;
+    let mut found = None;
+    let mut off = 0u64;
+    loop {
+        match f.read_exact(&mut sector) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(e),
+        }
+        if let Some((at, first)) = pending.take() {
+            let win = [first.as_slice(), sector.as_slice()].concat();
+            if protocol::recovery::find_block(&win) == Some(0) {
+                found = Some(at);
+                break;
+            }
+        }
+        if sector.starts_with(protocol::recovery::MARKER) {
+            pending = Some((off, sector));
+        }
+        off += 2048;
+    }
+    CACHE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(path.to_path_buf(), (key.0, key.1, found));
+    Ok(found)
+}
+
+/// `/recovery/<token>/fenrir-recovery.iso`: the stock ISO with this server's
+/// settings in it; `/recovery/<token>/fenrir-recovery.json`: the same
+/// settings as a file for a USB stick. The token must be a recovery token.
+async fn recovery_media(
+    State(st): State<Shared>,
+    Path((token, file)): Path<(String, String)>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> ApiResult<Response> {
+    if token_valid(&st, &token)? != "recovery" {
+        return Err(ApiError::not_found(
+            "this link is not for recovery media; create one under Add machine > Recovery media",
+        ));
+    }
+    let expires: i64 = st.db().query_row(
+        "SELECT expires FROM enrollment_tokens WHERE token_hash = ?1",
+        params![sha256_hex(token.as_bytes())],
+        |r| r.get(0),
+    )?;
+    let cfg = protocol::recovery::RecoveryConfig {
+        server: public_url(&st, &headers, &uri)?,
+        pin: st
+            .cfg
+            .tls
+            .as_ref()
+            .filter(|t| t.pinned)
+            .map(|t| t.cert_sha256.clone())
+            .unwrap_or_default(),
+        token,
+        expires: expires.max(0) as u64,
+    };
+    let attachment = |name: &str| format!("attachment; filename=\"{name}\"");
+    match file.as_str() {
+        RECOVERY_SETTINGS => Ok((
+            [
+                (header::CONTENT_TYPE, "application/json".to_string()),
+                (header::CONTENT_DISPOSITION, attachment(RECOVERY_SETTINGS)),
+                (header::CACHE_CONTROL, "no-store".to_string()),
+            ],
+            serde_json::to_string_pretty(&cfg)?,
+        )
+            .into_response()),
+        RECOVERY_ISO => {
+            let path = recovery_iso_path(&st);
+            let p2 = path.clone();
+            let off = tokio::task::spawn_blocking(move || iso_block_offset(&p2))
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?
+                .map_err(|_| {
+                    ApiError::not_found("the recovery ISO is not installed on the server")
+                })?
+                .ok_or_else(|| {
+                    ApiError::internal("the recovery ISO on the server has no settings block")
+                })?;
+            let block = protocol::recovery::render(&cfg).map_err(ApiError::internal)?;
+            let nf = |_| ApiError::not_found("the recovery ISO is not installed on the server");
+            let len = tokio::fs::metadata(&path).await.map_err(nf)?.len();
+            let f = tokio::fs::File::open(&path).await.map_err(nf)?;
+            let stream = futures_util::stream::unfold((f, 0u64), move |(mut f, pos)| {
+                let block = block.clone();
+                async move {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = vec![0u8; 1 << 20];
+                    let n = match f.read(&mut buf).await {
+                        Ok(0) => return None,
+                        Ok(n) => n,
+                        Err(e) => return Some((Err(e), (f, pos))),
+                    };
+                    buf.truncate(n);
+                    // Replace the overlap with the settings block.
+                    let (bs, be) = (off, off + block.len() as u64);
+                    let (cs, ce) = (pos, pos + n as u64);
+                    let (s, e) = (bs.max(cs), be.min(ce));
+                    if s < e {
+                        buf[(s - cs) as usize..(e - cs) as usize]
+                            .copy_from_slice(&block[(s - bs) as usize..(e - bs) as usize]);
+                    }
+                    Some((Ok(axum::body::Bytes::from(buf)), (f, ce)))
+                }
+            });
+            Ok((
+                [
+                    (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+                    (header::CONTENT_DISPOSITION, attachment(RECOVERY_ISO)),
+                    (header::CONTENT_LENGTH, len.to_string()),
+                    (header::CACHE_CONTROL, "no-store".to_string()),
+                ],
+                Body::from_stream(stream),
+            )
+                .into_response())
+        }
+        _ => Err(ApiError::not_found("no such file")),
+    }
 }
 
 fn script_response(name: &str, body: String) -> Response {

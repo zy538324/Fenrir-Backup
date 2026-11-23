@@ -28,11 +28,12 @@ rustls-pki-types = { version = "1.9", features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs", "io-util"] }
+futures-util = { version = "0.3", default-features = false }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
+ureq = { version = "2.12", default-features = false, features = ["tls", "json", "proxy-from-env"] }
 uuid.workspace = true
 x509-parser = "0.16"
 

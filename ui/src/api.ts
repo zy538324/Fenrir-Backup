@@ -48,7 +48,7 @@ export interface Agent {
   id: string;
   name: string;
   hostname: string;
-  role: "workstation" | "server" | "hyperv";
+  role: "workstation" | "server" | "hyperv" | "recovery";
   os: OsSummary;
   agent_version: string;
   enrolled: number;
@@ -62,9 +62,9 @@ export interface Agent {
 }
 
 export interface Vm { id: string; name: string; state: string; generation: number; disk_bytes: number; disks: string[] }
-export interface Disk { path: string; size: number; model: string; system: boolean }
+export interface Disk { path: string; size: number; model: string; system: boolean; serial?: string; sector_size?: number; in_use?: boolean }
 export interface RunningVm { session_id: string; image_id: string; started_unix: number; vnc_port: number; forwards: Record<string, number> }
-export interface Inventory { hostname: string; os: OsSummary; capabilities: string[]; disks: Disk[]; vms: Vm[]; notes: string[]; agent_version: string; running_vms?: RunningVm[] }
+export interface Inventory { hostname: string; os: OsSummary; capabilities: string[]; disks: Disk[]; vms: Vm[]; notes: string[]; agent_version: string; running_vms?: RunningVm[]; firmware?: "uefi" | "bios"; secure_boot?: boolean }
 
 export type JobKind =
   | { type: "init_repository" }
@@ -231,7 +231,8 @@ export interface Platform {
   setup_url: string | null;
   uninstall_url: string;
 }
-export interface Downloads { server_url: string; pinned: boolean; cert_sha256: string | null; platforms: Platform[] }
+export interface RecoveryMedia { available: boolean; size: number | null; iso_url: string | null; settings_url: string | null }
+export interface Downloads { server_url: string; pinned: boolean; cert_sha256: string | null; platforms: Platform[]; recovery: RecoveryMedia }
 export interface EnrollmentToken { id: string; token: string; label: string; role: string; expires: number }
 export interface AuditEntry { at: number; actor: string; action: string; detail: string }
 

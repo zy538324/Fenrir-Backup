@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MonitorSmartphone, PlusCircle, Search } from "lucide-react";
+import { LifeBuoy, MonitorSmartphone, PlusCircle, Search } from "lucide-react";
 import type { Agent } from "../api";
 import { ago, health, osLabel } from "../format";
 import { Empty, Link, Loading, Notice, OsBadge, Pill, ProgressBar, useApi, useRoute } from "../ui";
@@ -18,7 +18,10 @@ export default function MachinesPage() {
   if (error && !data) return <div className="page"><Notice tone="bad">{error}</Notice></div>;
   if (!data) return <div className="page"><Loading /></div>;
 
-  const shown = data.filter((a) => {
+  // Machines booted from recovery media are listed on their own: they only restore.
+  const recovery = data.filter((a) => a.role === "recovery");
+  const machines = data.filter((a) => a.role !== "recovery");
+  const shown = machines.filter((a) => {
     const h = health(a);
     if (q && !`${a.name} ${a.hostname} ${a.os.name}`.toLowerCase().includes(q.toLowerCase())) return false;
     if (f === "attention") return h.tone === "bad" || h.tone === "warn" || !a.online;
@@ -32,11 +35,20 @@ export default function MachinesPage() {
       <div className="page-head">
         <div>
           <h1>Machines</h1>
-          <div className="sub">{data.length} enrolled · {data.filter((a) => a.online).length} online</div>
+          <div className="sub">{machines.length} enrolled · {machines.filter((a) => a.online).length} online</div>
         </div>
         <Link to="/add" className="btn primary right"><PlusCircle size={16} /> Add machines</Link>
       </div>
-      {data.length === 0 ? (
+      {recovery.length > 0 && (
+        <div className="card">
+          <div className="card-head"><h2><LifeBuoy size={16} style={{ verticalAlign: -2 }} /> Recovery sessions</h2></div>
+          <div className="card-body stack">
+            <div className="muted small">Machines started from the recovery media. Open one, give it access to a repository and restore an image onto its disk. Sessions end when the machine restarts and are removed after a week.</div>
+            <div className="grid auto">{recovery.map((a) => <MachineCard key={a.id} a={a} />)}</div>
+          </div>
+        </div>
+      )}
+      {machines.length === 0 ? (
         <div className="card">
           <Empty icon={<MonitorSmartphone size={26} />} title="No machines yet" action={<Link to="/add" className="btn primary">Add your first machine</Link>}>
             Download an installer for Windows, a Hyper-V host, Linux or macOS. Machines appear here as soon as the agent starts.

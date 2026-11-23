@@ -158,6 +158,27 @@ When something fails, collect:
        **Expect:** the images are listed without the passphrase.
 4. [ ] Verify → Full on the repository once. **Expect:** no damaged data.
 
+## 5b. Bare-metal restore from recovery media (not yet run on hardware)
+
+Use a spare PC or laptop (or a VM) whose disk may be wiped, and a backup
+of a machine from section 2 or 3.
+
+1. [ ] Add machines → Recovery media → Create → download the ISO and
+   write it to a USB stick. **Expect:** about 310 MB.
+2. [ ] Start the spare machine from it with Secure Boot **on**. **Expect:**
+   the Fenrir-Backup recovery menu; within a minute it shows "connected"
+   and the machine appears under Machines › Recovery sessions.
+3. [ ] Open the session → Restore here on the backup → give access →
+   choose its internal disk → type the device to confirm. Try choosing the
+   USB stick instead first. **Expect:** the stick is not offered and is
+   refused if typed in.
+4. [ ] When the job succeeds, remove the stick and restart. **Expect:**
+   the restored system starts (Windows may ask for the BitLocker recovery
+   key; drivers for very different hardware are Phase 5).
+5. [ ] Offline: start from the stick with the network cable out → Restore
+   from a repository here → repository on a USB disk → passphrase → image
+   → disk → confirm. **Expect:** the same result.
+
 ## 6a. Boot verification
 
 Needs a Linux machine with QEMU (see DEPLOY.md, "Boot verification"); with

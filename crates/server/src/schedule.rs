@@ -126,6 +126,27 @@ pub fn run_due(state: &Shared) -> rusqlite::Result<usize> {
     Ok(created)
 }
 
+/// Recovery sessions (machines booted from recovery media) not seen for a
+/// week are removed, with any access given to them.
+pub fn expire_recovery_sessions(state: &Shared) -> rusqlite::Result<usize> {
+    let db = state.db();
+    let old: Vec<String> = db
+        .prepare(
+            "SELECT id FROM agents WHERE role = 'recovery' AND revoked = 0 AND last_seen < ?1",
+        )?
+        .query_map(params![now() - 7 * 86_400], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for id in &old {
+        db.execute("UPDATE agents SET revoked = 1 WHERE id = ?1", params![id])?;
+        db.execute("DELETE FROM repo_access WHERE agent_id = ?1", params![id])?;
+        db.execute(
+            "UPDATE jobs SET state = 'cancelled', finished = ?1, error = 'recovery session ended' WHERE agent_id = ?2 AND state = 'queued'",
+            params![now(), id],
+        )?;
+    }
+    Ok(old.len())
+}
+
 /// Queue a prune for repositories whose maintenance interval has passed.
 /// Skipped while a repository is on hold, and while one is already queued.
 pub fn run_maintenance(state: &Shared) -> rusqlite::Result<usize> {
@@ -223,7 +244,7 @@ pub fn check_alerts(state: &Shared) -> rusqlite::Result<()> {
             return Ok(());
         }
         let agents: Vec<(String, String, Option<i64>)> = db
-            .prepare("SELECT id, COALESCE(display_name, hostname), last_seen FROM agents WHERE revoked = 0")?
+            .prepare("SELECT id, COALESCE(display_name, hostname), last_seen FROM agents WHERE revoked = 0 AND role != 'recovery'")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<Result<_, _>>()?;
         for (id, name, seen) in agents {
@@ -318,6 +339,9 @@ pub async fn scheduler_loop(state: Shared) {
             let c = check_alerts(&s);
             if let Err(e) = run_boot_checks(&s) {
                 tracing::error!(error = %e, "boot verification scheduler");
+            }
+            if let Err(e) = expire_recovery_sessions(&s) {
+                tracing::error!(error = %e, "recovery session cleanup");
             }
             (a, b, c)
         })

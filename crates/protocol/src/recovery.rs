@@ -57,12 +57,15 @@ pub fn parse(bytes: &[u8]) -> Result<Option<RecoveryConfig>, String> {
         .map_err(|e| format!("bad recovery settings: {e}"))
 }
 
-/// Offset of the placeholder block in an ISO, if present. The block starts
-/// on a 2048-byte ISO sector.
+/// Offset of the (unconfigured) placeholder block in a stock ISO. The block
+/// starts on a 2048-byte ISO sector and is the marker followed by spaces.
 pub fn find_block(iso: &[u8]) -> Option<usize> {
     (0..iso.len().saturating_sub(BLOCK - 1))
         .step_by(2048)
-        .find(|&o| iso[o..].starts_with(MARKER))
+        .find(|&o| {
+            iso[o..].starts_with(MARKER)
+                && iso[o + MARKER.len()..o + BLOCK].iter().all(|&b| b == b' ')
+        })
 }
 
 #[cfg(test)]
@@ -113,5 +116,9 @@ mod tests {
         iso[3 * 2048 + 7..3 * 2048 + 7 + MARKER.len()].copy_from_slice(MARKER);
         assert_eq!(find_block(&iso), Some(10 * 2048));
         assert_eq!(find_block(&iso[..9 * 2048]), None);
+        // A configured block is not a placeholder any more.
+        let mut c = iso.clone();
+        c[10 * 2048..10 * 2048 + BLOCK].copy_from_slice(&render(&cfg()).unwrap());
+        assert_eq!(find_block(&c), None);
     }
 }

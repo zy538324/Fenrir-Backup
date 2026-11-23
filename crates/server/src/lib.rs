@@ -97,6 +97,9 @@ impl ApiError {
     pub fn not_found(m: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, m)
     }
+    pub fn internal(m: impl Into<String>) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, m)
+    }
     pub fn unauthorized() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "not signed in")
     }
