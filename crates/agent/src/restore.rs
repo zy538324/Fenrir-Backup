@@ -105,6 +105,7 @@ pub fn write_vhdx(
             &RestoreOptions {
                 workers: 4,
                 zero_fill: false,
+                fit: false,
             },
             &ctx.ctl,
             &cb,
@@ -193,7 +194,8 @@ pub fn run(
                 .find(|x| x.index == *disk)
                 .ok_or_else(|| anyhow!("the image has no disk {disk}"))?;
             let c = DestructiveConfirmation::confirmed_by_user(device);
-            let t = FileTarget::open(Path::new(device), d.size, true, &c)?;
+            // Bare-metal restore: the new disk may be bigger or smaller.
+            let t = FileTarget::open(Path::new(device), engine::fit::min_size(d), true, &c)?;
             let total = d.size;
             let cb = |done: u64, _t: u64| rep.progress("restoring", done, total, device);
             let r = engine::restore_disk(
@@ -204,12 +206,50 @@ pub fn run(
                 &RestoreOptions {
                     workers: 4,
                     zero_fill: true,
+                    fit: true,
                 },
                 &ctx.ctl,
                 &cb,
             )?;
+            drop(t);
             let mut u = done(JobState::Succeeded);
-            u.result = Some(serde_json::to_value(&r)?);
+            let mut result = serde_json::to_value(&r)?;
+            let uefi = m.boot.firmware == core_format::manifest::Firmware::Uefi;
+            if uefi {
+                rep.progress("making it bootable", 1, 1, device);
+                match engine::bootfix::fix_restored_disk(Path::new(device), d) {
+                    Ok(Some(fix)) => {
+                        if ctx.cfg.role == "recovery" {
+                            if let Some(note) = crate::recovery::firmware_entry(device, d, &fix) {
+                                u.warnings.push(note);
+                            }
+                        }
+                        result["boot"] = serde_json::to_value(&fix)?;
+                    }
+                    Ok(None) => {}
+                    Err(e) => u
+                        .warnings
+                        .push(format!("could not add the fallback boot loader: {e}")),
+                }
+            }
+            if ctx.cfg.role == "recovery" {
+                let (fw, _) = crate::inventory::firmware();
+                let need = if uefi { "uefi" } else { "bios" };
+                if m.boot.firmware != core_format::manifest::Firmware::Unknown
+                    && fw.as_deref().is_some_and(|f| f != need)
+                {
+                    u.warnings.push(format!(
+                        "This machine started in {} mode but the backed-up system boots with {}. Change the boot mode in the firmware settings ({}) before starting it.",
+                        fw.unwrap_or_default().to_uppercase(),
+                        need.to_uppercase(),
+                        if uefi { "turn off CSM / legacy boot" } else { "turn on CSM / legacy boot" }
+                    ));
+                }
+            }
+            if !u.warnings.is_empty() {
+                u.state = JobState::Warning;
+            }
+            u.result = Some(result);
             Ok(u)
         }
     }

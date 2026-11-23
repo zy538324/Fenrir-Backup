@@ -659,32 +659,39 @@ fn webhook_listener() -> (String, Arc<Mutex<Vec<String>>>) {
     std::thread::spawn(move || {
         for s in l.incoming() {
             let Ok(mut s) = s else { continue };
-            let mut buf = Vec::new();
-            let mut tmp = [0u8; 4096];
-            let body = loop {
-                let n = s.read(&mut tmp).unwrap_or(0);
-                if n == 0 {
-                    break String::new();
-                }
-                buf.extend_from_slice(&tmp[..n]);
-                let text = String::from_utf8_lossy(&buf).to_string();
-                if let Some(i) = text.find("\r\n\r\n") {
-                    let len = text[..i]
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                        })
-                        .unwrap_or(0);
-                    if buf.len() >= i + 4 + len {
-                        break String::from_utf8_lossy(&buf[i + 4..i + 4 + len]).to_string();
+            let g2 = g2.clone();
+            // One thread per connection: a slow delivery must not hold up
+            // the next one.
+            std::thread::spawn(move || {
+                let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let body = loop {
+                    let n = s.read(&mut tmp).unwrap_or(0);
+                    if n == 0 {
+                        break String::new();
                     }
-                }
-            };
-            g2.lock().unwrap().push(body);
-            let _ =
-                s.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                    buf.extend_from_slice(&tmp[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(i) = text.find("\r\n\r\n") {
+                        let len = text[..i]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= i + 4 + len {
+                            break String::from_utf8_lossy(&buf[i + 4..i + 4 + len]).to_string();
+                        }
+                    }
+                };
+                g2.lock().unwrap().push(body);
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                );
+            });
         }
     });
     (format!("http://{addr}/hook"), got)
