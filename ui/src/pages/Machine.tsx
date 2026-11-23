@@ -4,7 +4,7 @@ import { RestoreDialog } from "./Restore";
 import { FileBrowser } from "./Files";
 import { BootCheckDialog, BootPill, BootResultDialog, RunningVmsCard } from "./Boot";
 import { api, type Agent, type AgentDetail, type BackupSettings, type Image, type ImageApplication, type Inventory, type JobKind, type Repository, type Vm } from "../api";
-import { ago, bytes, consistencyLabel, duration, health, jobWhat, osLabel, scheduleText, until, when } from "../format";
+import { ago, bytes, consistencyLabel, duration, health, jobWhat, osLabel, scheduleText, until, when, progressDetail } from "../format";
 import { Empty, Field, Link, Loading, Modal, Notice, OsBadge, Pill, ProgressBar, StatePill, useApi, useRoute, useToast } from "../ui";
 
 export default function MachinePage({ id }: { id: string }) {
@@ -129,7 +129,7 @@ function RunningCard({ agent, onCancel }: { agent: Agent; onCancel: () => void }
         <button className="btn sm ghost" onClick={onCancel}><XCircle size={14} /> Cancel</button>
       </div>
       <ProgressBar done={p?.done} total={p?.total} />
-      {p && p.total > 0 && <div className="faint small">{bytes(p.done)} of {bytes(p.total)}</div>}
+      {p && p.total > 0 && <div className="faint small">{bytes(p.done)} of {bytes(p.total)}{progressDetail(p) && ` · ${progressDetail(p)}`}</div>}
     </div>
   );
 }

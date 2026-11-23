@@ -42,7 +42,7 @@ export interface Status {
 
 export interface OsSummary { family: string; name: string; version: string; arch: string }
 
-export interface Progress { phase: string; done: number; total: number; message: string }
+export interface Progress { phase: string; done: number; total: number; message: string; rate?: number; eta_seconds?: number | null; stored?: number }
 
 export interface Agent {
   id: string;

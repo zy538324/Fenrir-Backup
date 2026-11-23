@@ -565,6 +565,31 @@ pub struct JobProgress {
     pub total: u64,
     #[serde(default)]
     pub message: String,
+    /// Bytes per second over this phase so far (0 = not known yet).
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub rate: u64,
+    /// Seconds left at that rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eta_seconds: Option<u64>,
+    /// New data stored in the repository so far (backups).
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub stored: u64,
+}
+
+fn is_zero64(v: &u64) -> bool {
+    *v == 0
+}
+
+impl JobProgress {
+    /// Rate and time left for `done` of `total` after `elapsed_secs`.
+    pub fn estimate(done: u64, total: u64, elapsed_secs: f64) -> (u64, Option<u64>) {
+        if elapsed_secs < 1.0 || done == 0 {
+            return (0, None);
+        }
+        let rate = done as f64 / elapsed_secs;
+        let eta = (total > done).then(|| ((total - done) as f64 / rate).ceil() as u64);
+        (rate as u64, eta.or(Some(0)))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

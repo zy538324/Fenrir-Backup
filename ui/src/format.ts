@@ -1,5 +1,18 @@
 import type { Agent, JobKind, JobState, Retention, Schedule } from "./api";
 
+/** "12 MB/s · 4 min left · 300 MB new" for a running job's progress. */
+export function progressDetail(p: { rate?: number; eta_seconds?: number | null; stored?: number } | null | undefined): string {
+  if (!p) return "";
+  const parts: string[] = [];
+  if (p.rate) parts.push(`${bytes(p.rate)}/s`);
+  if (p.eta_seconds != null && p.rate) {
+    const s = p.eta_seconds;
+    parts.push(s < 60 ? "under a minute left" : s < 3600 ? `${Math.ceil(s / 60)} min left` : `${Math.floor(s / 3600)} h ${Math.ceil((s % 3600) / 60)} min left`);
+  }
+  if (p.stored) parts.push(`${bytes(p.stored)} new`);
+  return parts.join(" · ");
+}
+
 export function bytes(n: number | null | undefined): string {
   if (n == null) return "—";
   const u = ["B", "KB", "MB", "GB", "TB", "PB"];
