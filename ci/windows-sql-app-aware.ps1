@@ -60,7 +60,11 @@ $p = New-Partition -DiskNumber $data -UseMaximumSize -AssignDriveLetter
 Format-Volume -Partition $p -FileSystem NTFS -NewFileSystemLabel SQLDATA -Confirm:$false | Out-Null
 $s = (Get-Partition -DiskNumber $data -PartitionNumber $p.PartitionNumber).DriveLetter
 New-Item -ItemType Directory "${s}:\sql" | Out-Null
-icacls "${s}:\sql" /grant 'Everyone:(OI)(CI)F' | Out-Null
+# SQL Server runs as its service account (NT SERVICE\MSSQL$SQLEXPRESS): it needs the folder, and the root to reach it.
+$svc = 'NT SERVICE\MSSQL$' + ($Instance -replace '^.*\\', '')
+icacls "${s}:\" /grant "${svc}:(RX)" | Out-Host
+icacls "${s}:\sql" /grant "${svc}:(OI)(CI)F" | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "could not give $svc the folder" }
 Sql "CREATE DATABASE fenrirci ON (NAME = fenrirci, FILENAME = '${s}:\sql\fenrirci.mdf') LOG ON (NAME = fenrirci_log, FILENAME = '${s}:\sql\fenrirci_log.ldf');" | Out-Null
 Sql "ALTER DATABASE fenrirci SET RECOVERY FULL;" | Out-Null
 Sql "CREATE TABLE fenrirci.dbo.t (id INT PRIMARY KEY, v NVARCHAR(100)); INSERT INTO fenrirci.dbo.t SELECT TOP 5000 ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 'row before the backup' FROM sys.all_objects a CROSS JOIN sys.all_objects b;" | Out-Null

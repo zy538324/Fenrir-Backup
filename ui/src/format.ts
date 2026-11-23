@@ -51,8 +51,11 @@ export const DAY_NAMES = DAYS;
 
 export function scheduleText(s: Schedule): string {
   switch (s.type) {
-    case "interval":
+    case "interval": {
+      const m = s.minutes ?? 0;
+      if (m) return s.hours ? `Every ${s.hours} h ${m} min` : `Every ${m} minutes`;
       return s.hours === 1 ? "Every hour" : s.hours % 24 === 0 ? `Every ${s.hours / 24} day${s.hours === 24 ? "" : "s"}` : `Every ${s.hours} hours`;
+    }
     case "manual":
       return "Only when started by hand";
     case "daily": {
@@ -179,6 +182,7 @@ export function consistencyLabel(c: string): { tone: Tone; text: string } {
 
 export const RETENTION_PRESETS: { id: string; label: string; r: Retention | null; text: string }[] = [
   { id: "all", label: "Keep everything", r: null, text: "Never delete backups automatically" },
+  { id: "frequent", label: "Frequent", r: { keep_hourly: 24, keep_daily: 14, keep_weekly: 8, keep_monthly: 12 }, text: "24 hourly, 14 daily, 8 weekly, 12 monthly (for backups every few minutes)" },
   { id: "standard", label: "Standard", r: { keep_daily: 14, keep_weekly: 8, keep_monthly: 12, keep_yearly: 3 }, text: "14 daily, 8 weekly, 12 monthly, 3 yearly" },
   { id: "short", label: "Short", r: { keep_daily: 7, keep_weekly: 4 }, text: "7 daily, 4 weekly" },
   { id: "long", label: "Long", r: { keep_daily: 30, keep_weekly: 12, keep_monthly: 24, keep_yearly: 7 }, text: "30 daily, 12 weekly, 24 monthly, 7 yearly" },
@@ -188,6 +192,7 @@ export function retentionText(r: Retention | null | undefined): string {
   if (!r) return "keep everything";
   const parts: string[] = [];
   if (r.keep_last) parts.push(`last ${r.keep_last}`);
+  if (r.keep_hourly) parts.push(`${r.keep_hourly} hourly`);
   if (r.keep_daily) parts.push(`${r.keep_daily} daily`);
   if (r.keep_weekly) parts.push(`${r.keep_weekly} weekly`);
   if (r.keep_monthly) parts.push(`${r.keep_monthly} monthly`);

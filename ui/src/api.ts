@@ -96,7 +96,7 @@ export interface BootCheck {
   agent_name?: string | null;
 }
 
-export interface Retention { keep_last?: number; keep_daily?: number; keep_weekly?: number; keep_monthly?: number; keep_yearly?: number }
+export interface Retention { keep_last?: number; keep_hourly?: number; keep_daily?: number; keep_weekly?: number; keep_monthly?: number; keep_yearly?: number }
 
 export type RestoreTarget =
   | { type: "vhdx"; directory: string }
@@ -183,7 +183,7 @@ export interface Repository {
 export interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number }
 
 export type Schedule =
-  | { type: "interval"; hours: number }
+  | { type: "interval"; hours: number; minutes?: number }
   | { type: "daily"; time: string; days: number[]; utc_offset_minutes: number }
   | { type: "manual" };
 

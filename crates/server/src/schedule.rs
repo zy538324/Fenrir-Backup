@@ -8,8 +8,14 @@ use crate::{now, Shared};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Schedule {
-    /// Every `hours` hours.
-    Interval { hours: u32 },
+    /// Every `hours` hours and `minutes` minutes (at least 5 minutes in all,
+    /// for frequent backups; at most 31 days).
+    Interval {
+        #[serde(default)]
+        hours: u32,
+        #[serde(default)]
+        minutes: u32,
+    },
     /// At `time` ("HH:MM") local time on the given weekdays (0 = Monday;
     /// empty = every day). `utc_offset_minutes` is the administrator's
     /// offset when the plan was saved (e.g. 60 for UTC+1).
@@ -27,8 +33,14 @@ pub enum Schedule {
 impl Schedule {
     pub fn validate(&self) -> Result<(), String> {
         match self {
-            Schedule::Interval { hours } if (1..=24 * 31).contains(hours) => Ok(()),
-            Schedule::Interval { .. } => Err("interval must be 1 hour to 31 days".into()),
+            Schedule::Interval { hours, minutes } => {
+                let total = *hours as u64 * 60 + *minutes as u64;
+                if *minutes < 60 && (5..=31 * 24 * 60).contains(&total) {
+                    Ok(())
+                } else {
+                    Err("interval must be 5 minutes to 31 days".into())
+                }
+            }
             Schedule::Daily {
                 time,
                 days,
@@ -50,7 +62,9 @@ impl Schedule {
     /// First run time strictly after `after` (Unix seconds).
     pub fn next_after(&self, after: i64) -> Option<i64> {
         match self {
-            Schedule::Interval { hours } => Some(after + *hours as i64 * 3600),
+            Schedule::Interval { hours, minutes } => {
+                Some(after + *hours as i64 * 3600 + *minutes as i64 * 60)
+            }
             Schedule::Manual => None,
             Schedule::Daily {
                 time,
@@ -459,11 +473,55 @@ mod tests {
     #[test]
     fn interval_and_validation() {
         assert_eq!(
-            Schedule::Interval { hours: 6 }.next_after(100),
+            Schedule::Interval {
+                hours: 6,
+                minutes: 0
+            }
+            .next_after(100),
             Some(100 + 6 * 3600)
         );
         assert_eq!(Schedule::Manual.next_after(100), None);
-        assert!(Schedule::Interval { hours: 0 }.validate().is_err());
+        assert!(Schedule::Interval {
+            hours: 0,
+            minutes: 0
+        }
+        .validate()
+        .is_err());
+        // Frequent backups: down to every 5 minutes, and hours still work alone.
+        assert!(Schedule::Interval {
+            hours: 0,
+            minutes: 4
+        }
+        .validate()
+        .is_err());
+        assert!(Schedule::Interval {
+            hours: 0,
+            minutes: 5
+        }
+        .validate()
+        .is_ok());
+        assert!(Schedule::Interval {
+            hours: 1,
+            minutes: 60
+        }
+        .validate()
+        .is_err());
+        assert_eq!(
+            Schedule::Interval {
+                hours: 0,
+                minutes: 15
+            }
+            .next_after(100),
+            Some(100 + 900)
+        );
+        let old: Schedule = serde_json::from_str(r#"{"type":"interval","hours":6}"#).unwrap();
+        assert_eq!(
+            old,
+            Schedule::Interval {
+                hours: 6,
+                minutes: 0
+            }
+        );
         assert!(Schedule::Daily {
             time: "25:00".into(),
             days: vec![],

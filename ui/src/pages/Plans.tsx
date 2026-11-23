@@ -85,13 +85,15 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
   const [time, setTime] = useState("22:00");
   const [days, setDays] = useState<number[]>([]);
   const [hours, setHours] = useState(6);
+  const [unit, setUnit] = useState<"hours" | "minutes">("hours");
+  const [minutes, setMinutes] = useState(15);
   const [s, setS] = useState<BackupSettings>({ rate_limit_mib: 0, verify_sample_percent: 5 });
   const [retention, setRetention] = useState<Retention | null>(RETENTION_PRESETS[1].r);
   const [err, setErr] = useState<string | null>(null);
   const repoId = repo || usable[0]?.id || "";
 
   const schedule: Schedule =
-    mode === "daily" ? { type: "daily", time, days, utc_offset_minutes: -new Date().getTimezoneOffset() } : mode === "interval" ? { type: "interval", hours } : { type: "manual" };
+    mode === "daily" ? { type: "daily", time, days, utc_offset_minutes: -new Date().getTimezoneOffset() } : mode === "interval" ? (unit === "minutes" ? { type: "interval", hours: 0, minutes } : { type: "interval", hours }) : { type: "manual" };
 
   const save = async () => {
     if (!what) return;
@@ -132,7 +134,7 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
       <Field label="When">
         <div className="seg" style={{ alignSelf: "flex-start" }}>
           <button className={mode === "daily" ? "on" : ""} onClick={() => setMode("daily")}>At a time of day</button>
-          <button className={mode === "interval" ? "on" : ""} onClick={() => setMode("interval")}>Every few hours</button>
+          <button className={mode === "interval" ? "on" : ""} onClick={() => setMode("interval")}>Every few minutes or hours</button>
           <button className={mode === "manual" ? "on" : ""} onClick={() => setMode("manual")}>By hand only</button>
         </div>
       </Field>
@@ -150,8 +152,19 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
       )}
       {mode === "interval" && (
         <Field label="Every">
-          <div className="row"><input className="input" type="number" min={1} max={744} value={hours} onChange={(e) => setHours(Math.max(1, Number(e.target.value)))} style={{ width: 100 }} /> <span className="muted">hours</span></div>
+          <div className="row">
+            {unit === "hours"
+              ? <input className="input" type="number" min={1} max={744} value={hours} onChange={(e) => setHours(Math.max(1, Number(e.target.value)))} style={{ width: 100 }} />
+              : <input className="input" type="number" min={5} max={59} value={minutes} onChange={(e) => setMinutes(Math.min(59, Math.max(5, Number(e.target.value))))} style={{ width: 100 }} />}
+            <select className="input" value={unit} onChange={(e) => setUnit(e.target.value as "hours" | "minutes")} style={{ width: 120 }}>
+              <option value="minutes">minutes</option>
+              <option value="hours">hours</option>
+            </select>
+          </div>
         </Field>
+      )}
+      {mode === "interval" && unit === "minutes" && (
+        <Notice tone="info">Backups every few minutes keep data loss short. Each run reads the disk's used space again (only changed data is stored), so pick an interval longer than one backup takes: the next run waits for the previous one. The "Frequent" retention keeps one image per hour for a day.</Notice>
       )}
       <div className="muted small">{scheduleText(schedule)} (your local time).</div>
       <RetentionPicker value={retention} onChange={setRetention} />
@@ -164,7 +177,7 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
 function presetOf(r: Retention | null): string {
   if (!r) return "all";
   const same = (a: Retention, b: Retention) =>
-    (["keep_last", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"] as const).every((k) => (a[k] ?? 0) === (b[k] ?? 0));
+    (["keep_last", "keep_hourly", "keep_daily", "keep_weekly", "keep_monthly", "keep_yearly"] as const).every((k) => (a[k] ?? 0) === (b[k] ?? 0));
   return RETENTION_PRESETS.find((p) => p.r && same(p.r, r))?.id ?? "custom";
 }
 
@@ -198,6 +211,7 @@ export function RetentionPicker({ value, onChange }: { value: Retention | null; 
       {custom && (
         <div className="row wrap" style={{ gap: 10, marginTop: 4 }}>
           {num("keep_last", "Last")}
+          {num("keep_hourly", "Hourly")}
           {num("keep_daily", "Daily")}
           {num("keep_weekly", "Weekly")}
           {num("keep_monthly", "Monthly")}
