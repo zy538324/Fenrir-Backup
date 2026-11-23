@@ -1411,6 +1411,71 @@ fn same_disk(a: &Path, b: &Path) -> bool {
     c(a) == c(b)
 }
 
+/// Something to undo after a live copy (release a snapshot); returns an error text.
+type Release = Box<dyn FnOnce() -> Option<String>>;
+
+/// An in-use disk through a snapshot: LVM on Linux.
+#[cfg(target_os = "linux")]
+fn live_source(
+    disk: &Path,
+    warnings: &mut Vec<String>,
+    release: &mut Vec<Release>,
+) -> R<Box<dyn engine::DiskSource>> {
+    let state = PathBuf::from("/var/lib/fenrir-backup");
+    let _ = std::fs::create_dir_all(&state);
+    let mut lb = snapshot_linux::live::prepare(&snapshot_linux::live::LiveOptions {
+        disks: vec![disk.to_path_buf()],
+        allow_inconsistent: false,
+        state_dir: state,
+        temp_dir: PathBuf::from("/var/tmp"),
+        exclude_paths: vec![],
+    })
+    .map_err(|e| CliError::new(ExitCode::Safety, e.to_string()))?;
+    warnings.extend(lb.warnings.clone());
+    let src = lb.sources.remove(0);
+    release.push(Box::new(move || lb.finish().err()));
+    Ok(Box::new(src))
+}
+
+/// An in-use disk through a snapshot: VSS on Windows (the system disk).
+#[cfg(windows)]
+fn live_source(
+    disk: &Path,
+    _warnings: &mut Vec<String>,
+    release: &mut Vec<Release>,
+) -> R<Box<dyn engine::DiskSource>> {
+    let mut sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
+        full_backup_type: false,
+        extra_disks: vec![],
+    })
+    .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+    let want = disk.to_string_lossy().to_ascii_lowercase();
+    let i = sb
+        .disks
+        .iter()
+        .position(|d| d.info.device.to_ascii_lowercase() == want)
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "{} is not the system disk; --live copies the disk Windows runs from",
+                disk.display()
+            ))
+        })?;
+    let src = sb.disks.remove(i);
+    release.push(Box::new(move || {
+        sb.finish(true).err().map(|e| e.to_string())
+    }));
+    Ok(Box::new(src))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn live_source(
+    _disk: &Path,
+    _warnings: &mut Vec<String>,
+    _release: &mut Vec<Release>,
+) -> R<Box<dyn engine::DiskSource>> {
+    Err(CliError::usage("--live works on Linux and Windows"))
+}
+
 fn clone(ctx: &Ctx, a: CloneArgs) -> R<Outcome> {
     if same_disk(&a.source, &a.target) {
         return Err(CliError::usage(
@@ -1428,52 +1493,10 @@ fn clone(ctx: &Ctx, a: CloneArgs) -> R<Outcome> {
         ));
     }
     // The source, plus whatever must be released afterwards.
-    #[allow(unused_mut)]
-    let mut release: Vec<Box<dyn FnOnce() -> Option<String>>> = Vec::new();
-    let source: Box<dyn engine::DiskSource>;
+    let mut release: Vec<Release> = Vec::new();
     let mut warnings = Vec::new();
-    if a.live {
-        #[cfg(target_os = "linux")]
-        {
-            let state = PathBuf::from("/var/lib/fenrir-backup");
-            let _ = std::fs::create_dir_all(&state);
-            let mut lb = snapshot_linux::live::prepare(&snapshot_linux::live::LiveOptions {
-                disks: vec![a.source.clone()],
-                allow_inconsistent: false,
-                state_dir: state,
-                temp_dir: PathBuf::from("/var/tmp"),
-                exclude_paths: vec![],
-            })
-            .map_err(|e| CliError::new(ExitCode::Safety, e.to_string()))?;
-            warnings.extend(lb.warnings.clone());
-            source = Box::new(lb.sources.remove(0));
-            release.push(Box::new(move || lb.finish().err()));
-        }
-        #[cfg(windows)]
-        {
-            let mut sb = snapshot_win::prepare_system_backup(&snapshot_win::VssOptions {
-                full_backup_type: false,
-                extra_disks: vec![],
-            })
-            .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
-            let want = a.source.to_string_lossy().to_ascii_lowercase();
-            let i = sb
-                .disks
-                .iter()
-                .position(|d| d.info.device.to_ascii_lowercase() == want)
-                .ok_or_else(|| {
-                    CliError::usage(format!(
-                        "{} is not the system disk; --live copies the disk Windows runs from",
-                        a.source.display()
-                    ))
-                })?;
-            source = Box::new(sb.disks.remove(i));
-            release.push(Box::new(move || {
-                sb.finish(true).err().map(|e| e.to_string())
-            }));
-        }
-        #[cfg(not(any(target_os = "linux", windows)))]
-        return Err(CliError::usage("--live works on Linux and Windows"));
+    let source: Box<dyn engine::DiskSource> = if a.live {
+        live_source(&a.source, &mut warnings, &mut release)?
     } else {
         let o = snapshot_linux::open_disk(&a.source, false).map_err(|e| {
             CliError::new(
@@ -1485,8 +1508,8 @@ fn clone(ctx: &Ctx, a: CloneArgs) -> R<Outcome> {
                 format!("{e} (or copy it with --live)"),
             )
         })?;
-        source = Box::new(o.source);
-    }
+        Box::new(o.source)
+    };
     let fit = a.fit || a.grow;
     let confirm = DestructiveConfirmation::confirmed_by_user(&a.target);
     let src_size = source.info().size;
