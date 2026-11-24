@@ -76,6 +76,9 @@ enum Cmd {
     /// Microsoft 365, Google Workspace and Salesforce data.
     #[command(subcommand)]
     Saas(SaasCmd),
+    /// Continuous data protection of Linux volumes (any second restorable).
+    #[command(subcommand)]
+    Cdp(CdpCmd),
     /// Copy a disk straight onto another (no repository).
     Clone(CloneArgs),
     /// Copy images to another repository (an off-site copy): re-encrypted
@@ -154,6 +157,65 @@ enum RepoCmd {
     },
     /// Show repository parameters and usage.
     Info,
+}
+
+/// Continuous data protection of a Linux logical volume.
+#[derive(Subcommand)]
+enum CdpCmd {
+    /// Journal every write of an unmounted logical volume (then mount
+    /// /dev/mapper/fenrir-cdp-NAME instead of it).
+    Enable {
+        #[arg(long)]
+        name: String,
+        /// The logical volume, e.g. /dev/vg0/data.
+        #[arg(long)]
+        volume: String,
+        /// Size of each of the two journal volumes.
+        #[arg(long, default_value_t = 1024)]
+        journal_mb: u64,
+    },
+    /// Mark, swap and ship journals to the repository, with base images.
+    Run {
+        #[arg(long)]
+        name: String,
+        /// Seconds between timestamp marks (the restore granularity).
+        #[arg(long, default_value_t = 5)]
+        mark_every: u64,
+        /// Seconds between journal swaps (shipped then).
+        #[arg(long, default_value_t = 60)]
+        rotate_every: u64,
+        /// Seconds between base images.
+        #[arg(long, default_value_t = 86_400)]
+        base_every: u64,
+        /// Stop after this many seconds (default: run until stopped).
+        #[arg(long)]
+        r#for: Option<u64>,
+    },
+    /// The times a volume can be restored to.
+    Points {
+        #[arg(long)]
+        name: String,
+    },
+    /// Restore a volume as it was at a moment (to the second it was marked).
+    Restore {
+        #[arg(long)]
+        name: String,
+        /// Unix seconds, or YYYY-MM-DDTHH:MM:SSZ.
+        #[arg(long)]
+        at: String,
+        /// A device or image file to write it to.
+        #[arg(long)]
+        target: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Stop journaling (unmount the device first).
+    Disable {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        remove_journals: bool,
+    },
 }
 
 /// Which SaaS service and its credentials (secrets come from files).
@@ -613,6 +675,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
         Cmd::Copy(a) => copy(ctx, a),
         Cmd::K8s(k) => k8s_cmd(ctx, k),
         Cmd::Saas(c) => saas_cmd(ctx, c),
+        Cmd::Cdp(c) => cdp_cmd(ctx, c),
         Cmd::Restore(RestoreCmd::Disk {
             image,
             disk,
@@ -2674,5 +2737,365 @@ mod saas_paths {
             PathBuf::from("ann@contoso.com/record/Account/001A.json")
         );
         assert!(!saas_rel(&item("file", "/abs/x")).is_absolute());
+    }
+}
+
+// ---------------------------------------------------------------- CDP (docs/design/cdp.md)
+
+#[cfg(target_os = "linux")]
+fn cdp_state_dir() -> PathBuf {
+    std::env::var_os("FENRIR_CDP_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/fenrir-backup"))
+}
+
+/// A CDP image's details (base or journal), kept in its OS version field.
+#[cfg(target_os = "linux")]
+fn cdp_meta(m: &core_format::ManifestBody) -> serde_json::Value {
+    serde_json::from_str(&m.os.version).unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn cdp_store(
+    ctx: &Ctx,
+    name: &str,
+    path: &Path,
+    kind: &str,
+    meta: serde_json::Value,
+) -> R<uuid::Uuid> {
+    let repo = open_repo(ctx)?;
+    let src = snapshot_linux::open_disk(path, false)
+        .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+    let m = engine::ImageMeta {
+        machine: MachineInfo {
+            machine_id: format!("cdp:{}:{name}", hostname()),
+            hostname: format!("{} ({name})", hostname()),
+        },
+        consistency: core_format::manifest::Consistency::Crash,
+        os: core_format::manifest::OsInfo {
+            family: kind.into(),
+            name: name.into(),
+            version: meta.to_string(),
+            ..Default::default()
+        },
+        boot: Default::default(),
+        drivers: vec![],
+        label: Some(format!("{kind} {name}")),
+        warnings: vec![],
+        vm: None,
+        applications: vec![],
+    };
+    let r = engine::backup(
+        &repo,
+        &[&src.source as &dyn engine::DiskSource],
+        m,
+        &engine::BackupOptions {
+            workers: 2,
+            rate_limit: 0,
+        },
+        &JobControl::new(),
+        &|_| {},
+    )?;
+    Ok(r.image_id)
+}
+
+/// Swap journals (with a base image when due) and ship the finished journal.
+#[cfg(target_os = "linux")]
+fn cdp_cycle(ctx: &Ctx, st: &mut cdp::control::State, base: bool) -> R<serde_json::Value> {
+    let dir = cdp_state_dir();
+    let err = |e: String| CliError::new(ExitCode::Error, e);
+    let snap = format!("{}-fenrir-cdp-base", st.lv);
+    let (journal, seq) =
+        cdp::control::rotate(&dir, st, base.then_some(snap.as_str())).map_err(err)?;
+    let mut out = json!({ "journal_seq": seq });
+    if base {
+        let snap_path = PathBuf::from(format!("/dev/{}/{snap}", st.vg));
+        let t = cdp::control::now();
+        let r = cdp_store(
+            ctx,
+            &st.name,
+            &snap_path,
+            "cdp-base",
+            json!({ "seq": st.seq, "unix": t }),
+        );
+        let _ = std::process::Command::new("lvremove")
+            .args(["-q", "-y"])
+            .arg(&snap_path)
+            .status();
+        let id = r?;
+        st.base_image = Some(id.to_string());
+        st.base_seq = st.seq;
+        st.base_unix = t;
+        cdp::control::save(&dir, st).map_err(err)?;
+        out["base_image"] = json!(id);
+    }
+    // The finished journal: only the part in use.
+    let mut f = std::fs::File::open(&journal)?;
+    let used = cdp::control::used_bytes(&mut f)?;
+    let (_, list) = cdp::journal::entries(&mut f)?;
+    let times: Vec<i64> = list
+        .iter()
+        .filter_map(|e| {
+            if let cdp::journal::Entry::Mark(m) = e {
+                cdp::journal::mark_time(m)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let tmp = tempfile_dir()?.join(format!("journal-{seq}.img"));
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        f.seek(SeekFrom::Start(0))?;
+        let mut o = std::fs::File::create(&tmp)?;
+        std::io::copy(&mut (&mut f).take(used), &mut o)?;
+        o.set_len(used.div_ceil(4096) * 4096)?;
+    }
+    let id = cdp_store(
+        ctx,
+        &st.name,
+        &tmp,
+        "cdp-journal",
+        json!({ "seq": seq, "bytes": used, "first": times.first(), "last": times.last(), "entries": list.len() }),
+    );
+    let _ = std::fs::remove_file(&tmp);
+    out["journal_image"] = json!(id?);
+    out["marks"] = json!([times.first(), times.last()]);
+    Ok(out)
+}
+
+#[cfg(target_os = "linux")]
+fn cdp_cmd(ctx: &Ctx, c: CdpCmd) -> R<Outcome> {
+    let dir = cdp_state_dir();
+    let err = |e: String| CliError::new(ExitCode::Error, e);
+    match c {
+        CdpCmd::Enable {
+            name,
+            volume,
+            journal_mb,
+        } => {
+            let st = cdp::control::enable(&dir, &name, &volume, journal_mb).map_err(err)?;
+            let dev = cdp::control::device(&name);
+            Ok(Outcome::new(json!({ "device": dev, "state": st }), format!("CDP enabled for {volume}: mount {} instead of it from now on (and in /etc/fstab).\n", dev.display())))
+        }
+        CdpCmd::Run {
+            name,
+            mark_every,
+            rotate_every,
+            base_every,
+            r#for,
+        } => {
+            let mut st = cdp::control::load(&dir, &name).map_err(err)?;
+            let started = Instant::now();
+            let mut cycles = Vec::new();
+            let mut last_rotate = Instant::now();
+            let base_due = |st: &cdp::control::State| {
+                st.base_image.is_none() || cdp::control::now() - st.base_unix >= base_every as i64
+            };
+            // First a base, so that every journal from here replays onto it.
+            if base_due(&st) {
+                cycles.push(cdp_cycle(ctx, &mut st, true)?);
+                last_rotate = Instant::now();
+            }
+            loop {
+                std::thread::sleep(Duration::from_secs(mark_every.max(1)));
+                cdp::control::mark(&name, &cdp::journal::time_mark(cdp::control::now()))
+                    .map_err(err)?;
+                let (_, hi, disabled) = cdp::control::usage(&name).map_err(err)?;
+                let size = std::fs::metadata(&st.journals[st.active])
+                    .map(|_| ())
+                    .ok()
+                    .and_then(|_| {
+                        std::process::Command::new("blockdev")
+                            .arg("--getsz")
+                            .arg(&st.journals[st.active])
+                            .output()
+                            .ok()
+                            .and_then(|o| {
+                                String::from_utf8_lossy(&o.stdout)
+                                    .trim()
+                                    .parse::<u64>()
+                                    .ok()
+                            })
+                    })
+                    .unwrap_or(u64::MAX);
+                let done = r#for.is_some_and(|f| started.elapsed().as_secs() >= f);
+                if disabled
+                    || hi > size / 10 * 7
+                    || last_rotate.elapsed().as_secs() >= rotate_every
+                    || done
+                {
+                    let due = base_due(&st);
+                    cycles.push(cdp_cycle(ctx, &mut st, due)?);
+                    last_rotate = Instant::now();
+                }
+                if done {
+                    break;
+                }
+            }
+            Ok(Outcome::new(
+                json!({ "cycles": cycles }),
+                format!("{} journal swaps shipped\n", cycles.len()),
+            ))
+        }
+        CdpCmd::Points { name } => {
+            let repo = open_repo(ctx)?;
+            let (all, _) = repo.load_all_manifests()?;
+            let mid = format!("cdp:{}:{name}", hostname());
+            let mut rows: Vec<serde_json::Value> = all.iter().filter(|m| m.machine.machine_id == mid).map(|m| {
+                let meta = cdp_meta(m);
+                json!({ "image_id": m.image_id, "kind": m.os.family, "seq": meta["seq"], "from": meta["first"], "to": meta["last"], "base_unix": meta["unix"] })
+            }).collect();
+            rows.sort_by_key(|r| (r["seq"].as_u64().unwrap_or(0), r["kind"] != "cdp-base"));
+            let first = rows
+                .iter()
+                .find(|r| r["kind"] == "cdp-base")
+                .and_then(|r| r["base_unix"].as_i64());
+            let last = rows.iter().filter_map(|r| r["to"].as_i64()).max();
+            Ok(Outcome::new(
+                json!({ "points": rows, "earliest": first, "latest": last }),
+                format!(
+                    "Restorable from {} to {} (unix seconds), to the second of each mark\n",
+                    first.unwrap_or(0),
+                    last.unwrap_or(0)
+                ),
+            ))
+        }
+        CdpCmd::Restore {
+            name,
+            at,
+            target,
+            yes,
+        } => {
+            let at: i64 =
+                at.parse().ok().or_else(|| parse_utc(&at)).ok_or_else(|| {
+                    CliError::usage("--at is unix seconds or YYYY-MM-DDTHH:MM:SSZ")
+                })?;
+            if !yes {
+                return Err(CliError::new(
+                    ExitCode::ConfirmationRequired,
+                    format!("this overwrites {}: add --yes", target.display()),
+                ));
+            }
+            let repo = open_repo(ctx)?;
+            let (all, _) = repo.load_all_manifests()?;
+            let mid = format!("cdp:{}:{name}", hostname());
+            let mine: Vec<&core_format::ManifestBody> =
+                all.iter().filter(|m| m.machine.machine_id == mid).collect();
+            let base = mine
+                .iter()
+                .filter(|m| {
+                    m.os.family == "cdp-base"
+                        && cdp_meta(m)["unix"].as_i64().is_some_and(|u| u <= at)
+                })
+                .max_by_key(|m| cdp_meta(m)["seq"].as_u64().unwrap_or(0))
+                .ok_or_else(|| CliError::usage("no base image from before that moment"))?;
+            let base_seq = cdp_meta(base)["seq"].as_u64().unwrap_or(0);
+            let mut journals: Vec<&&core_format::ManifestBody> = mine
+                .iter()
+                .filter(|m| {
+                    m.os.family == "cdp-journal"
+                        && cdp_meta(m)["seq"].as_u64().is_some_and(|s| s >= base_seq)
+                })
+                .collect();
+            journals.sort_by_key(|m| cdp_meta(m)["seq"].as_u64().unwrap_or(0));
+            let d = &base.disks[0];
+            let confirm = DestructiveConfirmation::confirmed_by_user(&target);
+            let t = FileTarget::open(&target, d.size, true, &confirm)?;
+            engine::restore_disk(
+                &repo,
+                base,
+                0,
+                &t,
+                &RestoreOptions {
+                    workers: 4,
+                    zero_fill: true,
+                    fit: false,
+                    grow: false,
+                },
+                &JobControl::new(),
+                &|_, _| {},
+            )?;
+            drop(t);
+            let dir = tempfile_dir()?;
+            let mut out = std::fs::OpenOptions::new().write(true).open(&target)?;
+            let (mut applied, mut last_mark, mut writes) = (0, None, 0u64);
+            for (expected, j) in (base_seq..).zip(journals) {
+                let meta = cdp_meta(j);
+                let seq = meta["seq"].as_u64().unwrap_or(0);
+                if seq != expected {
+                    return Err(CliError::new(ExitCode::Error, format!("journal {expected} is missing (pruned or not shipped): the volume can only be restored to before it")));
+                }
+                let file = dir.join(format!("j{seq}"));
+                k8s_disk_to(&repo, j, 0, &file, meta["bytes"].as_u64().unwrap_or(0))?;
+                let (r, past) =
+                    cdp::journal::replay_until(&mut std::fs::File::open(&file)?, &mut out, at)?;
+                let _ = std::fs::remove_file(&file);
+                applied += 1;
+                writes += r.writes;
+                if r.last_mark.is_some() {
+                    last_mark = r.last_mark.clone();
+                }
+                if past {
+                    break;
+                }
+            }
+            out.sync_all()?;
+            let _ = std::fs::remove_dir_all(&dir);
+            let reached = last_mark.as_deref().and_then(cdp::journal::mark_time);
+            Ok(Outcome::new(
+                json!({ "base_image": base.image_id, "journals": applied, "writes": writes, "restored_to": reached }),
+                format!("Restored {name} to {} (base image {}, {applied} journals, {writes} writes replayed)\n", reached.map(core_format::timefmt::rfc3339_utc).unwrap_or_else(|| "its base image".into()), base.image_id),
+            ))
+        }
+        CdpCmd::Disable {
+            name,
+            remove_journals,
+        } => {
+            cdp::control::disable(&dir, &name, remove_journals).map_err(err)?;
+            Ok(Outcome::new(
+                json!({ "disabled": name }),
+                format!("CDP stopped for {name}: mount the logical volume itself again.\n"),
+            ))
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn cdp_cmd(_: &Ctx, _: CdpCmd) -> R<Outcome> {
+    Err(CliError::usage(
+        "continuous data protection is for Linux logical volumes",
+    ))
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` (UTC) to unix seconds.
+fn parse_utc(s: &str) -> Option<i64> {
+    let s = s.strip_suffix('Z').unwrap_or(s);
+    let (d, t) = s.split_once(['T', ' '])?;
+    let d: Vec<&str> = d.split('-').collect();
+    let t: Vec<&str> = t.split(':').collect();
+    if d.len() != 3 || t.len() != 3 {
+        return None;
+    }
+    let (y, mo, da) = (d[0].parse().ok()?, d[1].parse().ok()?, d[2].parse().ok()?);
+    let (h, mi, se): (i64, i64, i64) = (t[0].parse().ok()?, t[1].parse().ok()?, t[2].parse().ok()?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&da) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    Some(core_format::timefmt::days_from_civil(y, mo, da) * 86400 + h * 3600 + mi * 60 + se)
+}
+
+#[cfg(test)]
+mod parse_utc_tests {
+    #[test]
+    fn utc_times() {
+        assert_eq!(super::parse_utc("1970-01-02T00:00:01Z"), Some(86401));
+        assert_eq!(
+            super::parse_utc("2026-11-24T10:00:00Z")
+                .map(core_format::timefmt::rfc3339_utc)
+                .as_deref(),
+            Some("2026-11-24T10:00:00Z")
+        );
+        assert_eq!(super::parse_utc("yesterday"), None);
     }
 }

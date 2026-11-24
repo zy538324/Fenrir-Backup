@@ -419,6 +419,28 @@ jobs:
           sudo tail -n 50 /tmp/fenrir-pg*.log /tmp/fenrir-mysql*.log || true
           sudo lvs -a || true
 
+  # Continuous data protection with dm-log-writes (docs/design/cdp.md).
+  cdp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y lvm2 e2fsprogs util-linux jq
+          sudo modprobe dm-log-writes || sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+      - name: build
+        run: cargo build --release --locked -p cli
+      - name: run
+        run: sudo ci/e2e-cdp.sh /tmp/e2e-cdp target/release/fenrir-backup
+      - name: logs
+        if: failure()
+        run: |
+          sudo dmsetup table || true
+          sudo dmsetup status || true
+          sudo lvs -a || true
+          sudo dmesg | tail -n 40 || true
+
   # Growing onto a larger disk and cloning, with real ext4 and NTFS
   # (docs/design/phase-5-grow-clone.md).
   grow-clone:

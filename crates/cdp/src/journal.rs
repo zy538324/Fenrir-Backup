@@ -122,6 +122,44 @@ pub fn replay(
     stop_at: &dyn Fn(&str) -> bool,
 ) -> io::Result<Replayed> {
     let (_, list) = entries(journal)?;
+    let end = list
+        .iter()
+        .position(|e| matches!(e, Entry::Mark(m) if stop_at(m)));
+    let mut r = apply(journal, target, &list[..end.map_or(list.len(), |i| i + 1)])?;
+    r.stopped = end.is_some();
+    Ok(r)
+}
+
+/// Replay up to the last timestamp mark at or before `at` (writes after it
+/// are of unknown time and left out). Returns what was applied and whether
+/// the journal goes on past `at` (no later journal is then needed).
+pub fn replay_until(
+    journal: &mut (impl Read + Seek),
+    target: &mut (impl Write + Seek),
+    at: i64,
+) -> io::Result<(Replayed, bool)> {
+    let (_, list) = entries(journal)?;
+    let times: Vec<(usize, i64)> = list
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            Entry::Mark(m) => mark_time(m).map(|t| (i, t)),
+            _ => None,
+        })
+        .collect();
+    let past = times.iter().any(|&(_, t)| t > at);
+    match times.iter().rev().find(|&&(_, t)| t <= at) {
+        Some(&(last, _)) => Ok((apply(journal, target, &list[..=last])?, past)),
+        None => Ok((Replayed::default(), true)),
+    }
+}
+
+/// Apply entries in order.
+fn apply(
+    journal: &mut (impl Read + Seek),
+    target: &mut (impl Write + Seek),
+    list: &[Entry],
+) -> io::Result<Replayed> {
     let mut rep = Replayed::default();
     let mut buf = vec![0u8; 1 << 20];
     for e in list {
@@ -131,9 +169,9 @@ pub fn replay(
                 len,
                 data_at,
             } => {
-                journal.seek(SeekFrom::Start(data_at))?;
-                target.seek(SeekFrom::Start(offset))?;
-                let mut left = len;
+                journal.seek(SeekFrom::Start(*data_at))?;
+                target.seek(SeekFrom::Start(*offset))?;
+                let mut left = *len;
                 while left > 0 {
                     let n = left.min(buf.len() as u64) as usize;
                     journal.read_exact(&mut buf[..n])?;
@@ -144,18 +182,11 @@ pub fn replay(
                 rep.bytes += len;
             }
             Entry::Discard { offset, len } => {
-                target.seek(SeekFrom::Start(offset))?;
-                io::copy(&mut io::repeat(0).take(len), target)?;
+                target.seek(SeekFrom::Start(*offset))?;
+                io::copy(&mut io::repeat(0).take(*len), target)?;
                 rep.discards += 1;
             }
-            Entry::Mark(m) => {
-                let stop = stop_at(&m);
-                rep.last_mark = Some(m);
-                if stop {
-                    rep.stopped = true;
-                    break;
-                }
-            }
+            Entry::Mark(m) => rep.last_mark = Some(m.clone()),
             Entry::Flush => {}
         }
     }
@@ -265,6 +296,17 @@ mod tests {
         assert_eq!(&d[..512], &[0u8; 512][..]);
         assert_eq!(&d[512..1024], &[2u8; 512][..]);
         assert_eq!(&d[1536..], &[9u8; 512][..]);
+
+        // To a time: up to the last mark at or before it.
+        let mut disk = Cursor::new(vec![9u8; 4 * ss]);
+        let (r, past) = replay_until(&mut Cursor::new(&j), &mut disk, 105).unwrap();
+        assert!(past && r.writes == 1 && r.last_mark.as_deref() == Some("fenrir-t100"));
+        let mut disk = Cursor::new(vec![9u8; 4 * ss]);
+        let (r, past) = replay_until(&mut Cursor::new(&j), &mut disk, 999).unwrap();
+        assert!(
+            !past && r.writes == 2,
+            "the write after the last mark has no known time"
+        );
 
         // Everything.
         let mut disk = Cursor::new(vec![9u8; 4 * ss]);
