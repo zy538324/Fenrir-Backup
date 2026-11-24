@@ -30,6 +30,7 @@ pub fn routes() -> Router<Shared> {
             get(get_agent).patch(rename_agent).delete(revoke_agent),
         )
         .route("/api/agents/{id}/jobs", post(create_job))
+        .route("/api/agents/{id}/local-recovery", post(local_recovery))
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/cancel", post(cancel_job))
@@ -515,6 +516,83 @@ async fn create_job(
         &format!("{} on {id}", j.kind.label()),
     );
     Ok(Json(json!({ "id": job_id })))
+}
+
+#[derive(Deserialize)]
+struct LocalRecoveryReq {
+    action: protocol::LocalRecoveryAction,
+    #[serde(default)]
+    size_mb: u32,
+    #[serde(default)]
+    auto_start: bool,
+    #[serde(default)]
+    confirm: String,
+}
+
+/// Install, rebuild or remove a Windows machine's local recovery partition
+/// (docs/design/local-recovery.md). Installing and removing repartition its
+/// system disk: the machine's name must be typed.
+async fn local_recovery(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<LocalRecoveryReq>,
+) -> ApiResult<Json<Value>> {
+    use protocol::LocalRecoveryAction as A;
+    let id = uuid_param(&id)?;
+    let (hostname, inv): (String, Option<String>) = st
+        .db()
+        .query_row(
+            "SELECT hostname, inventory_json FROM agents WHERE id = ?1 AND revoked = 0",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("no such machine"))?;
+    let inv: Option<protocol::Inventory> = inv.and_then(|s| serde_json::from_str(&s).ok());
+    if !inv
+        .as_ref()
+        .is_some_and(|i| i.capabilities.iter().any(|c| c == "local_recovery"))
+    {
+        return Err(ApiError::bad("this machine cannot have a local recovery partition (Windows, with an up-to-date agent)"));
+    }
+    let installed = inv
+        .as_ref()
+        .and_then(|i| i.local_recovery.as_ref())
+        .is_some();
+    match r.action {
+        A::Install | A::Remove if !r.confirm.trim().eq_ignore_ascii_case(&hostname) => {
+            return Err(ApiError::bad(format!("type the machine's name ({hostname}) to confirm: this repartitions its system disk")));
+        }
+        A::Install if installed => {
+            return Err(ApiError::bad(
+                "local recovery is already installed; refresh it instead",
+            ))
+        }
+        A::Refresh | A::Remove if !installed => {
+            return Err(ApiError::bad(
+                "local recovery is not installed on this machine",
+            ))
+        }
+        _ => {}
+    }
+    if r.size_mb > 16_384 {
+        return Err(ApiError::bad("the recovery partition is at most 16 GB"));
+    }
+    let kind = JobKind::LocalRecovery {
+        action: r.action,
+        size_mb: r.size_mb,
+        auto_start: r.auto_start,
+        confirm: r.confirm.trim().to_string(),
+    };
+    let job = insert_job(&st, &id, &kind, None, None, &a.username)?;
+    audit(
+        &st.db(),
+        &a.username,
+        "local_recovery.requested",
+        &format!("{} on {hostname}", kind.label()),
+    );
+    Ok(Json(json!({ "id": job })))
 }
 
 fn job_from_row(r: &Row) -> rusqlite::Result<Value> {

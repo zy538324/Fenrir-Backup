@@ -181,6 +181,55 @@ pub fn expire_recovery_sessions(state: &Shared) -> rusqlite::Result<usize> {
     Ok(old.len())
 }
 
+/// Rebuild local recovery partitions whose agent was updated or whose
+/// enrolment code runs out within 60 days (docs/design/local-recovery.md).
+/// One at a time, and not again within a day of a failed attempt.
+pub fn refresh_local_recovery(state: &Shared) -> rusqlite::Result<usize> {
+    let t = now();
+    let rows: Vec<(String, String)> = {
+        let db = state.db();
+        let mut s = db.prepare(
+            "SELECT id, inventory_json FROM agents WHERE revoked = 0 AND role != 'recovery' AND inventory_json IS NOT NULL",
+        )?;
+        let v = s
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        v
+    };
+    let mut n = 0;
+    for (id, inv) in rows {
+        let Ok(inv) = serde_json::from_str::<protocol::Inventory>(&inv) else {
+            continue;
+        };
+        let Some(lr) = &inv.local_recovery else {
+            continue;
+        };
+        let stale = lr.agent_version != inv.agent_version
+            || (lr.expires > 0 && (lr.expires as i64) < t + 60 * 86_400);
+        if !stale {
+            continue;
+        }
+        let recent: i64 = state.db().query_row(
+            "SELECT COUNT(*) FROM jobs WHERE agent_id = ?1 AND kind_json LIKE '%\"local_recovery\"%' AND (state IN ('queued', 'dispatched', 'running') OR (state IN ('failed', 'cancelled') AND created > ?2))",
+            params![id, t - 86_400],
+            |r| r.get(0),
+        )?;
+        if recent > 0 {
+            continue;
+        }
+        let kind = protocol::JobKind::LocalRecovery {
+            action: protocol::LocalRecoveryAction::Refresh,
+            size_mb: 0,
+            auto_start: lr.auto_start,
+            confirm: String::new(),
+        };
+        if crate::ui_api::insert_job(state, &id, &kind, None, None, "schedule").is_ok() {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// Queue a prune for repositories whose maintenance interval has passed.
 /// Skipped while a repository is on hold, and while one is already queued.
 pub fn run_maintenance(state: &Shared) -> rusqlite::Result<usize> {
@@ -377,6 +426,9 @@ pub async fn scheduler_loop(state: Shared) {
             purge_downloads(&s.cfg.downloads_dir, 24 * 3600);
             if let Err(e) = expire_recovery_sessions(&s) {
                 tracing::error!(error = %e, "recovery session cleanup");
+            }
+            if let Err(e) = refresh_local_recovery(&s) {
+                tracing::error!(error = %e, "local recovery refresh");
             }
             (a, b, c)
         })

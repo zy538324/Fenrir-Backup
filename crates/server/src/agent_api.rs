@@ -6,6 +6,10 @@ use axum::routing::post;
 use axum::{Json, Router};
 use protocol::*;
 use rusqlite::{params, OptionalExtension};
+
+/// How long a local recovery partition's enrolment code works (it is
+/// renewed whenever the partition is rebuilt).
+pub const LOCAL_RECOVERY_DAYS: i64 = 365;
 use uuid::Uuid;
 
 use crate::auth::AgentAuth;
@@ -287,6 +291,35 @@ async fn heartbeat(
                 (Err(_), _, _) => Err("This machine has not been given access to the repository. Grant access on the Repositories page."),
                 (_, Err(e), _) | (_, _, Err(e)) => Err(e),
             };
+            // Local recovery: a long-lived enrolment code for recovery
+            // sessions (replacing this machine's earlier one; the agent adds
+            // its own server address and pin).
+            let recovery_settings = match &kind {
+                JobKind::LocalRecovery { action, .. } => {
+                    let label = format!("local-recovery:{}", agent.agent_id);
+                    db.execute(
+                        "UPDATE enrollment_tokens SET revoked = 1 WHERE label = ?1",
+                        params![label],
+                    )?;
+                    if *action == protocol::LocalRecoveryAction::Remove {
+                        None
+                    } else {
+                        let token = crate::random_token();
+                        let expires = t + LOCAL_RECOVERY_DAYS * 86_400;
+                        db.execute(
+                            "INSERT INTO enrollment_tokens (id, token_hash, label, role, created, expires) VALUES (?1, ?2, ?3, 'recovery', ?4, ?5)",
+                            params![Uuid::new_v4().to_string(), crate::sha256_hex(token.as_bytes()), label, t, expires],
+                        )?;
+                        Some(protocol::recovery::RecoveryConfig {
+                            server: String::new(),
+                            pin: String::new(),
+                            token,
+                            expires: expires as u64,
+                        })
+                    }
+                }
+                _ => None,
+            };
             match repository {
                 Ok((repository, copy_target, group_source)) => {
                     db.execute(
@@ -299,6 +332,7 @@ async fn heartbeat(
                         repository,
                         copy_target,
                         group_source,
+                        recovery_settings,
                     });
                 }
                 Err(why) => {

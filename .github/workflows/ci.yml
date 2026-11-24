@@ -242,6 +242,32 @@ jobs:
   # Windows PE recovery media, built the way a user builds it: the Windows
   # ADK and its Windows PE add-on installed on a Windows machine, then
   # recovery-env/winpe/New-FenrirWinPE.ps1 with the Windows agent and CLI.
+  # The local recovery partition on a real Windows (docs/design/local-recovery.md).
+  local-recovery:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-x86_64-pc-windows-msvc
+          path: bin
+      - name: Windows PE add-on, if this runner has no Windows RE
+        shell: pwsh
+        run: |
+          if (((reagentc /info) -join "`n") -notmatch 'Windows RE location:\s+\\\\\?\\') {
+            foreach ($p in 'windows-adk-deploy', 'windows-adk-winpe') {
+              for ($i = 1; $i -le 4; $i++) {
+                choco install $p -y --no-progress
+                if (choco list --exact $p --limit-output) { break }
+                Start-Sleep -Seconds (30 * $i)
+              }
+            }
+          }
+      - name: install, check, remove
+        shell: pwsh
+        run: ./ci/windows-local-recovery.ps1 -Agent bin/fenrir-backup-agent.exe
+
   winpe-media:
     needs: build
     runs-on: windows-latest

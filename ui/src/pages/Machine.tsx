@@ -52,6 +52,7 @@ export default function MachinePage({ id }: { id: string }) {
       {a.running_job && <RunningCard agent={a} onCancel={async () => { await api.post(`/api/jobs/${a.running_job!.id}/cancel`); toast("ok", "Cancelling…"); reload(); }} />}
       {inv?.notes.map((n, i) => <Notice key={i} tone="info">{n}</Notice>)}
       {isRecovery && <RecoveryCard agent={a} inv={inv} />}
+      {!isRecovery && a.capabilities.includes("local_recovery") && <LocalRecoveryCard agent={a} inv={inv} onChange={reload} />}
       {!isRecovery && data.repositories.length === 0 && (
         <Notice tone="warn">
           This machine has no repository to back up to yet. <Link to="/repositories">Create one or grant access</Link>.
@@ -178,6 +179,71 @@ function VmTable({ vms, disabled, onBackup }: { vms: Vm[]; disabled: boolean; on
 }
 
 /** A machine booted from recovery media: choose an image to put on it. */
+/** The machine's own recovery partition (docs/design/local-recovery.md). */
+function LocalRecoveryCard({ agent, inv, onChange }: { agent: Agent; inv: Inventory | null; onChange: () => void }) {
+  const lr = inv?.local_recovery ?? null;
+  const toast = useToast();
+  const [dialog, setDialog] = useState<"install" | "remove" | null>(null);
+  const [confirm, setConfirm] = useState("");
+  const [autoStart, setAutoStart] = useState(false);
+  const [size, setSize] = useState("");
+  const [busy, setBusy] = useState(false);
+  const send = async (action: "install" | "refresh" | "remove") => {
+    setBusy(true);
+    try {
+      await api.post(`/api/agents/${agent.id}/local-recovery`, { action, confirm, auto_start: action === "refresh" ? lr?.auto_start ?? false : autoStart, size_mb: Number(size) || 0 });
+      toast("ok", action === "install" ? "Installing local recovery: follow it under Activity" : action === "refresh" ? "Rebuilding the recovery image" : "Removing local recovery");
+      setDialog(null);
+      setConfirm("");
+      onChange();
+    } catch (e) {
+      toast("bad", (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="card">
+      <div className="card-head"><LifeBuoy size={17} /><h2>Local recovery</h2></div>
+      <div className="card-body stack">
+        {lr ? (
+          <div className="small">
+            <Pill tone="ok">Installed</Pill> A {bytes(lr.size)} recovery partition (disk {lr.disk}, partition {lr.partition}), built {ago(lr.built_unix)} with agent {lr.agent_version}.
+            {" "}If Windows does not start, choose <b>Fenrir Recovery</b> in the boot menu{lr.auto_start ? " (it also starts by itself when Windows fails to start)" : ""}; the machine then appears under Machines as a recovery session to restore it from its backups.
+            {lr.expires > 0 && <> Its enrolment code is renewed automatically (now valid until {when(lr.expires)}).</>}
+          </div>
+        ) : (
+          <div className="muted small">
+            A small recovery partition on this machine with its own boot menu entry: if Windows no longer starts, start <b>Fenrir Recovery</b> from the boot menu and restore the machine from its backups, onto the same disk or a new one, without recovery media. Built from this machine's own Windows Recovery Environment with its network and storage drivers. About 1 GB is taken from C:.
+          </div>
+        )}
+        <div className="row">
+          {!lr && <button className="btn" disabled={!agent.online || !!agent.running_job} onClick={() => setDialog("install")}><LifeBuoy size={15} /> Install</button>}
+          {lr && <button className="btn" disabled={!agent.online || !!agent.running_job || busy} onClick={() => send("refresh")}><RotateCcw size={15} /> Rebuild now</button>}
+          {lr && <button className="btn danger" disabled={!agent.online || !!agent.running_job} onClick={() => setDialog("remove")}><Trash2 size={15} /> Remove</button>}
+        </div>
+      </div>
+      {dialog && (
+        <Modal title={dialog === "install" ? "Install local recovery" : "Remove local recovery"} onClose={() => setDialog(null)}
+          foot={<button className={`btn ${dialog === "remove" ? "danger" : "primary"}`} disabled={busy || confirm.trim().toLowerCase() !== agent.hostname.toLowerCase()} onClick={() => send(dialog)}>{dialog === "install" ? "Install" : "Remove"}</button>}>
+          <div className="stack">
+            {dialog === "install" ? (
+              <>
+                <Notice tone="warn">This shrinks C: on {agent.name} and creates a recovery partition after it, then adds <b>Fenrir Recovery</b> to the boot menu. Make sure a recent backup exists first.</Notice>
+                <Field label="Size in MB (optional)" hint="Left empty, it is what the recovery image needs (about 1 GB)."><input className="input" inputMode="numeric" value={size} onChange={(e) => setSize(e.target.value.replace(/\D/g, ""))} /></Field>
+                <label className="check"><input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} /><span>Start it automatically when Windows fails to start<div className="faint small">Instead of Windows' own Startup Repair.</div></span></label>
+              </>
+            ) : (
+              <Notice tone="warn">This deletes the recovery partition and its boot menu entry, and gives the space back to C:.</Notice>
+            )}
+            <Field label={`Type the machine's name (${agent.hostname}) to confirm`}><input className="input" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="off" /></Field>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function RecoveryCard({ agent, inv }: { agent: Agent; inv: Inventory | null }) {
   const images = useApi<Image[]>("/api/images");
   const [q, setQ] = useState("");

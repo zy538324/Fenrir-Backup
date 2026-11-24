@@ -2417,3 +2417,166 @@ async fn dedup_group_repositories_share_storage_and_key() {
         "{failed}"
     );
 }
+
+#[tokio::test]
+async fn local_recovery_partition_jobs_and_their_enrolment_code() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "pc-1").await;
+    let url = format!("/api/agents/{agent_id}/local-recovery");
+    // Only machines that report the capability (Windows).
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let (s, _) = t
+        .post(&url, json!({ "action": "install", "confirm": "web01" }))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let caps: Vec<&str> = CAPS.iter().copied().chain(["local_recovery"]).collect();
+    heartbeat(&mut t, &token, &caps, None).await;
+    // The machine's name must be typed.
+    let (s, v) = t
+        .post(&url, json!({ "action": "install", "confirm": "web02" }))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, _) = t.post(&url, json!({ "action": "refresh" })).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "nothing to refresh yet");
+    let (s, v) = t
+        .post(
+            &url,
+            json!({ "action": "install", "confirm": "WEB01", "auto_start": true }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let hb = heartbeat(&mut t, &token, &caps, None).await;
+    let job = &hb.jobs[0];
+    assert!(matches!(
+        job.kind,
+        JobKind::LocalRecovery {
+            action: protocol::LocalRecoveryAction::Install,
+            auto_start: true,
+            ..
+        }
+    ));
+    let cfg = job
+        .recovery_settings
+        .clone()
+        .expect("an enrolment code for the recovery system");
+    assert!(
+        cfg.server.is_empty(),
+        "the agent adds its own server address"
+    );
+    assert!(cfg.expires as i64 > 300 * 86_400 + 1_700_000_000);
+
+    // The code enrols recovery sessions only.
+    let enrol = |role: AgentRole, tok: String| EnrollRequest {
+        protocol: PROTOCOL_VERSION,
+        token: tok,
+        hostname: "MINWINPC".into(),
+        machine_id: "pe".into(),
+        os: OsSummary::default(),
+        role,
+        agent_version: "0.1.0".into(),
+        public_key: AgentKey::generate().public_b64(),
+    };
+    let (s, _) = t
+        .agent(
+            "/api/agent/enroll",
+            "",
+            serde_json::to_value(enrol(AgentRole::Server, cfg.token.clone())).unwrap(),
+        )
+        .await;
+    assert_ne!(s, StatusCode::OK, "not as an ordinary machine");
+    let (s, v) = t
+        .agent(
+            "/api/agent/enroll",
+            "",
+            serde_json::to_value(enrol(AgentRole::Recovery, cfg.token.clone())).unwrap(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // Installed: reported in the inventory. After an agent update it is rebuilt by the schedule.
+    t.agent(
+        &format!("/api/agent/jobs/{}/update", job.id),
+        &token,
+        json!({ "state": "succeeded" }),
+    )
+    .await;
+    let mut inv = inventory(&caps);
+    inv["local_recovery"] = json!({ "disk": 0, "partition": 5, "size": 1 << 30, "built_unix": 1_700_000_000,
+                                    "agent_version": "0.0.9", "expires": cfg.expires, "auto_start": true });
+    let (s, _) = t
+        .agent(
+            "/api/agent/heartbeat",
+            &token,
+            json!({ "inventory": inv, "running_job": null }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = t
+        .post(&url, json!({ "action": "install", "confirm": "web01" }))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "already installed");
+    assert_eq!(server::schedule::refresh_local_recovery(&t.st).unwrap(), 1);
+    assert_eq!(
+        server::schedule::refresh_local_recovery(&t.st).unwrap(),
+        0,
+        "one at a time"
+    );
+    let (_, v) = t
+        .agent(
+            "/api/agent/heartbeat",
+            &token,
+            json!({ "inventory": inv, "running_job": null }),
+        )
+        .await;
+    let hb: HeartbeatResponse = serde_json::from_value(v).unwrap();
+    let refresh = &hb.jobs[0];
+    assert!(matches!(
+        refresh.kind,
+        JobKind::LocalRecovery {
+            action: protocol::LocalRecoveryAction::Refresh,
+            auto_start: true,
+            ..
+        }
+    ));
+    let new = refresh.recovery_settings.clone().unwrap();
+    assert_ne!(new.token, cfg.token, "a new code replaces the old one");
+    let (s, _) = t
+        .agent(
+            "/api/agent/enroll",
+            "",
+            serde_json::to_value(enrol(AgentRole::Recovery, cfg.token.clone())).unwrap(),
+        )
+        .await;
+    assert_ne!(s, StatusCode::OK, "the old code no longer works");
+    t.agent(
+        &format!("/api/agent/jobs/{}/update", refresh.id),
+        &token,
+        json!({ "state": "succeeded" }),
+    )
+    .await;
+
+    // Removing: confirmed, and the code is revoked when the job is sent.
+    let (s, _) = t
+        .post(&url, json!({ "action": "remove", "confirm": "web01" }))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, v) = t
+        .agent(
+            "/api/agent/heartbeat",
+            &token,
+            json!({ "inventory": inv, "running_job": null }),
+        )
+        .await;
+    let hb: HeartbeatResponse = serde_json::from_value(v).unwrap();
+    assert!(hb.jobs[0].recovery_settings.is_none());
+    let (s, _) = t
+        .agent(
+            "/api/agent/enroll",
+            "",
+            serde_json::to_value(enrol(AgentRole::Recovery, new.token)).unwrap(),
+        )
+        .await;
+    assert_ne!(s, StatusCode::OK);
+}
