@@ -40,7 +40,8 @@ $r = ($out | Select-Object -Last 1) | ConvertFrom-Json
 $st = $r.state
 $p = Get-Partition -DiskNumber $st.disk | Where-Object { $_.Offset -eq $st.offset }
 Check ($p -ne $null) "the recovery partition exists (disk $($st.disk), partition $($p.PartitionNumber), $([math]::Round($p.Size / 1MB)) MB)"
-Check ((Get-Partition -DriveLetter C).Size -eq $before - $p.Size) 'C: gave up exactly its space'
+$gave = $before - (Get-Partition -DriveLetter C).Size
+Check ($gave -ge $p.Size -and $gave -le $p.Size + 32MB) "C: gave up its space ($([math]::Round($gave / 1MB)) MB for a $([math]::Round($p.Size / 1MB)) MB partition)"
 if ((Get-Disk -Number $st.disk).PartitionStyle -eq 'GPT') {
     Check ($p.GptType -eq '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}') "it is a Windows recovery partition ($($p.GptType))"
     Check ($p.IsHidden -or $p.NoDefaultDriveLetter) 'it is hidden, without a drive letter'

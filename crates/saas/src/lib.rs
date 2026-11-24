@@ -2,6 +2,7 @@
 //! Salesforce, with the customer's own app registration, service account or
 //! connected app; items stored in a repository like images (store.rs).
 
+pub mod google;
 pub mod http;
 pub mod m365;
 pub mod store;
