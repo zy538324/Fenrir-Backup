@@ -7,7 +7,8 @@
 # second after each version gives exactly that version, and a clean file system; a restore without --yes is refused.
 #
 #   sudo ci/e2e-cdp.sh WORK path/to/fenrir-backup
-set -euo pipefail
+set -Eeuo pipefail
+trap 'echo "e2e-cdp: line $LINENO failed: $BASH_COMMAND" >&2' ERR
 W=$1
 CLI=$(realpath "$2")
 VG=fenrircdp
@@ -32,6 +33,7 @@ LOOP=$(losetup -f --show "$W/disk.img")
 pvcreate -q "$LOOP"
 vgcreate -q "$VG" "$LOOP"
 lvcreate -q -y -L 256M -n data "$VG"
+udevadm settle
 mkfs.ext4 -q -L data "/dev/$VG/data"
 B repo init --recovery-key-out "$W/recovery.key" >/dev/null
 

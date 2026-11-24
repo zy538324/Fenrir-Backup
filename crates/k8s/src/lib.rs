@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod archive;
+pub mod repo;
 pub mod tar;
 pub mod volumes;
 

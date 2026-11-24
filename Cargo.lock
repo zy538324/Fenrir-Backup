@@ -1350,12 +1350,16 @@ dependencies = [
 name = "k8s"
 version = "0.1.0"
 dependencies = [
+ "core-format",
+ "engine",
  "rustls",
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "snapshot-linux",
  "tempfile",
  "ureq",
+ "uuid",
 ]
 
 [[package]]

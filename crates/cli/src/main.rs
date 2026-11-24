@@ -2090,28 +2090,17 @@ fn k8s_client(c: &K8sConnect) -> R<k8s::Client> {
     k8s::Client::new(&conn).map_err(|e| CliError::usage(e.to_string()))
 }
 
+fn k8s_e(e: k8s::Error) -> CliError {
+    CliError::new(ExitCode::Error, e.0)
+}
+
 /// A Kubernetes backup's archive, read back from the repository.
 fn k8s_archive(
     repo: &Repository,
     image: &str,
 ) -> R<(core_format::ManifestBody, k8s::archive::Archive)> {
-    let id = repo.resolve_image_id(image)?;
-    let m = repo.load_manifest(&id)?;
-    let d = m
-        .disks
-        .first()
-        .filter(|_| m.os.family == "kubernetes")
-        .ok_or_else(|| CliError::usage(format!("{id} is not a Kubernetes backup")))?;
-    let cs = m.chunk_size as u64;
-    let mut buf = vec![0u8; d.size as usize];
-    for core_format::manifest::ChunkRef(i, cid) in &d.chunks {
-        let data = repo.get_chunk(cid)?;
-        let at = (*i * cs) as usize;
-        let end = (at + data.len()).min(buf.len());
-        buf[at..end].copy_from_slice(&data[..end - at]);
-    }
-    let a =
-        k8s::archive::Archive::from_disk(&buf).map_err(|e| CliError::new(ExitCode::Error, e))?;
+    let m = repo.load_manifest(&repo.resolve_image_id(image)?)?;
+    let a = k8s::repo::archive(repo, &m).map_err(|e| CliError::usage(e.0))?;
     Ok((m, a))
 }
 
@@ -2126,122 +2115,36 @@ fn k8s_cmd(ctx: &Ctx, k: K8sCmd) -> R<Outcome> {
         } => {
             let c = k8s_client(&connect)?;
             let quiet = ctx.json;
-            let mut a = k8s::export(&c, &namespaces, &|s: &str| {
-                if !quiet {
-                    eprintln!("  {s}")
-                }
-            })
-            .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
-            let dir = tempfile_dir()?;
-            let mut files: Vec<PathBuf> = vec![dir.join("kubernetes.img")];
-            if let Some(image) = &volume_image {
-                for ns in &namespaces {
-                    for claim in c
-                        .claims(ns)
-                        .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?
-                    {
-                        if !quiet {
-                            eprintln!(
-                                "  {ns}: volume {} ({})",
-                                claim.name,
-                                if claim.snapshot_class.is_some() {
-                                    "snapshot"
-                                } else {
-                                    "live"
-                                }
-                            );
-                        }
-                        let path = dir.join(format!("volume-{}.tar", files.len()));
-                        let mut f = std::fs::File::create(&path)?;
-                        match c.backup_claim(ns, &claim, image, &mut f) {
-                            Ok((method, bytes)) => {
-                                // A whole number of 4 KiB blocks (a tar ends with zero blocks anyway).
-                                f.set_len(bytes.div_ceil(4096).max(1) * 4096)?;
-                                if method == "live" {
-                                    a.warnings.push(format!("{ns}/{}: its driver cannot snapshot it, so it was read while in use", claim.name));
-                                }
-                                a.volumes.push(k8s::volumes::VolumeRecord {
-                                    namespace: ns.clone(),
-                                    claim: claim.name.clone(),
-                                    disk: files.len() as u32,
-                                    method,
-                                    bytes,
-                                });
-                                files.push(path);
-                            }
-                            Err(e) => a.warnings.push(format!(
-                                "{ns}/{}: its data was not backed up: {e}",
-                                claim.name
-                            )),
-                        }
-                    }
-                }
-            }
-            let disk = a.to_disk().map_err(|e| CliError::new(ExitCode::Error, e))?;
-            std::fs::write(&files[0], &disk)?;
             let repo = open_repo(ctx)?;
-            let opened: Vec<_> = files
-                .iter()
-                .map(|f| {
-                    snapshot_linux::open_disk(f, false)
-                        .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))
-                })
-                .collect::<R<_>>()?;
-            let sources: Vec<&dyn engine::DiskSource> = opened
-                .iter()
-                .map(|o| &o.source as &dyn engine::DiskSource)
-                .collect();
-            let meta = engine::ImageMeta {
-                machine: MachineInfo {
-                    machine_id: format!("k8s:{cluster}"),
-                    hostname: cluster.clone(),
-                },
-                consistency: if a.volumes.iter().any(|v| v.method == "live") {
-                    core_format::manifest::Consistency::Inconsistent
-                } else {
-                    core_format::manifest::Consistency::Crash
-                },
-                os: core_format::manifest::OsInfo {
-                    family: "kubernetes".into(),
-                    name: namespaces.join(", "),
-                    ..Default::default()
-                },
-                boot: Default::default(),
-                drivers: vec![],
-                label: label.or_else(|| Some(format!("namespaces: {}", namespaces.join(", ")))),
-                warnings: a.warnings.clone(),
-                vm: None,
-                applications: vec![],
-            };
-            let r = engine::backup(
+            let r = k8s::repo::backup(
                 &repo,
-                &sources,
-                meta,
-                &engine::BackupOptions {
-                    workers: 2,
-                    rate_limit: 0,
-                },
+                &c,
+                &cluster,
+                &namespaces,
+                label,
+                volume_image.as_deref(),
                 &JobControl::new(),
-                &|_| {},
-            );
-            drop(sources);
-            drop(opened);
-            let _ = std::fs::remove_dir_all(&dir);
-            let r = r?;
+                &|s: &str| {
+                    if !quiet {
+                        eprintln!("  {s}")
+                    }
+                },
+            )
+            .map_err(k8s_e)?;
             let out = Outcome::new(
-                json!({ "image_id": r.image_id, "namespaces": namespaces, "objects": a.objects.len(), "kinds": a.summary(), "volumes": a.volumes, "warnings": a.warnings }),
+                json!({ "image_id": r.image_id, "namespaces": namespaces, "objects": r.objects, "kinds": r.kinds, "volumes": r.volumes, "warnings": r.warnings }),
                 format!(
                     "Backed up {} objects and {} volumes of {} as image {}\n",
-                    a.objects.len(),
-                    a.volumes.len(),
+                    r.objects,
+                    r.volumes.len(),
                     namespaces.join(", "),
                     r.image_id
                 ),
             );
-            Ok(if a.warnings.is_empty() {
+            Ok(if r.warnings.is_empty() {
                 out
             } else {
-                out.with_warnings(a.warnings.clone())
+                out.with_warnings(r.warnings.clone())
             })
         }
         K8sCmd::Show { image } => {
@@ -2278,7 +2181,7 @@ fn k8s_cmd(ctx: &Ctx, k: K8sCmd) -> R<Outcome> {
                 ));
             }
             let repo = open_repo(ctx)?;
-            let (m, a) = k8s_archive(&repo, &image)?;
+            let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
             let c = k8s_client(&connect)?;
             let only: Vec<String> = namespace.iter().cloned().collect();
             let map: Vec<(String, String)> = namespace
@@ -2286,50 +2189,10 @@ fn k8s_cmd(ctx: &Ctx, k: K8sCmd) -> R<Outcome> {
                 .cloned()
                 .zip(to_namespace.iter().cloned())
                 .collect();
-            let target = |ns: &str| {
-                map.iter()
-                    .find(|(o, _)| o == ns)
-                    .map(|(_, n)| n.clone())
-                    .unwrap_or_else(|| ns.to_string())
-            };
-            let dir = tempfile_dir()?;
-            let mut put_back = |rep: &mut k8s::RestoreReport| -> k8s::Result<()> {
-                let Some(img) = &volume_image else {
-                    return Ok(());
-                };
-                for v in a
-                    .volumes
-                    .iter()
-                    .filter(|v| only.is_empty() || only.contains(&v.namespace))
-                {
-                    let file = dir.join(format!("volume-{}.tar", v.disk));
-                    let r = k8s_disk_to(&repo, &m, v.disk, &file, v.bytes)
-                        .map_err(|e| k8s::Error(e.message))
-                        .and_then(|_| {
-                            std::fs::File::open(&file).map_err(|e| k8s::Error(e.to_string()))
-                        })
-                        .and_then(|f| {
-                            c.restore_claim(&target(&v.namespace), &v.claim, img, v.bytes, f)
-                        });
-                    match r {
-                        Ok(j) => rep.volumes.push(json!({ "namespace": target(&v.namespace), "claim": v.claim, "result": j })),
-                        Err(e) => rep.failed.push(format!("volume {}/{}: {e}", v.namespace, v.claim)),
-                    }
-                    let _ = std::fs::remove_file(&file);
-                }
-                Ok(())
-            };
-            let rep = k8s::restore_with(&c, &a, &only, &map, replace, &mut put_back)
-                .map_err(|e| CliError::new(ExitCode::Error, e.to_string()));
-            let _ = std::fs::remove_dir_all(&dir);
-            let rep = rep?;
-            let mut warnings = rep.failed.clone();
-            if volume_image.is_none() && !a.volumes.is_empty() {
-                warnings.push(format!(
-                    "{} volumes' data were not restored: give --volume-image",
-                    a.volumes.len()
-                ));
-            }
+            let rep =
+                k8s::repo::restore(&repo, &c, &m, &only, &map, replace, volume_image.as_deref())
+                    .map_err(k8s_e)?;
+            let warnings = rep.failed.clone();
             let text = format!(
                 "Restored into {}: {} created, {} already there, {} volumes{}\n",
                 rep.namespaces.join(", "),
@@ -2360,7 +2223,7 @@ fn k8s_cmd(ctx: &Ctx, k: K8sCmd) -> R<Outcome> {
     }
 }
 
-/// Disk `disk` of a Kubernetes backup, written to `file` (its first `len` bytes).
+/// Disk `disk` of an image, written to `file` (its first `len` bytes).
 fn k8s_disk_to(
     repo: &Repository,
     m: &core_format::ManifestBody,
@@ -2368,25 +2231,7 @@ fn k8s_disk_to(
     file: &Path,
     len: u64,
 ) -> R<()> {
-    use std::io::{Seek, SeekFrom, Write};
-    let d = m
-        .disks
-        .get(disk as usize)
-        .ok_or_else(|| CliError::usage(format!("the backup has no disk {disk}")))?;
-    let mut f = std::fs::File::create(file)?;
-    f.set_len(len)?;
-    let cs = m.chunk_size as u64;
-    for core_format::manifest::ChunkRef(i, cid) in &d.chunks {
-        let at = *i * cs;
-        if at >= len {
-            break;
-        }
-        let data = repo.get_chunk(cid)?;
-        let n = (len - at).min(data.len() as u64) as usize;
-        f.seek(SeekFrom::Start(at))?;
-        f.write_all(&data[..n])?;
-    }
-    Ok(())
+    k8s::repo::disk_to(repo, m, disk, file, len).map_err(k8s_e)
 }
 
 fn tempfile_dir() -> R<PathBuf> {
