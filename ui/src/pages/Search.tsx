@@ -8,7 +8,9 @@ import { bytes, when } from "../format";
 import { Empty, Field, Notice, useApi } from "../ui";
 import { FileBrowser } from "./Files";
 
-interface Hit { image_id: string; volume: string; path: string; size: number; modified: number | null; folder: boolean }
+interface Hit { image_id: string; volume?: { disk: number; partition: number } | string | null; path: string; size: number; modified: number | string | null; folder: boolean; account?: string; kind?: string }
+
+const KIND_LABEL: Record<string, string> = { mail: "Mail", file: "File", "site-file": "SharePoint", record: "Record", "teams-message": "Teams", directory: "Entra ID" };
 interface SearchJob { id: string; agent_name: string; agent_online: boolean; images: number }
 
 const FINAL = ["succeeded", "warning", "failed", "cancelled"];
@@ -96,10 +98,13 @@ export default function SearchPage() {
                 const im = byId.get(h.image_id);
                 return (
                   <tr key={i}>
-                    <td><span className="mono small">{h.volume} {h.path}</span>{h.folder && <span className="faint small"> (folder)</span>}</td>
+                    <td>
+                      {h.account ? <><span className="small">{h.path}</span><div className="faint small">{KIND_LABEL[h.kind ?? ""] ?? h.kind} · {h.account}</div></> : <span className="mono small">{h.path}</span>}
+                      {h.folder && <span className="faint small"> (folder)</span>}
+                    </td>
                     <td className="nowrap">{im ? <>{im.vm_name ?? im.hostname}<div className="faint small">{when(im.created)}</div></> : h.image_id.slice(0, 8)}</td>
                     <td style={{ textAlign: "right" }}>{h.folder ? "" : bytes(h.size)}</td>
-                    <td style={{ textAlign: "right" }}>{im && <button className="btn sm" onClick={() => setOpen(im)}><FolderOpen size={13} /> Open</button>}</td>
+                    <td style={{ textAlign: "right" }}>{im && !h.account && <button className="btn sm" onClick={() => setOpen(im)}><FolderOpen size={13} /> Open</button>}{h.account && <a className="btn sm" href="/apps">Restore</a>}</td>
                   </tr>
                 );
               })}

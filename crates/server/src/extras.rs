@@ -903,7 +903,13 @@ pub fn after_backup(
     let c = caps(db, agent);
     let who = format!("agent:{agent}");
     if c.iter().any(|x| x == "search_files") {
-        for im in images {
+        // Disk images and folder backups have file catalogues; SaaS backups
+        // carry their own index, and Kubernetes and CDP images have none.
+        for im in images.iter().filter(|i| {
+            !["saas:", "k8s:", "cdp:"]
+                .iter()
+                .any(|p| i.machine_id.starts_with(p))
+        }) {
             queue(
                 db,
                 agent,
