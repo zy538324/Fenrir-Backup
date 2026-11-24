@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BellRing, CheckCircle2, Mail, RefreshCw, Save, Send, Webhook, XCircle } from "lucide-react";
+import { BellRing, CheckCircle2, Mail, RefreshCw, Save, Send, Webhook, XCircle, Download } from "lucide-react";
 import { api, type Delivery, type EmailSettings, type NotifySettings, type Settings, type WebhookSettings } from "../api";
 import { when } from "../format";
 import { Field, Loading, Notice, Switch, useApi, useToast } from "../ui";
@@ -156,6 +156,21 @@ export default function SettingsPage() {
         ))}
       </div>
 
+      <div className="card">
+        <div className="card-head"><Download size={17} /><h2>Move to Fenrir Cloud</h2></div>
+        <div className="card-body stack tight">
+          <div className="muted small">Download the repositories and plans (no passphrases or sign-ins: those are only ever encrypted for machines). In Fenrir Cloud, add each repository as existing with its passphrase, then import this file to recreate the plans.</div>
+          <div><button className="btn" onClick={async () => {
+            const data = await api.get<unknown>("/api/export");
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "fenrir-backup-export.json";
+            a.click();
+            URL.revokeObjectURL(a.href);
+          }}><Download size={15} /> Download export</button></div>
+        </div>
+      </div>
       <div className="card">
         <div className="card-head"><RefreshCw size={17} /><h2>Agent updates</h2><span className="right"><Switch on={s.data.auto_update} label="Automatic agent updates" onChange={async (v) => { await api.req("PUT", "/api/settings", { auto_update: v }); s.reload(); }} /></span></div>
         <div className="card-body muted">

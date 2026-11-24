@@ -471,6 +471,50 @@ async fn update_job(
         }
     }
 
+    // Adopting an existing repository: its first listing names it.
+    if matches!(kind, Some(JobKind::ListImages)) && u.state.is_final() {
+        if let Some(rid) = &repo_id {
+            let (status, uuid): (String, String) = db.query_row(
+                "SELECT status, repo_uuid FROM repositories WHERE id = ?1",
+                params![rid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            if status == "pending" && uuid.is_empty() {
+                let (status, msg, got) = match (u.state, u.repo_uuid) {
+                    (JobState::Succeeded | JobState::Warning, Some(got)) => {
+                        let other: Option<String> = db
+                            .query_row(
+                                "SELECT name FROM repositories WHERE repo_uuid = ?1 AND id != ?2",
+                                params![got.to_string(), rid],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        match other {
+                            Some(n) => (
+                                "failed",
+                                Some(format!("this repository is already registered here as {n}")),
+                                String::new(),
+                            ),
+                            None => ("ready", None, got.to_string()),
+                        }
+                    }
+                    (JobState::Succeeded | JobState::Warning, None) => (
+                        "failed",
+                        Some(
+                            "the machine did not report the repository's ID; update its agent"
+                                .to_string(),
+                        ),
+                        String::new(),
+                    ),
+                    _ => ("failed", u.error.clone(), String::new()),
+                };
+                db.execute(
+                    "UPDATE repositories SET status = ?1, status_message = ?2, repo_uuid = ?3 WHERE id = ?4",
+                    params![status, msg, got, rid],
+                )?;
+            }
+        }
+    }
     if matches!(
         serde_json::from_str::<JobKind>(&kind_json),
         Ok(JobKind::InitRepository)

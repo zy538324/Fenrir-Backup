@@ -158,6 +158,8 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
   const [kind, setKind] = useState<"folder" | "s3">("folder");
   const [s3, setS3] = useState<S3Form>(emptyS3());
   const [saved, setSaved] = useState(false);
+  // Add a repository that already exists (moved from another server): no new recovery key.
+  const [existing, setExisting] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -188,13 +190,13 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
       const access = await Promise.all(
         ids.map(async (id) => {
           const a = agents.find((x) => x.id === id)!;
-          const secret = JSON.stringify({ passphrase: pass, recovery_key: id === creator ? recovery.fileContents : null });
+          const secret = JSON.stringify({ passphrase: pass, recovery_key: id === creator && !existing ? recovery.fileContents : null });
           const sealed_share = isS3 ? await sealSignin(a, s3Signin(s3)) : share && signin.mode === "password" ? await sealSignin(a, signin) : null;
           return { agent_id: id, sealed: await seal(a.public_key, secret), sealed_share };
         }),
       );
       await api.post("/api/repositories", {
-        name, path: location, repo_uuid: recovery.repoId, init_agent_id: creator, access,
+        name, path: location, ...(existing ? { existing: true } : { repo_uuid: recovery.repoId }), init_agent_id: creator, access,
         share_auth: isS3 ? "password" : share ? signin.mode : "none",
         share_user: isS3 ? s3.access_key.trim() : share && signin.mode === "password" ? signinDisplay(signin) : null,
         s3: isS3 ? s3Settings(s3) : null,
@@ -208,7 +210,7 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
     }
   };
 
-  const steps = ["Location", "Passphrase", "Recovery key"];
+  const steps = existing ? ["Location", "Passphrase"] : ["Location", "Passphrase", "Recovery key"];
   return (
     <Modal
       wide
@@ -226,7 +228,8 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
           {step > 1 && <button className="btn" onClick={() => setStep(step - 1)}>Back</button>}
           <span className="grow" />
           {step === 1 && <button className="btn primary" disabled={!name.trim() || !creator || (isS3 ? !s3Complete(s3) : !path.trim() || (share && !signinComplete(signin)))} onClick={() => setStep(2)}>Continue</button>}
-          {step === 2 && <button className="btn primary" disabled={pass.length < 12 || pass !== pass2} onClick={() => setStep(3)}>Continue</button>}
+          {step === 2 && !existing && <button className="btn primary" disabled={pass.length < 12 || pass !== pass2} onClick={() => setStep(3)}>Continue</button>}
+          {step === 2 && existing && <button className="btn primary" disabled={!pass || pass !== pass2 || busy} onClick={create}><Lock size={15} /> {busy ? "Encrypting…" : "Add repository"}</button>}
           {step === 3 && <button className="btn primary" disabled={!saved || busy} onClick={create}><Lock size={15} /> {busy ? "Encrypting…" : "Create repository"}</button>}
         </>
       }
@@ -235,7 +238,11 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
       {step === 1 && (
         <>
           <Field label="Name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} /></Field>
-          <Field label="Created by" hint="This machine creates the repository folder and must be able to write to it.">
+          <label className="check">
+            <input type="checkbox" checked={existing} onChange={(e) => setExisting(e.target.checked)} />
+            <span>It already exists<div className="faint small">A repository moved from another Fenrir-Backup server, or added again: its backups and their history are listed, nothing is created. You need its passphrase.</div></span>
+          </label>
+          <Field label={existing ? "Opened by" : "Created by"} hint="This machine creates the repository folder and must be able to write to it.">
             <select className="input" value={creator} onChange={(e) => setCreator(e.target.value)}>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}
             </select>
@@ -269,6 +276,9 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
             </Field>
           )}
         </>
+      )}
+      {step === 2 && existing && (
+        <Notice tone="info">Enter the repository's existing passphrase. It is encrypted in this browser for each chosen machine; the first one opens the repository and lists its backups.</Notice>
       )}
       {step === 2 && (
         <>

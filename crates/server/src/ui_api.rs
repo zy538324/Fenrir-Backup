@@ -75,6 +75,7 @@ pub fn routes() -> Router<Shared> {
         .route("/api/repositories/{id}/gateway", post(set_gateway))
         .route("/api/images/{id}/restore-files", post(restore_files))
         .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/export", get(export_config))
         .route("/api/settings/test-notification", post(test_notification))
         .route("/api/notifications", get(list_notifications))
 }
@@ -833,8 +834,14 @@ fn is_share_path(p: &str) -> bool {
 struct NewRepo {
     name: String,
     path: String,
-    /// Chosen by the browser, matching the recovery key it generated.
-    repo_uuid: Uuid,
+    /// Chosen by the browser, matching the recovery key it generated. Not
+    /// given for an existing repository (the machine reports it).
+    #[serde(default)]
+    repo_uuid: Option<Uuid>,
+    /// Add a repository that already exists (moved from another server, or
+    /// re-added): its images are listed instead of a new one being created.
+    #[serde(default)]
+    existing: bool,
     init_agent_id: String,
     access: Vec<SealedFor>,
     #[serde(flatten)]
@@ -874,6 +881,11 @@ async fn create_repo(
     if mode == "password" && n.access.iter().any(|x| x.sealed_share.is_none()) {
         return Err(ApiError::bad("enter the share password for every machine"));
     }
+    let repo_uuid = match (n.existing, n.repo_uuid) {
+        (true, _) => String::new(), // reported by the machine that lists it
+        (false, Some(u)) => u.to_string(),
+        (false, None) => return Err(ApiError::bad("repo_uuid is required for a new repository")),
+    };
     let id = Uuid::new_v4().to_string();
     let t = now();
     {
@@ -881,7 +893,7 @@ async fn create_repo(
         let tx = db.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id, share_auth, share_user, s3_json) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9)",
-            params![id, name, path, n.repo_uuid.to_string(), t, init, mode, n.share.user(), n.s3.as_ref().map(serde_json::to_string).transpose()?],
+            params![id, name, path, repo_uuid, t, init, mode, n.share.user(), n.s3.as_ref().map(serde_json::to_string).transpose()?],
         )?;
         for x in &n.access {
             let agent = uuid_param(&x.agent_id)?;
@@ -910,12 +922,59 @@ async fn create_repo(
     let job = insert_job(
         &st,
         &init,
-        &JobKind::InitRepository,
+        if n.existing {
+            &JobKind::ListImages
+        } else {
+            &JobKind::InitRepository
+        },
         Some(&id),
         None,
         &a.username,
     )?;
     Ok(Json(json!({ "id": id, "init_job_id": job })))
+}
+
+/// Repositories and plans, for moving to Fenrir Cloud (or another server):
+/// no secrets (repository passphrases and share sign-ins are only ever sealed
+/// to machines). Machines are named by their machine ID, repositories by
+/// their repository ID, which the importing side matches.
+async fn export_config(State(st): State<Shared>, a: Admin) -> ApiResult<Json<Value>> {
+    let db = st.db();
+    let repos: Vec<Value> = db
+        .prepare(
+            "SELECT name, path, repo_uuid, share_auth, share_user, s3_json, prune_every_days FROM repositories
+             WHERE status = 'ready' ORDER BY created",
+        )?
+        .query_map([], |r| {
+            Ok(json!({
+                "name": r.get::<_, String>(0)?, "path": r.get::<_, String>(1)?, "repo_uuid": r.get::<_, String>(2)?,
+                "share_auth": r.get::<_, Option<String>>(3)?, "share_user": r.get::<_, Option<String>>(4)?,
+                "s3": r.get::<_, Option<String>>(5)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+                "prune_every_days": r.get::<_, Option<i64>>(6)?,
+            }))
+        })?
+        .collect::<Result<_, _>>()?;
+    let plans: Vec<Value> = db
+        .prepare(
+            "SELECT p.name, a.machine_id, a.hostname, r.repo_uuid, p.job_json, p.schedule_json, p.retention_json, p.enabled, c.repo_uuid
+             FROM plans p JOIN agents a ON a.id = p.agent_id JOIN repositories r ON r.id = p.repository_id
+             LEFT JOIN repositories c ON c.id = p.copy_to_repository_id ORDER BY p.name",
+        )?
+        .query_map([], |r| {
+            let parse = |s: Option<String>| s.and_then(|s| serde_json::from_str::<Value>(&s).ok());
+            Ok(json!({
+                "name": r.get::<_, String>(0)?, "machine_id": r.get::<_, String>(1)?, "hostname": r.get::<_, String>(2)?,
+                "repo_uuid": r.get::<_, String>(3)?, "job": parse(r.get(4)?), "schedule": parse(r.get(5)?),
+                "retention": parse(r.get(6)?), "enabled": r.get::<_, i64>(7)? != 0,
+                "copy_to_repo_uuid": r.get::<_, Option<String>>(8)?,
+            }))
+        })?
+        .collect::<Result<_, _>>()?;
+    audit(&db, &a.username, "config.exported", "");
+    Ok(Json(json!({
+        "format": "fenrir-backup-export", "version": 1, "exported": now(),
+        "repositories": repos, "plans": plans,
+    })))
 }
 
 async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<Value>>> {

@@ -2126,3 +2126,84 @@ async fn offsite_copy_after_each_plan_backup() {
     let (_, plans) = t.get("/api/plans").await;
     assert!(plans[0]["copy_to_repository_id"].is_null());
 }
+
+#[tokio::test]
+async fn existing_repository_is_adopted_and_config_exported() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let sealed = seal(&key.public_b64(), b"{\"passphrase\":\"p\"}").unwrap();
+    let body = json!({ "name": "Moved", "path": "/mnt/old", "existing": true, "init_agent_id": agent_id,
+                       "access": [{ "agent_id": agent_id, "sealed": sealed }] });
+    let (s, r) = t.post("/api/repositories", body.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let repo = r["id"].as_str().unwrap().to_string();
+    // The machine lists it (no new repository is created) and reports its ID.
+    let real = uuid::Uuid::new_v4();
+    let hb = heartbeat(&mut t, &token, CAPS, None).await;
+    assert!(matches!(hb.jobs[0].kind, JobKind::ListImages));
+    let im = image(1, 30, 30 << 20, 12 << 20);
+    t.agent(
+        &format!("/api/agent/jobs/{}/update", hb.jobs[0].id),
+        &token,
+        json!({ "state": "succeeded", "repo_uuid": real, "images": [im] }),
+    )
+    .await;
+    let (_, repos) = t.get("/api/repositories").await;
+    let r0 = repos
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == repo.as_str())
+        .unwrap();
+    assert_eq!(
+        (r0["status"].as_str(), r0["repo_uuid"].as_str()),
+        (Some("ready"), Some(real.to_string().as_str()))
+    );
+    assert_eq!(r0["images"], 1, "its history came with it");
+    // Adding the same repository twice is refused.
+    let (_, r2) = t.post("/api/repositories", body).await;
+    let hb = heartbeat(&mut t, &token, CAPS, None).await;
+    t.agent(
+        &format!("/api/agent/jobs/{}/update", hb.jobs[0].id),
+        &token,
+        json!({ "state": "succeeded", "repo_uuid": real, "images": [] }),
+    )
+    .await;
+    let (_, repos) = t.get("/api/repositories").await;
+    let dup = repos
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == r2["id"])
+        .unwrap();
+    assert_eq!(dup["status"], "failed");
+    assert!(dup["status_message"]
+        .as_str()
+        .unwrap()
+        .contains("already registered"));
+
+    // Export: repositories and plans, no secrets.
+    let (s, _) = t
+        .post(
+            "/api/plans",
+            json!({ "name": "Nightly", "agent_id": agent_id, "repository_id": repo, "job": { "type": "backup_disks", "paths": ["/dev/sdb"] },
+                    "schedule": { "type": "interval", "hours": 0, "minutes": 30 }, "retention": { "keep_hourly": 24 } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, ex) = t.get("/api/export").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(ex["format"], "fenrir-backup-export");
+    assert_eq!(ex["repositories"][0]["repo_uuid"], real.to_string());
+    assert_eq!(ex["plans"][0]["machine_id"], "machine-1");
+    assert_eq!(ex["plans"][0]["repo_uuid"], real.to_string());
+    assert_eq!(ex["plans"][0]["schedule"]["minutes"], 30);
+    let text = ex.to_string();
+    assert!(
+        !text.contains("sealed") && !text.contains("passphrase"),
+        "no secrets: {text}"
+    );
+}
