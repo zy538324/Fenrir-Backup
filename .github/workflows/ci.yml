@@ -446,6 +446,28 @@ jobs:
           sudo tail -n 50 /tmp/fenrir-pg*.log /tmp/fenrir-mysql*.log || true
           sudo lvs -a || true
 
+  # Changed-block tracking with dm-era (docs/design/cbt-physical.md).
+  cbt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y lvm2 e2fsprogs util-linux jq thin-provisioning-tools
+          sudo modprobe dm-era || sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+      - name: build
+        run: cargo build --release --locked -p cli
+      - name: run
+        run: sudo timeout 900 ci/e2e-cbt.sh /tmp/e2e-cbt target/release/fenrir-backup
+      - name: logs
+        if: always()
+        run: |
+          sudo dmsetup table || true
+          sudo dmsetup status || true
+          sudo dmesg | tail -n 30 || true
+
   # Continuous data protection with dm-log-writes (docs/design/cdp.md).
   cdp:
     runs-on: ubuntu-latest
