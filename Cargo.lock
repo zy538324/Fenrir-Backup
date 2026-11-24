@@ -525,6 +525,7 @@ dependencies = [
  "core-format",
  "engine",
  "fatfs",
+ "k8s",
  "rpassword",
  "s3store",
  "serde",
@@ -1332,6 +1333,17 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "k8s"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

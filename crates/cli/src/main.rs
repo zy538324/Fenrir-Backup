@@ -70,6 +70,9 @@ enum Cmd {
     /// Restore an image.
     #[command(subcommand)]
     Restore(RestoreCmd),
+    /// Kubernetes: back up and restore the objects of namespaces.
+    #[command(subcommand)]
+    K8s(K8sCmd),
     /// Copy a disk straight onto another (no repository).
     Clone(CloneArgs),
     /// Copy images to another repository (an off-site copy): re-encrypted
@@ -148,6 +151,55 @@ enum RepoCmd {
     },
     /// Show repository parameters and usage.
     Info,
+}
+
+/// How to reach the Kubernetes API (default: the pod's service account).
+#[derive(clap::Args, Clone)]
+struct K8sConnect {
+    /// API server, e.g. https://10.0.0.1:6443.
+    #[arg(long)]
+    api_server: Option<String>,
+    /// File holding a bearer token (a service account's).
+    #[arg(long)]
+    token_file: Option<PathBuf>,
+    /// The cluster's CA certificate (PEM).
+    #[arg(long)]
+    ca_file: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum K8sCmd {
+    /// Back up the objects of namespaces (not their volumes' data).
+    Backup {
+        #[command(flatten)]
+        connect: K8sConnect,
+        /// Namespace to back up (repeat for several).
+        #[arg(long = "namespace", required = true)]
+        namespaces: Vec<String>,
+        /// Name of the cluster in the repository (its machine).
+        #[arg(long, default_value = "kubernetes")]
+        cluster: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// What a Kubernetes backup holds.
+    Show { image: String },
+    /// Create a backup's objects again.
+    Restore {
+        #[command(flatten)]
+        connect: K8sConnect,
+        #[arg(long)]
+        image: String,
+        /// Only this namespace of the backup (default: all).
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Into this namespace instead (with --namespace).
+        #[arg(long)]
+        to_namespace: Option<String>,
+        /// Replace objects that exist (default: leave them).
+        #[arg(long)]
+        replace: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -450,6 +502,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
         Cmd::Verify(a) => verify(ctx, a),
         Cmd::Clone(a) => clone(ctx, a),
         Cmd::Copy(a) => copy(ctx, a),
+        Cmd::K8s(k) => k8s_cmd(ctx, k),
         Cmd::Restore(RestoreCmd::Disk {
             image,
             disk,
@@ -1839,4 +1892,191 @@ fn human_bytes(n: u64) -> String {
     } else {
         format!("{v:.1} {}", U[i])
     }
+}
+
+// ---------------------------------------------------------------- Kubernetes (docs/design/kubernetes.md)
+
+fn k8s_client(c: &K8sConnect) -> R<k8s::Client> {
+    let conn = match &c.api_server {
+        None => k8s::Connect::in_cluster().map_err(|e| CliError::usage(e.to_string()))?,
+        Some(server) => {
+            let read = |p: &Option<PathBuf>, what: &str| -> R<String> {
+                let p = p.as_ref().ok_or_else(|| {
+                    CliError::usage(format!("--{what} is needed with --api-server"))
+                })?;
+                std::fs::read_to_string(p)
+                    .map_err(|e| CliError::usage(format!("{}: {e}", p.display())))
+            };
+            k8s::Connect {
+                server: server.clone(),
+                token: read(&c.token_file, "token-file")?.trim().to_string(),
+                ca_pem: read(&c.ca_file, "ca-file")?,
+            }
+        }
+    };
+    k8s::Client::new(&conn).map_err(|e| CliError::usage(e.to_string()))
+}
+
+/// A Kubernetes backup's archive, read back from the repository.
+fn k8s_archive(
+    repo: &Repository,
+    image: &str,
+) -> R<(core_format::ManifestBody, k8s::archive::Archive)> {
+    let id = repo.resolve_image_id(image)?;
+    let m = repo.load_manifest(&id)?;
+    let d = m
+        .disks
+        .first()
+        .filter(|_| m.os.family == "kubernetes")
+        .ok_or_else(|| CliError::usage(format!("{id} is not a Kubernetes backup")))?;
+    let cs = m.chunk_size as u64;
+    let mut buf = vec![0u8; d.size as usize];
+    for core_format::manifest::ChunkRef(i, cid) in &d.chunks {
+        let data = repo.get_chunk(cid)?;
+        let at = (*i * cs) as usize;
+        let end = (at + data.len()).min(buf.len());
+        buf[at..end].copy_from_slice(&data[..end - at]);
+    }
+    let a =
+        k8s::archive::Archive::from_disk(&buf).map_err(|e| CliError::new(ExitCode::Error, e))?;
+    Ok((m, a))
+}
+
+fn k8s_cmd(ctx: &Ctx, k: K8sCmd) -> R<Outcome> {
+    match k {
+        K8sCmd::Backup {
+            connect,
+            namespaces,
+            cluster,
+            label,
+        } => {
+            let c = k8s_client(&connect)?;
+            let quiet = ctx.json;
+            let a = k8s::export(&c, &namespaces, &|s: &str| {
+                if !quiet {
+                    eprintln!("  {s}")
+                }
+            })
+            .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+            let disk = a.to_disk().map_err(|e| CliError::new(ExitCode::Error, e))?;
+            let dir = tempfile_dir()?;
+            let file = dir.join("kubernetes.img");
+            std::fs::write(&file, &disk)?;
+            let repo = open_repo(ctx)?;
+            let src = snapshot_linux::open_disk(&file, false)
+                .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+            let meta = engine::ImageMeta {
+                machine: MachineInfo {
+                    machine_id: format!("k8s:{cluster}"),
+                    hostname: cluster.clone(),
+                },
+                consistency: core_format::manifest::Consistency::Crash,
+                os: core_format::manifest::OsInfo {
+                    family: "kubernetes".into(),
+                    name: namespaces.join(", "),
+                    ..Default::default()
+                },
+                boot: Default::default(),
+                drivers: vec![],
+                label: label.or_else(|| Some(format!("namespaces: {}", namespaces.join(", ")))),
+                warnings: a.warnings.clone(),
+                vm: None,
+                applications: vec![],
+            };
+            let r = engine::backup(
+                &repo,
+                &[&src.source as &dyn engine::DiskSource],
+                meta,
+                &engine::BackupOptions {
+                    workers: 2,
+                    rate_limit: 0,
+                },
+                &JobControl::new(),
+                &|_| {},
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            let r = r?;
+            let summary = a.summary();
+            Ok(Outcome::new(
+                json!({ "image_id": r.image_id, "namespaces": namespaces, "objects": a.objects.len(), "kinds": summary, "warnings": a.warnings }),
+                format!(
+                    "Backed up {} objects of {} as image {}\n",
+                    a.objects.len(),
+                    namespaces.join(", "),
+                    r.image_id
+                ),
+            ))
+        }
+        K8sCmd::Show { image } => {
+            let repo = open_repo(ctx)?;
+            let (m, a) = k8s_archive(&repo, &image)?;
+            let names: Vec<String> = a
+                .objects
+                .iter()
+                .map(|o| {
+                    format!(
+                        "{}/{} {}",
+                        o.namespace,
+                        o.resource.kind,
+                        o.object["metadata"]["name"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            Ok(Outcome::new(
+                json!({ "image_id": m.image_id, "cluster": m.machine.hostname, "namespaces": a.namespaces.iter().map(|n| &n.name).collect::<Vec<_>>(), "kinds": a.summary(), "objects": names }),
+                format!("{}\n", names.join("\n")),
+            ))
+        }
+        K8sCmd::Restore {
+            connect,
+            image,
+            namespace,
+            to_namespace,
+            replace,
+        } => {
+            if to_namespace.is_some() && namespace.is_none() {
+                return Err(CliError::usage(
+                    "--to-namespace needs --namespace (the one to restore under the new name)",
+                ));
+            }
+            let repo = open_repo(ctx)?;
+            let (_, a) = k8s_archive(&repo, &image)?;
+            let c = k8s_client(&connect)?;
+            let only: Vec<String> = namespace.iter().cloned().collect();
+            let map: Vec<(String, String)> = namespace
+                .iter()
+                .cloned()
+                .zip(to_namespace.iter().cloned())
+                .collect();
+            let rep = k8s::restore(&c, &a, &only, &map, replace)
+                .map_err(|e| CliError::new(ExitCode::Error, e.to_string()))?;
+            let text = format!(
+                "Restored into {}: {} created, {} already there{}\n",
+                rep.namespaces.join(", "),
+                rep.created,
+                rep.existing,
+                if rep.failed.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ", {} failed:\n  {}",
+                        rep.failed.len(),
+                        rep.failed.join("\n  ")
+                    )
+                }
+            );
+            let out = Outcome::new(serde_json::to_value(&rep).unwrap_or_default(), text);
+            Ok(if rep.failed.is_empty() {
+                out
+            } else {
+                out.with_warnings(rep.failed.clone())
+            })
+        }
+    }
+}
+
+fn tempfile_dir() -> R<PathBuf> {
+    let d = std::env::temp_dir().join(format!("fenrir-k8s-{}", std::process::id()));
+    std::fs::create_dir_all(&d)?;
+    Ok(d)
 }

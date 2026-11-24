@@ -368,6 +368,21 @@ jobs:
           sudo lsblk -o NAME,TYPE,FSTYPE,MOUNTPOINT,SIZE || true
           sudo lvs -a || true
 
+  # Kubernetes namespaces backed up and restored on a kind cluster
+  # (docs/design/kubernetes.md).
+  kubernetes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        run: cargo build --release --locked -p cli
+      - name: run
+        run: ci/e2e-kubernetes.sh /tmp/e2e-k8s target/release/fenrir-backup
+      - name: state
+        if: failure()
+        run: kubectl get all -A || true
+
   # Application-aware live Linux images with running PostgreSQL and MySQL
   # (docs/design/app-aware-linux.md).
   app-aware-linux:

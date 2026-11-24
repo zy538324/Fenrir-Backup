@@ -15,6 +15,7 @@ members = [
     "crates/filebrowse",
     "crates/s3store",
     "crates/azstore",
+    "crates/k8s",
 ]
 
 [workspace.package]
@@ -36,6 +37,7 @@ vmboot = { path = "crates/vmboot" }
 filebrowse = { path = "crates/filebrowse" }
 s3store = { path = "crates/s3store" }
 azstore = { path = "crates/azstore" }
+k8s = { path = "crates/k8s" }
 
 anyhow = "1"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
