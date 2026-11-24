@@ -239,7 +239,12 @@ pub fn rotate(
     let next = 1 - st.active;
     let t = table(st, next)?;
     run("dmsetup", &["suspend", &dm])?;
-    let reloaded = run_within("dmsetup", &["reload", &dm, "--table", &t], 60);
+    // The kernel updates the journal's entry count only for marks and FUA
+    // writes: a last mark, with every write done and the device held, makes
+    // the finished journal count all of them (it is written before the old
+    // table goes).
+    let closed = mark(&st.name, &crate::journal::time_mark(now()));
+    let reloaded = closed.and_then(|_| run_within("dmsetup", &["reload", &dm, "--table", &t], 60));
     let resumed = run("dmsetup", &["resume", &dm]);
     reloaded?;
     resumed?;
