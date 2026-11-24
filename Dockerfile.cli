@@ -1,8 +1,9 @@
 # The Fenrir-Backup CLI as a container image: for Kubernetes backups run in the cluster (a CronJob) and for the
 # short-lived pods that read and write volume data (`k8s volume-server`). Build the static binary first:
 #   cargo build --release --target x86_64-unknown-linux-musl -p cli
-#   docker build -f Dockerfile.cli -t fenrir-backup:latest .
+#   mkdir -p img && cp target/x86_64-unknown-linux-musl/release/fenrir-backup img/
+#   docker build -f Dockerfile.cli -t fenrir-backup:latest img
 FROM scratch
-COPY target/x86_64-unknown-linux-musl/release/fenrir-backup /fenrir-backup
+COPY fenrir-backup /fenrir-backup
 USER 0
 ENTRYPOINT ["/fenrir-backup"]
