@@ -192,6 +192,10 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE repositories ADD COLUMN dedup_source_id TEXT REFERENCES repositories(id) ON DELETE SET NULL;
     "#,
+    // 10: legal hold: {reason, by, at}; retention never deletes a held image.
+    r#"
+    ALTER TABLE images ADD COLUMN legal_hold_json TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

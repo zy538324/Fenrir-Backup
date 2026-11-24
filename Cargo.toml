@@ -18,6 +18,9 @@ members = [
     "crates/k8s",
     "crates/saas",
     "crates/cdp",
+    "crates/scan",
+    "crates/filebackup",
+    "crates/catalog",
 ]
 
 [workspace.package]
@@ -42,6 +45,9 @@ azstore = { path = "crates/azstore" }
 k8s = { path = "crates/k8s" }
 saas = { path = "crates/saas" }
 cdp = { path = "crates/cdp" }
+scan = { path = "crates/scan" }
+filebackup = { path = "crates/filebackup" }
+catalog = { path = "crates/catalog" }
 
 anyhow = "1"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }

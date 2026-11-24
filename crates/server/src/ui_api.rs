@@ -64,6 +64,7 @@ pub fn routes() -> Router<Shared> {
         .route("/api/restores", post(create_restore))
         .route("/api/images/{id}/boot-check", post(create_boot_check))
         .route("/api/images/{id}/boot-checks", get(list_boot_checks))
+        .route("/api/images/{id}/legal-hold", post(set_legal_hold))
         .route("/api/boot-checks/{id}/screenshot.png", get(boot_screenshot))
         .route("/api/agents/{id}/vms/{session}/stop", post(stop_vm))
         .route(
@@ -1570,6 +1571,86 @@ async fn run_plan(
     Ok(Json(json!({ "id": job })))
 }
 
+// ---------- legal hold ----------
+
+#[derive(Deserialize)]
+struct LegalHoldReq {
+    hold: bool,
+    #[serde(default)]
+    reason: String,
+    /// Releasing a hold: the administrator's password, again.
+    #[serde(default)]
+    password: String,
+}
+
+/// Put a backup on legal hold (retention never deletes it) or release it.
+/// Releasing needs the administrator's password.
+async fn set_legal_hold(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<LegalHoldReq>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let db = st.db();
+    let (current, host): (Option<String>, String) = db
+        .query_row(
+            "SELECT legal_hold_json, COALESCE(vm_name, hostname) FROM images WHERE image_id = ?1",
+            params![id],
+            |x| Ok((x.get(0)?, x.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("no such image"))?;
+    if r.hold {
+        let reason = r.reason.trim();
+        if !(3..=500).contains(&reason.chars().count()) {
+            return Err(ApiError::bad(
+                "say why the backup is held (a case or matter reference), 3 to 500 characters",
+            ));
+        }
+        if current.is_none() {
+            let v = json!({ "reason": reason, "by": a.username, "at": now() });
+            db.execute(
+                "UPDATE images SET legal_hold_json = ?1 WHERE image_id = ?2",
+                params![v.to_string(), id],
+            )?;
+            audit(
+                &db,
+                &a.username,
+                "image.legal_hold.placed",
+                &format!("{host} {id}: {reason}"),
+            );
+        }
+    } else if current.is_some() {
+        let hash: String = db.query_row(
+            "SELECT password_hash FROM users WHERE id = ?1",
+            params![a.user_id],
+            |x| x.get(0),
+        )?;
+        if !crate::auth::verify_password(&r.password, &hash) {
+            return Err(ApiError::bad("enter your password to release the hold"));
+        }
+        db.execute(
+            "UPDATE images SET legal_hold_json = NULL WHERE image_id = ?1",
+            params![id],
+        )?;
+        audit(
+            &db,
+            &a.username,
+            "image.legal_hold.released",
+            &format!("{host} {id}"),
+        );
+    }
+    let v: Option<String> = db.query_row(
+        "SELECT legal_hold_json FROM images WHERE image_id = ?1",
+        params![id],
+        |x| x.get(0),
+    )?;
+    Ok(Json(
+        json!({ "legal_hold": v.and_then(|s| serde_json::from_str::<Value>(&s).ok()) }),
+    ))
+}
+
 // ---------- images, overview, audit ----------
 
 fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResult<Vec<Value>> {
@@ -1577,7 +1658,7 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
     let mut s = db.prepare(
         "SELECT i.image_id, i.repository_id, r.name, i.agent_id, i.machine_id, i.hostname, i.created, i.kind, i.consistency,
             i.captured_bytes, i.stored_new_bytes, i.disks_json, i.label, i.vm_name, i.anomaly, i.chunks_total, i.chunks_new,
-            i.applications_json,
+            i.applications_json, i.legal_hold_json,
             (SELECT json_object('id', b.id, 'at', b.at, 'outcome', b.outcome, 'method', b.method, 'seconds', b.seconds,
                     'firmware', b.firmware, 'accel', b.accel, 'message', b.message, 'has_screenshot', b.screenshot IS NOT NULL)
                FROM boot_checks b WHERE b.image_id = i.image_id ORDER BY b.at DESC, b.id DESC LIMIT 1)
@@ -1598,7 +1679,9 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
                 "applications": r.get::<_, Option<String>>(17)?
                     .and_then(|s| serde_json::from_str::<Value>(&s).ok())
                     .unwrap_or(json!([])),
-                "boot_check": boot_json(r.get::<_, Option<String>>(18)?),
+                "legal_hold": r.get::<_, Option<String>>(18)?
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+                "boot_check": boot_json(r.get::<_, Option<String>>(19)?),
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -1926,6 +2009,42 @@ async fn create_restore(
                 return Err(ApiError::bad("choose a VM name and a folder on the host"));
             }
             "restore_hyperv"
+        }
+        protocol::RestoreTarget::VmFiles {
+            format,
+            name,
+            directory,
+            ..
+        } => {
+            if !["qcow2", "vdi", "vmdk"].contains(&format.as_str()) {
+                return Err(ApiError::bad("the format is qcow2, vdi or vmdk"));
+            }
+            if name.trim().is_empty() || directory.trim().is_empty() {
+                return Err(ApiError::bad("choose a VM name and a folder"));
+            }
+            "restore_vm_files"
+        }
+        protocol::RestoreTarget::Azure { location, name, .. } => {
+            if !location.starts_with("azure://") || name.trim().is_empty() {
+                return Err(ApiError::bad(
+                    "give an azure://container/prefix location and a name",
+                ));
+            }
+            "restore_cloud"
+        }
+        protocol::RestoreTarget::Aws {
+            location,
+            name,
+            staging,
+            ..
+        } => {
+            if !location.starts_with("s3://") || name.trim().is_empty() || staging.trim().is_empty()
+            {
+                return Err(ApiError::bad(
+                    "give an s3://bucket/prefix location, a name and a staging folder",
+                ));
+            }
+            "restore_cloud"
         }
         protocol::RestoreTarget::Disk {
             device, confirm, ..

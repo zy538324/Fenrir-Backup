@@ -533,6 +533,7 @@ async fn enrollment_repository_and_job_lifecycle() {
             caption: "sales".into(),
             included: true,
             note: None,
+            file_sets: 0,
         }],
     };
     let (s, _) = t

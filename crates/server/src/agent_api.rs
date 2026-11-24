@@ -765,10 +765,22 @@ fn queue_retention(
     if machine_ids.is_empty() {
         return Ok(());
     }
+    let held: Vec<Uuid> = {
+        let mut q = db.prepare(
+            "SELECT image_id FROM images WHERE repository_id = ?1 AND legal_hold_json IS NOT NULL ORDER BY image_id",
+        )?;
+        let rows: Vec<String> = q
+            .query_map(params![repo], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        rows.iter()
+            .filter_map(|s| Uuid::parse_str(s).ok())
+            .collect()
+    };
     let kind = JobKind::ApplyRetention {
         machine_ids,
         retention,
         dry_run: false,
+        held: held.clone(),
     };
     // Served append-only through a gateway: only the gateway deletes old images.
     let agent: String = db
@@ -780,6 +792,30 @@ fn queue_retention(
         )
         .unwrap_or_else(|_| agent.to_string());
     let agent = agent.as_str();
+    if !held.is_empty() {
+        // An agent too old to know about legal hold would delete held images:
+        // no retention until it is updated.
+        let caps: Vec<String> = db
+            .query_row(
+                "SELECT inventory_json FROM agents WHERE id = ?1",
+                params![agent],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .and_then(|s| serde_json::from_str::<protocol::Inventory>(&s).ok())
+            .map(|i| i.capabilities)
+            .unwrap_or_default();
+        if !caps.iter().any(|c| c == "legal_hold") {
+            crate::db::audit(
+                db,
+                "retention",
+                "retention.skipped",
+                &format!("repository {repo}: backups are on legal hold and the agent that applies retention needs an update"),
+            );
+            return Ok(());
+        }
+    }
     db.execute(
         "INSERT INTO jobs (id, agent_id, repository_id, plan_id, kind_json, state, created, requested_by)
          VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, 'retention')",
