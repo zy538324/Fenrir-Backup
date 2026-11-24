@@ -22,7 +22,6 @@ struct State {
 fn serve(state: Arc<Mutex<State>>) -> String {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", l.local_addr().unwrap());
-    let b2 = base.clone();
     std::thread::spawn(move || {
         for s in l.incoming() {
             let mut s = s.unwrap();
