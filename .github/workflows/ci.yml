@@ -355,7 +355,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -370,7 +370,9 @@ jobs:
         shell: bash
         run: |
           ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
-          python ci/e2e-agent-roundtrip.py "$RUNNER_TEMP/roundtrip" "target/release/fenrir-server$ext" "target/release/fenrir-backup-agent$ext"
+          # macOS: as root, so the agent can make and mount an APFS snapshot.
+          sudo_=""; [ "$RUNNER_OS" = macOS ] && sudo_="sudo -E env PATH=$PATH"
+          $sudo_ python ci/e2e-agent-roundtrip.py "$RUNNER_TEMP/roundtrip" "target/release/fenrir-server$ext" "target/release/fenrir-backup-agent$ext"
       - name: logs
         if: failure()
         shell: bash

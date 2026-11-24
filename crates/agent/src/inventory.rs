@@ -282,7 +282,7 @@ pub fn firmware() -> (Option<String>, Option<bool>) {
 pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) -> Inventory {
     let mut notes = notes;
     if cfg!(target_os = "macos") {
-        notes.push("macOS system protection needs file-level backup, which is not available yet. Disk images of non-system disks and verification work.".into());
+        notes.push("macOS: back up the whole Data volume with a files-and-folders backup of / (read from an APFS snapshot; the agent needs Full Disk Access). The system volume comes back by installing macOS. Disk images of non-system disks also work.".into());
     }
     let fw = firmware();
     Inventory {

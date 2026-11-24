@@ -164,7 +164,13 @@ try:
         r = c.post(f"/api/agents/{a['id']}/jobs",
                    json={"kind": {"type": "backup_files", "paths": [str(src_dir)]}, "repository_id": repo_id})
         assert r.status_code == 200, r.text
-        _, backup_secs = wait_job(c, r.json()["id"], "files and folders backup")
+        fj, backup_secs = wait_job(c, r.json()["id"], "files and folders backup")
+        snapshot = (fj.get("result") or {}).get("snapshot")
+        print(f"  read from: {snapshot or 'the live files'}")
+        if a["os"]["family"] == "macos":
+            assert snapshot and snapshot.startswith("APFS "), f"macOS folder backups read from an APFS snapshot: {fj}"
+        if a["os"]["family"] == "windows":
+            assert snapshot == "VSS", f"Windows folder backups read from a VSS snapshot: {fj}"
         im = [i for i in c.get("/api/images", params={"repository_id": repo_id}).json() if i["source"] == "files"][0]
         # Folder backups are one volume (disk 1, partition 1) from the root: C:/... or home/...
         sel = str(src_dir).replace("\\", "/").lstrip("/")

@@ -18,6 +18,8 @@ mod jobs;
 mod linuxfix;
 mod localrec;
 mod log;
+#[cfg(target_os = "macos")]
+mod macsnap;
 mod malware;
 mod names;
 mod rct;
