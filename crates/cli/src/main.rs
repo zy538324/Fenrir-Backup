@@ -2444,42 +2444,6 @@ fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
     }
 }
 
-#[cfg(test)]
-mod saas_paths {
-    use super::*;
-
-    fn item(kind: &str, path: &str) -> saas::store::Item {
-        saas::store::Item {
-            account: "ann@contoso.com".into(),
-            kind: kind.into(),
-            id: "AAMkADEyN2FhYzUwLTI".into(),
-            path: path.into(),
-            modified: String::new(),
-            size: 0,
-            hash: String::new(),
-            meta: serde_json::Value::Null,
-            chunks: vec![],
-        }
-    }
-
-    #[test]
-    fn exported_paths_stay_inside_the_folder() {
-        assert_eq!(
-            saas_rel(&item("mail", "Inbox/Re: plan?")),
-            PathBuf::from("ann@contoso.com/mail/Inbox/Re_ plan_ [AAMkADEyN2FhYzUw].eml")
-        );
-        assert_eq!(
-            saas_rel(&item("file", "../../etc/passwd")),
-            PathBuf::from("ann@contoso.com/file/etc/passwd")
-        );
-        assert_eq!(
-            saas_rel(&item("record", "Account/001A")),
-            PathBuf::from("ann@contoso.com/record/Account/001A.json")
-        );
-        assert!(!saas_rel(&item("file", "/abs/x")).is_absolute());
-    }
-}
-
 // ---------------------------------------------------------------- CDP (docs/design/cdp.md)
 
 #[cfg(target_os = "linux")]
@@ -2838,5 +2802,41 @@ mod parse_utc_tests {
             Some("2026-11-24T10:00:00Z")
         );
         assert_eq!(super::parse_utc("yesterday"), None);
+    }
+}
+
+#[cfg(test)]
+mod saas_paths {
+    use super::*;
+
+    fn item(kind: &str, path: &str) -> saas::store::Item {
+        saas::store::Item {
+            account: "ann@contoso.com".into(),
+            kind: kind.into(),
+            id: "AAMkADEyN2FhYzUwLTI".into(),
+            path: path.into(),
+            modified: String::new(),
+            size: 0,
+            hash: String::new(),
+            meta: serde_json::Value::Null,
+            chunks: vec![],
+        }
+    }
+
+    #[test]
+    fn exported_paths_stay_inside_the_folder() {
+        assert_eq!(
+            saas_rel(&item("mail", "Inbox/Re: plan?")),
+            PathBuf::from("ann@contoso.com/mail/Inbox/Re_ plan_ [AAMkADEyN2FhYzUw].eml")
+        );
+        assert_eq!(
+            saas_rel(&item("file", "../../etc/passwd")),
+            PathBuf::from("ann@contoso.com/file/etc/passwd")
+        );
+        assert_eq!(
+            saas_rel(&item("record", "Account/001A")),
+            PathBuf::from("ann@contoso.com/record/Account/001A.json")
+        );
+        assert!(!saas_rel(&item("file", "/abs/x")).is_absolute());
     }
 }
