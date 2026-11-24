@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft, CalendarClock, Database, FolderOpen, HardDrive, Layers, LifeBuoy, Pencil, Play, Rocket, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import { ArrowLeft, CalendarClock, Database, FolderOpen, Gavel, HardDrive, Layers, LifeBuoy, Pencil, Play, Rocket, RotateCcw, ShieldCheck, Trash2, XCircle } from "lucide-react";
 import { RestoreDialog } from "./Restore";
 import { FileBrowser } from "./Files";
+import { AppRestoreDialog, LegalHoldDialog, ScanDialog, ScanPill } from "./ImageActions";
 import { BootCheckDialog, BootPill, BootResultDialog, RunningVmsCard } from "./Boot";
 import { api, type Agent, type AgentDetail, type BackupSettings, type Image, type ImageApplication, type Inventory, type JobKind, type Repository, type Vm } from "../api";
 import { ago, bytes, consistencyLabel, duration, health, jobWhat, osLabel, scheduleText, until, when, progressDetail } from "../format";
@@ -90,7 +91,7 @@ export default function MachinePage({ id }: { id: string }) {
         </div>
       )}
 
-      {tab === "backups" && <ImagesTable detail={data} />}
+      {tab === "backups" && <ImagesTable detail={data} onChange={reload} />}
       {tab === "activity" && <JobsTable detail={data} />}
 
       {dialog === "backup" && <BackupDialog agent={a} inventory={inv} preselectVms={preselect} onClose={() => setDialog(null)} onDone={() => { setDialog(null); reload(); }} />}
@@ -337,8 +338,11 @@ function PlansCard({ plans }: { plans: AgentDetail["plans"] }) {
   );
 }
 
-function ImagesTable({ detail }: { detail: AgentDetail }) {
+function ImagesTable({ detail, onChange }: { detail: AgentDetail; onChange: () => void }) {
   const [restoring, setRestoring] = useState<Image | null>(null);
+  const [scanning, setScanning] = useState<Image | null>(null);
+  const [holding, setHolding] = useState<Image | null>(null);
+  const [appRestore, setAppRestore] = useState<Image | null>(null);
   const [booting, setBooting] = useState<Image | null>(null);
   const [results, setResults] = useState<Image | null>(null);
   const [files, setFiles] = useState<Image | null>(null);
@@ -348,27 +352,32 @@ function ImagesTable({ detail }: { detail: AgentDetail }) {
     <div className="card table-wrap">
       <table className="table">
         <thead>
-          <tr><th>Taken</th>{detail.agent.role === "hyperv" && <th>VM</th>}<th>Type</th><th>Consistency</th><th style={{ textAlign: "right" }}>Captured</th><th style={{ textAlign: "right" }}>New data</th><th>Boot test</th><th>Repository</th><th /></tr>
+          <tr><th>Taken</th>{detail.agent.role === "hyperv" && <th>VM</th>}<th>Type</th><th>Consistency</th><th style={{ textAlign: "right" }}>Size</th><th>Boot test</th><th>Malware</th><th /></tr>
         </thead>
         <tbody>
           {detail.images.map((i) => (
             <tr key={i.image_id}>
-              <td className="nowrap"><div>{when(i.created)}</div><div className="faint small mono">{i.image_id.slice(0, 8)}</div></td>
+              <td className="nowrap"><div>{when(i.created)}</div><div className="faint small"><span className="mono">{i.image_id.slice(0, 8)}</span> · {i.repository_name}</div></td>
               {detail.agent.role === "hyperv" && <td><strong>{i.vm_name}</strong></td>}
-              <td>{i.kind === "full" ? "Full" : "Incremental"}{i.label && <div className="faint small">{i.label}</div>}</td>
+              <td>
+                {i.source === "files" ? "Files and folders" : i.kind === "full" ? "Full" : "Incremental"}
+                {i.label && <div className="faint small">{i.label}</div>}
+                {i.legal_hold && <div style={{ marginTop: 4 }} title={`${i.legal_hold.reason} (${i.legal_hold.by})`}><Pill tone="info">Legal hold</Pill></div>}
+              </td>
               <td>
                 <Pill tone={consistencyLabel(i.consistency).tone}>{consistencyLabel(i.consistency).text}</Pill>
                 {i.anomaly && <div style={{ marginTop: 4 }} title={i.anomaly}><Pill tone="bad">Possible ransomware</Pill></div>}
                 <AppsLine apps={i.applications} />
               </td>
-              <td style={{ textAlign: "right" }}>{bytes(i.captured_bytes)}</td>
-              <td style={{ textAlign: "right" }}>{bytes(i.stored_new_bytes)}</td>
-              <td><BootPill check={i.boot_check} onClick={() => setResults(i)} /></td>
-              <td>{i.repository_name}</td>
+              <td style={{ textAlign: "right" }} className="nowrap">{bytes(i.captured_bytes)}<div className="faint small">{bytes(i.stored_new_bytes)} new</div></td>
+              <td>{i.source === "files" ? <span className="faint small">—</span> : <BootPill check={i.boot_check} onClick={() => setResults(i)} />}</td>
+              <td><ScanPill image={i} onClick={() => setScanning(i)} /></td>
               <td style={{ textAlign: "right" }} className="nowrap">
-                <button className="btn sm ghost" title="Browse the files in this backup and restore some of them" onClick={() => setFiles(i)}><FolderOpen size={13} /> Files</button>{" "}
-                <button className="btn sm ghost" title="Start this backup as an isolated VM and check that it boots" onClick={() => setBooting(i)}><Rocket size={13} /> Test boot</button>{" "}
-                <button className="btn sm" onClick={() => setRestoring(i)}><RotateCcw size={13} /> Restore</button>
+                <button className="btn sm ghost" title="Browse the files in this backup and restore some of them" aria-label="Files" onClick={() => setFiles(i)}><FolderOpen size={14} /></button>{" "}
+                {(i.applications ?? []).some((a) => a.included && (a.file_sets ?? 0) > 0) && <><button className="btn sm ghost" title="Restore one SQL Server or Exchange database" aria-label="Restore one database" onClick={() => setAppRestore(i)}><Database size={14} /></button>{" "}</>}
+                <button className="btn sm ghost" title={i.legal_hold ? "Release the legal hold" : "Keep this backup whatever retention says"} aria-label={i.legal_hold ? "Release legal hold" : "Legal hold"} onClick={() => setHolding(i)}><Gavel size={14} /></button>{" "}
+                {i.source !== "files" && <><button className="btn sm ghost" title="Start this backup as an isolated VM and check that it boots" aria-label="Test boot" onClick={() => setBooting(i)}><Rocket size={14} /></button>{" "}
+                <button className="btn sm" onClick={() => setRestoring(i)}><RotateCcw size={13} /> Restore</button></>}
               </td>
             </tr>
           ))}
@@ -378,6 +387,9 @@ function ImagesTable({ detail }: { detail: AgentDetail }) {
       {booting && <BootCheckDialog image={booting} onClose={() => setBooting(null)} />}
       {results && <BootResultDialog image={results} onClose={() => setResults(null)} />}
       {files && <FileBrowser image={files} onClose={() => setFiles(null)} />}
+      {scanning && <ScanDialog image={scanning} onClose={() => { setScanning(null); onChange(); }} />}
+      {holding && <LegalHoldDialog image={holding} onClose={() => setHolding(null)} onDone={() => { setHolding(null); onChange(); }} />}
+      {appRestore && <AppRestoreDialog image={appRestore} onClose={() => setAppRestore(null)} />}
     </div>
   );
 }
@@ -417,7 +429,45 @@ export function useRepos(agentId: string) {
 }
 
 /** Choose what to back up on a machine. Shared by "Back up now" and plans. */
-export function WhatPicker({ agent, inventory, value, onChange }: { agent: Agent; inventory: Inventory | null; value: JobKind | null; onChange: (k: JobKind | null) => void }) {
+export function WhatPicker(props: { agent: Agent; inventory: Inventory | null; value: JobKind | null; onChange: (k: JobKind | null) => void }) {
+  const { agent, value, onChange } = props;
+  if (!agent.capabilities.includes("backup_files")) return <ImageWhatPicker {...props} />;
+  const files = value?.type === "backup_files";
+  const settings = (value && "settings" in value ? value.settings : undefined) ?? {};
+  return (
+    <div className="stack">
+      <div className="seg" style={{ alignSelf: "flex-start" }}>
+        <button className={!files ? "on" : ""} onClick={() => onChange(defaultWhat(agent))}>{agent.capabilities.includes("backup_hyperv") ? "Virtual machines" : "Whole machine or disks"}</button>
+        <button className={files ? "on" : ""} onClick={() => onChange({ type: "backup_files", paths: [], excludes: [], settings })}>Files and folders</button>
+      </div>
+      {files ? <FilesPicker windows={agent.os.family === "windows"} value={value} onChange={onChange} /> : <ImageWhatPicker {...props} />}
+    </div>
+  );
+}
+
+const lines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
+
+function FilesPicker({ windows, value, onChange }: { windows: boolean; value: Extract<JobKind, { type: "backup_files" }>; onChange: (k: JobKind | null) => void }) {
+  const [paths, setPaths] = useState(value.paths.join("\n"));
+  const [excl, setExcl] = useState((value.excludes ?? []).join("\n"));
+  const update = (p: string, e: string) => {
+    setPaths(p);
+    setExcl(e);
+    onChange({ ...value, paths: lines(p), excludes: lines(e) });
+  };
+  return (
+    <div className="grid cols-2">
+      <Field label="Files and folders" hint={windows ? "One full path per line: C:\\Users\\anna\\Documents or \\\\server\\share\\folder. Read through a shadow copy, so open files are included." : "One full path per line, e.g. /home/anna or /srv/data."}>
+        <textarea className="input mono" rows={5} value={paths} onChange={(e) => update(e.target.value, excl)} />
+      </Field>
+      <Field label="Leave out" hint="Names (*.tmp, node_modules) or full paths, one per line. Paging files and the recycle bin are always left out.">
+        <textarea className="input mono" rows={5} value={excl} onChange={(e) => update(paths, e.target.value)} />
+      </Field>
+    </div>
+  );
+}
+
+function ImageWhatPicker({ agent, inventory, value, onChange }: { agent: Agent; inventory: Inventory | null; value: JobKind | null; onChange: (k: JobKind | null) => void }) {
   const settings = (value && "settings" in value ? value.settings : undefined) ?? {};
   if (agent.capabilities.includes("backup_hyperv")) {
     const vms = inventory?.vms ?? [];
@@ -520,7 +570,7 @@ export function defaultWhat(agent: Agent, preselectVms: string[] = []): JobKind 
 }
 
 export function withSettings(k: JobKind, s: BackupSettings): JobKind {
-  return k.type === "backup_system" || k.type === "backup_disks" || k.type === "backup_hyperv" ? { ...k, settings: s } : k;
+  return k.type === "backup_system" || k.type === "backup_disks" || k.type === "backup_hyperv" || k.type === "backup_files" ? { ...k, settings: s } : k;
 }
 
 export function OptionsPicker({ s, onChange, windows }: { s: BackupSettings; onChange: (s: BackupSettings) => void; windows: boolean }) {

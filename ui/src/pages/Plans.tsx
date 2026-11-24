@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { CalendarClock, Play, Plus, Trash2 } from "lucide-react";
-import { api, type Agent, type AgentDetail, type BackupSettings, type JobKind, type Plan, type Retention, type Schedule } from "../api";
+import { api, type Agent, type AgentDetail, type BackupSettings, type JobKind, type Plan, type Retention, type Schedule, type Standby } from "../api";
 import { DAY_NAMES, RETENTION_PRESETS, ago, jobWhat, retentionText, scheduleText, until } from "../format";
 import { Empty, Field, Link, Loading, Modal, Notice, Switch, useApi, useToast } from "../ui";
 import { OptionsPicker, WhatPicker, defaultWhat, useRepos, withSettings } from "./Machine";
@@ -90,6 +90,9 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
   const [s, setS] = useState<BackupSettings>({ rate_limit_mib: 0, verify_sample_percent: 5 });
   const [retention, setRetention] = useState<Retention | null>(RETENTION_PRESETS[1].r);
   const [copyTo, setCopyTo] = useState("");
+  const [scan, setScan] = useState(false);
+  const [standby, setStandby] = useState<Standby | null>(null);
+  const hosts = agents.filter((x) => x.capabilities.includes("restore_hyperv") || x.capabilities.includes("restore_vm_files"));
   const [err, setErr] = useState<string | null>(null);
   const repoId = repo || usable[0]?.id || "";
 
@@ -100,7 +103,7 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
     if (!what) return;
     setErr(null);
     try {
-      await api.post("/api/plans", { name, agent_id: agentId, repository_id: repoId, job: withSettings(what, s), schedule, enabled: true, retention, copy_to_repository_id: copyTo || null });
+      await api.post("/api/plans", { name, agent_id: agentId, repository_id: repoId, job: withSettings(what, s), schedule, enabled: true, retention, copy_to_repository_id: copyTo || null, scan_after_backup: scan, standby });
       onDone();
     } catch (e) {
       setErr((e as Error).message);
@@ -175,6 +178,36 @@ function PlanDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: () 
             <option value="">No copy</option>
             {usable.filter((r) => r.id !== repoId).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
+        </Field>
+      )}
+      {agent?.capabilities.includes("scan_images") && (
+        <label className="check">
+          <input type="checkbox" checked={scan} onChange={(e) => setScan(e.target.checked)} />
+          <span>Scan each backup for malware<div className="faint small">With the YARA rules and hashes in Settings, on {agent.name} after each backup. A backup with findings raises an alert, and restoring it asks first.</div></span>
+        </label>
+      )}
+      {what?.type !== "backup_files" && hosts.length > 0 && (
+        <Field label="Standby VM" hint="After each backup, the newest one is restored as a VM on this host, replacing the previous standby (never one that is running). It must have access to the repository.">
+          <div className="stack tight">
+            <select className="input" value={standby?.agent_id ?? ""} onChange={(e) => {
+              const h = hosts.find((x) => x.id === e.target.value);
+              setStandby(h ? { agent_id: h.id, type: h.capabilities.includes("restore_hyperv") ? "hyperv_vm" : "vm_files", format: h.capabilities.includes("restore_hyperv") ? null : "qcow2", name: `${agent?.name ?? "machine"} standby`.replace(/[^A-Za-z0-9 ._-]/g, "-"), directory: h.os.family === "windows" ? "D:\\Standby" : "/var/lib/fenrir-standby" } : null);
+            }}>
+              <option value="">None</option>
+              {hosts.map((h) => <option key={h.id} value={h.id}>{h.name}{h.capabilities.includes("restore_hyperv") ? " (Hyper-V)" : ""}</option>)}
+            </select>
+            {standby && (
+              <div className="grid cols-2">
+                {standby.type === "vm_files" && (
+                  <select className="input" value={standby.format ?? "qcow2"} onChange={(e) => setStandby({ ...standby, format: e.target.value as "qcow2" | "vdi" | "vmdk" })}>
+                    <option value="qcow2">QEMU/KVM (qcow2)</option><option value="vdi">VirtualBox (VDI)</option><option value="vmdk">VMware (VMDK)</option>
+                  </select>
+                )}
+                <input className="input" value={standby.name} onChange={(e) => setStandby({ ...standby, name: e.target.value })} aria-label="Standby VM name" />
+                <input className="input mono" value={standby.directory} onChange={(e) => setStandby({ ...standby, directory: e.target.value })} aria-label="Folder on the host" />
+              </div>
+            )}
+          </div>
         </Field>
       )}
       <Field label="Plan name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={60} /></Field>

@@ -432,6 +432,7 @@ fn validate_job(
         JobKind::BackupDisks { .. } => Some("backup_disks"),
         JobKind::BackupHyperv { .. } => Some("backup_hyperv"),
         JobKind::Verify { .. } => Some("verify"),
+        JobKind::BackupFiles { .. } => Some("backup_files"),
         JobKind::BackupKubernetes { .. } | JobKind::RestoreKubernetes { .. } => Some("kubernetes"),
         JobKind::BackupSaas { .. } | JobKind::RestoreSaas { .. } => Some("saas"),
         _ => None,
@@ -516,6 +517,7 @@ async fn create_job(
             | JobKind::BackupHyperv { .. }
             | JobKind::Verify { .. }
             | JobKind::ListImages
+            | JobKind::BackupFiles { .. }
             | JobKind::BackupKubernetes { .. }
             | JobKind::RestoreKubernetes { .. }
             | JobKind::BackupSaas { .. }
@@ -552,6 +554,7 @@ async fn create_job(
     }
     let repo = j.repository_id.as_deref().map(uuid_param).transpose()?;
     validate_job(&st, &id, &j.kind, &repo)?;
+    validate_files_job(&j.kind)?;
     let job_id = insert_job(&st, &id, &j.kind, repo.as_deref(), None, &a.username)?;
     audit(
         &st.db(),

@@ -87,6 +87,11 @@ export type JobKind =
   | { type: "backup_kubernetes"; cluster: K8sCluster; sealed_token: Sealed }
   | { type: "restore_kubernetes"; image_id: string; cluster: K8sCluster; sealed_token: Sealed; namespaces: string[]; rename_to?: string | null; replace?: boolean }
   | { type: "backup_saas"; tenant: SaasTenant; sealed_secret: Sealed }
+  | { type: "backup_files"; paths: string[]; excludes?: string[]; settings?: BackupSettings }
+  | { type: "scan_image"; image_id: string; selection?: string }
+  | { type: "index_image"; image_id: string }
+  | { type: "search_files"; query: string; images: string[] }
+  | { type: "restore_application"; image_id: string; component: string; directory: string; attach_as?: string | null; sql_instance?: string }
   | { type: "restore_saas"; image_id: string; tenant: SaasTenant; sealed_secret: Sealed; account: string; to_account?: string | null; kind?: string | null; path?: string | null; overwrite?: boolean };
 
 export interface K8sCluster { name: string; api_server: string; ca_pem: string; namespaces: string[]; volume_image: string }
@@ -110,8 +115,11 @@ export interface Retention { keep_last?: number; keep_hourly?: number; keep_dail
 
 export type RestoreTarget =
   | { type: "vhdx"; directory: string }
-  | { type: "hyperv_vm"; name: string; directory: string; switch?: string | null; start: boolean }
-  | { type: "disk"; device: string; disk: number; confirm: string; grow?: boolean };
+  | { type: "hyperv_vm"; name: string; directory: string; switch?: string | null; start: boolean; replace?: boolean }
+  | { type: "disk"; device: string; disk: number; confirm: string; grow?: boolean }
+  | { type: "vm_files"; format: "qcow2" | "vdi" | "vmdk"; name: string; directory: string; replace?: boolean }
+  | { type: "azure"; location: string; endpoint: string; name: string; sealed: Sealed }
+  | { type: "aws"; location: string; endpoint: string; region: string; name: string; staging: string; sealed: Sealed };
 
 export interface BackupSettings { label?: string | null; rate_limit_mib?: number; vss_full?: boolean; verify_sample_percent?: number | null }
 
@@ -157,10 +165,14 @@ export interface Image {
   chunks_new: number;
   boot_check: BootCheck | null;
   applications?: ImageApplication[];
+  /** "files" for a backup of chosen files and folders (nothing to restore as disks or boot). */
+  source?: "files" | "disks";
+  legal_hold?: { reason: string; by: string; at: number } | null;
+  last_scan?: { state: "clean" | "infected" | "incomplete"; findings: number; files_scanned: number; at: number } | null;
 }
 
 /** An application component (VSS writer) the backup was coordinated with. */
-export interface ImageApplication { writer: string; component: string; caption?: string; included: boolean; note?: string | null }
+export interface ImageApplication { writer: string; component: string; caption?: string; included: boolean; note?: string | null; file_sets?: number }
 
 export interface Repository {
   id: string;
@@ -212,6 +224,27 @@ export interface Plan {
   retention: Retention | null;
   copy_to_repository_id?: string | null;
   copy_to_repository_name?: string | null;
+  scan_after_backup?: boolean;
+  standby?: Standby | null;
+}
+
+export interface Standby { agent_id: string; type: "hyperv_vm" | "vm_files"; format?: "qcow2" | "vdi" | "vmdk" | null; name: string; directory: string }
+
+/**
+ * Run a restore; when the server refuses because the latest malware scan
+ * found infected files in it, show which and ask before running it again
+ * with `allow_infected`.
+ */
+export async function guardInfected<T>(run: (allowInfected: boolean) => Promise<T>): Promise<T | null> {
+  try {
+    return await run(false);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 409 && e.message.startsWith("infected:")) {
+      if (!window.confirm(`${e.message.slice("infected:".length).trim()}\n\nRestore anyway?`)) return null;
+      return await run(true);
+    }
+    throw e;
+  }
 }
 
 export interface Overview {

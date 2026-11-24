@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, File, Folder, FolderOpen, Link2, Loader2, RotateCcw } from "lucide-react";
 import { downloadKey } from "../seal";
-import { api, type Agent, type Image, type Job, type Repository } from "../api";
+import { api, guardInfected, type Agent, type Image, type Job, type Repository } from "../api";
 import { bytes, when } from "../format";
 import { Field, Modal, Notice, useApi, useToast } from "../ui";
 
@@ -171,10 +171,12 @@ function RestoreFiles({ image, volume, paths, reader, onClose }: { image: Image;
   const go = async () => {
     setState({ busy: true });
     try {
-      const { id } = await api.post<{ id: string }>(`/api/images/${image.image_id}/restore-files`, {
+      const r = await guardInfected((allow_infected) => api.post<{ id: string }>(`/api/images/${image.image_id}/restore-files`, {
         agent_id: agent!.id, disk: volume.disk, partition: volume.partition, paths, target,
-        keep_structure: where === "original" ? true : keep, conflict,
-      });
+        keep_structure: where === "original" ? true : keep, conflict, allow_infected,
+      }));
+      if (r === null) return setState({});
+      const { id } = r;
       const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress?.message }), 24 * 3600);
       setState({ job });
       toast("ok", "Files restored");
@@ -187,9 +189,11 @@ function RestoreFiles({ image, volume, paths, reader, onClose }: { image: Image;
     setState({ busy: true, progress: "Preparing…" });
     try {
       const k = await downloadKey();
-      const { id } = await api.post<{ id: string }>(`/api/images/${image.image_id}/download-files`, {
-        agent_id: agent!.id, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64,
-      });
+      const r = await guardInfected((allow_infected) => api.post<{ id: string }>(`/api/images/${image.image_id}/download-files`, {
+        agent_id: agent!.id, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64, allow_infected,
+      }));
+      if (r === null) return setState({});
+      const { id } = r;
       const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress ? `${j.progress.phase} ${j.progress.message ?? ""}` : undefined }), 24 * 3600);
       if (job.state !== "succeeded" && job.state !== "warning") throw new Error(job.error || "the machine could not prepare the files");
       const header = (job.result as { download: { sealed_key: import("../seal").Sealed; file_name: string } }).download;

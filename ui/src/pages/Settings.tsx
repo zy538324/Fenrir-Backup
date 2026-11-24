@@ -3,6 +3,7 @@ import { BellRing, CheckCircle2, Mail, RefreshCw, Save, Send, Webhook, XCircle, 
 import { api, type Delivery, type EmailSettings, type NotifySettings, type Settings, type WebhookSettings } from "../api";
 import { when } from "../format";
 import { Field, Loading, Notice, Switch, useApi, useToast } from "../ui";
+import { ScanContentCard } from "./ScanContent";
 
 const EMPTY_EMAIL: EmailSettings = { host: "", port: 587, security: "starttls", username: "", password: "", from: "", to: [] };
 const EMPTY_HOOK: WebhookSettings = { url: "", format: "generic" };
@@ -198,6 +199,7 @@ export default function SettingsPage() {
           </table>
         </div>
       )}
+      <ScanContentCard />
     </div>
   );
 }

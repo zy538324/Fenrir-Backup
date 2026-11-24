@@ -96,6 +96,16 @@ export function jobWhat(k: JobKind): string {
       return k.level === "full" ? "Full verification" : k.level === "sample" ? `Spot check (${k.sample_percent ?? 5}%)` : "Quick check";
     case "init_repository":
       return "Create repository";
+    case "backup_files":
+      return k.paths.join(", ");
+    case "scan_image":
+      return "Malware scan";
+    case "index_image":
+      return "File catalogue for search";
+    case "search_files":
+      return `Search: ${k.query}`;
+    case "restore_application":
+      return `${k.component} to ${k.directory}${k.attach_as ? ` as ${k.attach_as}` : ""}`;
     case "backup_kubernetes":
       return `Kubernetes ${k.cluster.name}: ${k.cluster.namespaces.join(", ")}`;
     case "restore_kubernetes":
@@ -113,11 +123,20 @@ export function jobWhat(k: JobKind): string {
     case "prune":
       return k.dry_run ? "Check reclaimable space" : "Delete data no backup uses";
     case "restore":
-      return k.target.type === "vhdx"
-        ? `As virtual disk to ${k.target.directory}`
-        : k.target.type === "hyperv_vm"
-          ? `As Hyper-V VM “${k.target.name}”`
-          : `To ${k.target.device}`;
+      switch (k.target.type) {
+        case "vhdx":
+          return `As virtual disk to ${k.target.directory}`;
+        case "hyperv_vm":
+          return `As Hyper-V VM “${k.target.name}”${k.target.replace ? " (standby)" : ""}`;
+        case "vm_files":
+          return `As ${k.target.format} VM “${k.target.name}” in ${k.target.directory}${k.target.replace ? " (standby)" : ""}`;
+        case "azure":
+          return `To Azure ${k.target.location}`;
+        case "aws":
+          return `To AWS ${k.target.location}`;
+        default:
+          return `To ${k.target.device}`;
+      }
     case "boot_check":
       return k.keep_running ? "Boot as VM and keep running" : "Boot test in an isolated VM";
     case "stop_vm":

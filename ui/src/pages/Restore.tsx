@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
-import { HardDrive, Layers, RotateCcw, Server } from "lucide-react";
-import { api, type Agent, type AgentDetail, type Image, type Repository, type RestoreTarget } from "../api";
+import { Cloud, HardDrive, Layers, Monitor, RotateCcw, Server } from "lucide-react";
+import { api, guardInfected, type Agent, type AgentDetail, type Image, type Repository, type RestoreTarget } from "../api";
 import { bytes, when } from "../format";
 import { seal } from "../seal";
 import { Field, Modal, Notice, useApi, useRoute, useToast } from "../ui";
 
-type Kind = "vhdx" | "hyperv_vm" | "disk";
+type Kind = "vhdx" | "hyperv_vm" | "vm_files" | "azure" | "aws" | "disk";
 
 const KINDS: { id: Kind; cap: string; title: string; text: string; icon: React.ReactNode }[] = [
   {
@@ -21,6 +21,27 @@ const KINDS: { id: Kind; cap: string; title: string; text: string; icon: React.R
     title: "As a new Hyper-V VM",
     text: "Writes the disks on a Hyper-V host and creates a new VM with the original generation, CPUs, memory and disk layout.",
     icon: <Layers size={18} />,
+  },
+  {
+    id: "vm_files",
+    cap: "restore_vm_files",
+    title: "As a VM for QEMU/KVM, VirtualBox or VMware",
+    text: "Writes the disks as qcow2, VDI or VMDK files in a new folder, with a VM definition (a start script, a registration script or a .vmx) next to them.",
+    icon: <Monitor size={18} />,
+  },
+  {
+    id: "azure",
+    cap: "restore_cloud",
+    title: "To Azure",
+    text: "Uploads each disk as a fixed VHD page blob to your storage container, ready to become a managed disk and a VM there.",
+    icon: <Cloud size={18} />,
+  },
+  {
+    id: "aws",
+    cap: "restore_cloud",
+    title: "To AWS",
+    text: "Uploads each disk as a VHDX to your S3 bucket for VM Import. The files are staged on the restoring machine first.",
+    icon: <Cloud size={18} />,
   },
   {
     id: "disk",
@@ -63,23 +84,35 @@ export function RestoreDialog({ image, preferAgent, onClose }: { image: Image; p
   const [device, setDevice] = useState("");
   const [confirm, setConfirm] = useState("");
   const [grow, setGrow] = useState(true);
+  const [format, setFormat] = useState<"qcow2" | "vdi" | "vmdk">("qcow2");
+  const [location, setLocation] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [region, setRegion] = useState("");
+  const [account, setAccount] = useState("");
+  const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const toast = useToast();
   const { go } = useRoute();
 
-  const target: RestoreTarget | null =
+  const cloudName = vmName.trim().replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 64);
+  // Cloud keys are sealed when the restore starts; this is only the shape.
+  const target: Exclude<RestoreTarget, { type: "azure" | "aws" }> | null =
     kind === "vhdx"
       ? { type: "vhdx", directory }
       : kind === "hyperv_vm"
         ? { type: "hyperv_vm", name: vmName.trim(), directory, switch: sw.trim() || null, start }
-        : kind === "disk"
-          ? { type: "disk", device: device.trim(), disk, confirm: confirm.trim(), grow }
-          : null;
+        : kind === "vm_files"
+          ? { type: "vm_files", format, name: vmName.trim(), directory }
+          : kind === "disk"
+            ? { type: "disk", device: device.trim(), disk, confirm: confirm.trim(), grow }
+            : null;
+  const cloudReady = (kind === "azure" && /^azure:\/\/[a-z0-9-]{3,63}(\/.*)?$/.test(location.trim()))
+    || (kind === "aws" && /^s3:\/\/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](\/.*)?$/.test(location.trim()));
   const ready =
-    !!agent && !!target &&
-    (target.type !== "disk" || (target.device !== "" && target.confirm === target.device)) &&
-    (target.type !== "hyperv_vm" || target.name !== "");
+    !!agent && (cloudReady ? !!cloudName && !!account.trim() && !!secret : !!target) &&
+    (target?.type !== "disk" || (target.device !== "" && target.confirm === target.device)) &&
+    ((target?.type !== "hyperv_vm" && target?.type !== "vm_files") || target.name !== "");
 
   const submit = async () => {
     if (!agent || !target) return;
@@ -90,7 +123,16 @@ export function RestoreDialog({ image, preferAgent, onClose }: { image: Image; p
         const sealed = await seal(agent.public_key, JSON.stringify({ passphrase: pass, recovery_key: null }));
         await api.post(`/api/repositories/${image.repository_id}/access`, { agent_id: agent.id, sealed });
       }
-      await api.post("/api/restores", { image_id: image.image_id, agent_id: agent.id, target, disks: [] });
+      let t: RestoreTarget | null = target as RestoreTarget | null;
+      if (kind === "azure" || kind === "aws") {
+        // The storage key goes to the restoring machine only, sealed here.
+        const sealed = await seal(agent.public_key, JSON.stringify({ username: account.trim(), password: secret }));
+        t = kind === "azure"
+          ? { type: "azure", location: location.trim(), endpoint: endpoint.trim(), name: cloudName, sealed }
+          : { type: "aws", location: location.trim(), endpoint: endpoint.trim(), region: region.trim(), name: cloudName, staging: directory, sealed };
+      }
+      const done = await guardInfected((allow_infected) => api.post("/api/restores", { image_id: image.image_id, agent_id: agent.id, target: t, disks: [], allow_infected }));
+      if (done === null) return;
       toast("ok", `Restore queued on ${agent.name}`);
       onClose();
       go(`/machines/${agent.id}`);
@@ -146,7 +188,42 @@ export function RestoreDialog({ image, preferAgent, onClose }: { image: Image; p
               </label>
             ))}
           </div>
-          {(kind === "vhdx" || kind === "hyperv_vm") && (
+          {kind === "vm_files" && (
+            <div className="grid cols-2">
+              <Field label="Format">
+                <select className="input" value={format} onChange={(e) => setFormat(e.target.value as "qcow2" | "vdi" | "vmdk")}>
+                  <option value="qcow2">QEMU/KVM (qcow2)</option>
+                  <option value="vdi">VirtualBox (VDI)</option>
+                  <option value="vmdk">VMware (VMDK)</option>
+                </select>
+              </Field>
+              <Field label="VM name" hint="The folder and the VM get this name.">
+                <input className="input" value={vmName} onChange={(e) => setVmName(e.target.value)} maxLength={80} />
+              </Field>
+            </div>
+          )}
+          {(kind === "azure" || kind === "aws") && (
+            <>
+              <div className="grid cols-2">
+                <Field label={kind === "azure" ? "Container" : "Bucket"} hint={kind === "azure" ? "azure://container/folder" : "s3://bucket/folder"}>
+                  <input className="input mono" value={location} onChange={(e) => setLocation(e.target.value)} placeholder={kind === "azure" ? "azure://restores/web01" : "s3://my-restores/web01"} />
+                </Field>
+                <Field label="Disk names start with"><input className="input" value={vmName} onChange={(e) => setVmName(e.target.value)} maxLength={64} /></Field>
+                <Field label={kind === "azure" ? "Storage account" : "Access key ID"}><input className="input" value={account} onChange={(e) => setAccount(e.target.value)} autoComplete="off" /></Field>
+                <Field label={kind === "azure" ? "Account key or SAS token" : "Secret access key"} hint="Encrypted in this browser for the restoring machine only.">
+                  <input className="input" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
+                </Field>
+                {kind === "aws" && <Field label="Region" hint="Empty: us-east-1."><input className="input" value={region} onChange={(e) => setRegion(e.target.value)} placeholder="eu-west-2" /></Field>}
+                <Field label="Endpoint" hint="Empty for the public cloud; an https:// address otherwise."><input className="input" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} /></Field>
+              </div>
+              {kind === "aws" && (
+                <Field label="Staging folder" hint="On the restoring machine, with room for the disk files; they are removed after the upload.">
+                  <input className="input mono" value={directory} onChange={(e) => setDir(e.target.value)} />
+                </Field>
+              )}
+            </>
+          )}
+          {(kind === "vhdx" || kind === "hyperv_vm" || kind === "vm_files") && (
             <Field label={kind === "vhdx" ? "Folder" : "Folder on the host"} hint="Created if missing. Existing files are never overwritten.">
               <input className="input mono" value={directory} onChange={(e) => setDir(e.target.value)} />
             </Field>
