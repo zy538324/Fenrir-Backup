@@ -349,6 +349,33 @@ jobs:
           sudo tail -n 60 /tmp/e2e-recovery/*.log || true
           sudo sh -c 'tail -c 4000 /tmp/e2e-recovery/*.serial' | tr -d '\r' || true
 
+  # A real agent backs up and restores through the server, byte-exact, on
+  # Linux and Windows (acceptance AT-19; ci/e2e-agent-roundtrip.py).
+  agent-roundtrip:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx cryptography
+      - name: build
+        run: cargo build --release --locked -p server -p agent
+      - name: run
+        shell: bash
+        run: |
+          ext=""; [ "$RUNNER_OS" = Windows ] && ext=".exe"
+          python ci/e2e-agent-roundtrip.py "$RUNNER_TEMP/roundtrip" "target/release/fenrir-server$ext" "target/release/fenrir-backup-agent$ext"
+      - name: logs
+        if: failure()
+        shell: bash
+        run: tail -n 80 "$RUNNER_TEMP"/roundtrip/*.log || true
+
   # Live image of a running Linux system: real LVM on a loop disk, mounted
   # and written to during the backup (docs/design/phase-6.md).
   live-linux:
