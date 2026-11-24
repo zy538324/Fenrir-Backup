@@ -73,6 +73,9 @@ enum Cmd {
     /// Kubernetes: back up and restore the objects of namespaces.
     #[command(subcommand)]
     K8s(K8sCmd),
+    /// Microsoft 365, Google Workspace and Salesforce data.
+    #[command(subcommand)]
+    Saas(SaasCmd),
     /// Copy a disk straight onto another (no repository).
     Clone(CloneArgs),
     /// Copy images to another repository (an off-site copy): re-encrypted
@@ -151,6 +154,95 @@ enum RepoCmd {
     },
     /// Show repository parameters and usage.
     Info,
+}
+
+/// Which SaaS service and its credentials (secrets come from files).
+#[derive(clap::Args, Clone)]
+struct SaasService {
+    /// m365 | google | salesforce
+    #[arg(long)]
+    service: String,
+    /// Microsoft 365: directory (tenant) ID or domain. Google: the Workspace
+    /// domain. Salesforce: a name for the org.
+    #[arg(long)]
+    tenant: String,
+    /// Microsoft 365 / Salesforce: the app registration's or connected app's client ID.
+    #[arg(long)]
+    client_id: Option<String>,
+    /// Microsoft 365 / Salesforce: a file holding the client secret.
+    #[arg(long)]
+    secret_file: Option<PathBuf>,
+    /// Google: the service account's JSON key file.
+    #[arg(long)]
+    key_file: Option<PathBuf>,
+    /// Google: a Workspace administrator (to list users).
+    #[arg(long)]
+    admin: Option<String>,
+    /// Salesforce: https://<my-domain>.my.salesforce.com
+    #[arg(long)]
+    domain_url: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum SaasCmd {
+    /// Back up (only what changed since the last backup is downloaded).
+    Backup {
+        #[command(flatten)]
+        svc: SaasService,
+        /// Users (Microsoft 365, Google) to back up; default: all.
+        #[arg(long = "user")]
+        users: Vec<String>,
+        /// Salesforce objects; default: the standard ones and every custom object.
+        #[arg(long = "object")]
+        objects: Vec<String>,
+        /// Leave mail out (Microsoft 365, Google).
+        #[arg(long)]
+        no_mail: bool,
+        /// Leave files out (OneDrive, Google Drive).
+        #[arg(long)]
+        no_files: bool,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// The items in a SaaS backup.
+    List {
+        image: String,
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// Write items to a folder (mail as .eml, files as files, records as JSON).
+    Export {
+        #[arg(long)]
+        image: String,
+        #[arg(long)]
+        to: PathBuf,
+        #[arg(long)]
+        account: Option<String>,
+        /// Only items whose path starts with this.
+        #[arg(long)]
+        path: Option<String>,
+    },
+    /// Put items back into the service.
+    Restore {
+        #[command(flatten)]
+        svc: SaasService,
+        #[arg(long)]
+        image: String,
+        /// The user (or org) whose items to restore.
+        #[arg(long)]
+        account: String,
+        /// Into another user's mailbox and drive.
+        #[arg(long)]
+        to_account: Option<String>,
+        #[arg(long)]
+        path: Option<String>,
+        /// mail | file | record (default: all).
+        #[arg(long)]
+        kind: Option<String>,
+        /// Salesforce: update records that still exist (default: leave them).
+        #[arg(long)]
+        overwrite: bool,
+    },
 }
 
 /// How to reach the Kubernetes API (default: the pod's service account).
@@ -520,6 +612,7 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
         Cmd::Clone(a) => clone(ctx, a),
         Cmd::Copy(a) => copy(ctx, a),
         Cmd::K8s(k) => k8s_cmd(ctx, k),
+        Cmd::Saas(c) => saas_cmd(ctx, c),
         Cmd::Restore(RestoreCmd::Disk {
             image,
             disk,
@@ -2237,4 +2330,349 @@ fn tempfile_dir() -> R<PathBuf> {
     let d = std::env::temp_dir().join(format!("fenrir-k8s-{}", std::process::id()));
     std::fs::create_dir_all(&d)?;
     Ok(d)
+}
+
+// ---------------------------------------------------------------- SaaS (docs/design/saas.md)
+
+enum SaasConn {
+    M365(saas::m365::M365),
+    Google(Box<saas::google::Google>),
+    Salesforce(saas::salesforce::Salesforce),
+}
+
+fn saas_conn(s: &SaasService) -> R<SaasConn> {
+    let read = |p: &Option<PathBuf>, what: &str| -> R<String> {
+        let p = p
+            .as_ref()
+            .ok_or_else(|| CliError::usage(format!("--{what} is needed for {}", s.service)))?;
+        Ok(std::fs::read_to_string(p)
+            .map_err(|e| CliError::usage(format!("{}: {e}", p.display())))?
+            .trim()
+            .to_string())
+    };
+    let need = |v: &Option<String>, what: &str| {
+        v.clone()
+            .ok_or_else(|| CliError::usage(format!("--{what} is needed for {}", s.service)))
+    };
+    Ok(match s.service.as_str() {
+        "m365" => SaasConn::M365(saas::m365::M365::new(saas::m365::Config::new(
+            &s.tenant,
+            &need(&s.client_id, "client-id")?,
+            &read(&s.secret_file, "secret-file")?,
+        ))),
+        "google" => SaasConn::Google(Box::new(
+            saas::google::Google::new(
+                saas::google::Config::from_key_file(
+                    &read(&s.key_file, "key-file")?,
+                    &need(&s.admin, "admin")?,
+                    &s.tenant,
+                )
+                .map_err(|e| CliError::usage(e.0))?,
+            )
+            .map_err(|e| CliError::usage(e.0))?,
+        )),
+        "salesforce" => SaasConn::Salesforce(saas::salesforce::Salesforce::new(
+            saas::salesforce::Config {
+                domain_url: need(&s.domain_url, "domain-url")?,
+                client_id: need(&s.client_id, "client-id")?,
+                client_secret: read(&s.secret_file, "secret-file")?,
+            },
+        )),
+        other => {
+            return Err(CliError::usage(format!(
+                "unknown service {other}: m365, google or salesforce"
+            )))
+        }
+    })
+}
+
+fn saas_err(e: saas::Error) -> CliError {
+    CliError::new(ExitCode::Error, e.0)
+}
+
+/// A safe relative path for an exported item.
+fn saas_rel(it: &saas::store::Item) -> PathBuf {
+    let clean = |s: &str| -> String {
+        let t: String = s
+            .chars()
+            .map(|c| {
+                if c.is_control() || "<>:\"\\|?*".contains(c) {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let t = t.trim().trim_matches('.').to_string();
+        if t.is_empty() {
+            "_".into()
+        } else {
+            t.chars().take(120).collect()
+        }
+    };
+    let mut p = PathBuf::from(clean(&it.account)).join(&it.kind);
+    let parts: Vec<&str> = it
+        .path
+        .split('/')
+        .filter(|x| !x.is_empty() && *x != "." && *x != "..")
+        .collect();
+    for (i, part) in parts.iter().enumerate() {
+        let last = i + 1 == parts.len();
+        p.push(if last && it.kind == "mail" {
+            format!(
+                "{} [{}].eml",
+                clean(part),
+                clean(&it.id).chars().take(16).collect::<String>()
+            )
+        } else if last && it.kind == "record" {
+            format!("{}.json", clean(part))
+        } else {
+            clean(part)
+        });
+    }
+    p
+}
+
+fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
+    match c {
+        SaasCmd::Backup {
+            svc,
+            users,
+            objects,
+            no_mail,
+            no_files,
+            label,
+        } => {
+            let conn = saas_conn(&svc)?;
+            let repo = open_repo(ctx)?;
+            let started = std::time::Instant::now();
+            let prev = saas::store::previous(&repo, &svc.service, &svc.tenant)?;
+            let mut w = saas::store::Writer::new(&repo, &svc.service, &svc.tenant);
+            let quiet = ctx.json;
+            let progress = |s: &str| {
+                if !quiet {
+                    eprintln!("  {s}")
+                }
+            };
+            let pi = prev.as_ref().map(|p| &p.1);
+            match &conn {
+                SaasConn::M365(m) => m.backup(
+                    &mut w,
+                    pi,
+                    &saas::m365::Options {
+                        users,
+                        mail: !no_mail,
+                        files: !no_files,
+                    },
+                    &progress,
+                ),
+                SaasConn::Google(g) => g.backup(
+                    &mut w,
+                    pi,
+                    &saas::google::Options {
+                        users,
+                        mail: !no_mail,
+                        files: !no_files,
+                    },
+                    &progress,
+                ),
+                SaasConn::Salesforce(s) => s.backup(
+                    &mut w,
+                    pi,
+                    &saas::salesforce::Options { objects },
+                    &progress,
+                ),
+            }
+            .map_err(saas_err)?;
+            let items = w.index.items.len();
+            let warnings = w.index.warnings.clone();
+            let new = w.stats.chunks_new;
+            let id = w.finish(label, started)?;
+            let out = Outcome::new(
+                json!({ "image_id": id, "service": svc.service, "tenant": svc.tenant, "items": items, "chunks_new": new, "warnings": warnings }),
+                format!(
+                    "Backed up {items} items of {} {} as image {id}\n",
+                    svc.service, svc.tenant
+                ),
+            );
+            Ok(if warnings.is_empty() {
+                out
+            } else {
+                out.with_warnings(warnings)
+            })
+        }
+        SaasCmd::List { image, account } => {
+            let repo = open_repo(ctx)?;
+            let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
+            let idx = saas::store::read_index(&repo, &m)?;
+            let items: Vec<&saas::store::Item> = idx
+                .items
+                .iter()
+                .filter(|i| account.as_ref().is_none_or(|a| &i.account == a))
+                .collect();
+            let text: Vec<String> = items
+                .iter()
+                .map(|i| format!("{}\t{}\t{}\t{}", i.account, i.kind, i.size, i.path))
+                .collect();
+            Ok(Outcome::new(
+                json!({ "service": idx.service, "tenant": idx.tenant, "items": items.iter().map(|i| json!({ "account": i.account, "kind": i.kind, "id": i.id, "path": i.path, "size": i.size, "modified": i.modified })).collect::<Vec<_>>() }),
+                format!("{}\n", text.join("\n")),
+            ))
+        }
+        SaasCmd::Export {
+            image,
+            to,
+            account,
+            path,
+        } => {
+            let repo = open_repo(ctx)?;
+            let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
+            let idx = saas::store::read_index(&repo, &m)?;
+            let (mut n, mut bytes) = (0u64, 0u64);
+            for it in idx.items.iter().filter(|i| {
+                account.as_ref().is_none_or(|a| &i.account == a)
+                    && path.as_ref().is_none_or(|p| i.path.starts_with(p.as_str()))
+            }) {
+                let data = saas::store::read_item(&repo, it)?;
+                let dst = to.join(saas_rel(it));
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&dst, &data)?;
+                n += 1;
+                bytes += data.len() as u64;
+            }
+            Ok(Outcome::new(
+                json!({ "items": n, "bytes": bytes, "to": to }),
+                format!("Exported {n} items ({bytes} bytes) to {}\n", to.display()),
+            ))
+        }
+        SaasCmd::Restore {
+            svc,
+            image,
+            account,
+            to_account,
+            path,
+            kind,
+            overwrite,
+        } => {
+            let conn = saas_conn(&svc)?;
+            let repo = open_repo(ctx)?;
+            let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
+            let idx = saas::store::read_index(&repo, &m)?;
+            if idx.service != svc.service {
+                return Err(CliError::usage(format!("that is a {} backup", idx.service)));
+            }
+            let target = to_account.clone().unwrap_or_else(|| account.clone());
+            let folder = format!("Restored {}", m.created.get(..10).unwrap_or(""));
+            let items: Vec<&saas::store::Item> = idx
+                .items
+                .iter()
+                .filter(|i| {
+                    i.account == account
+                        && kind.as_ref().is_none_or(|k| &i.kind == k)
+                        && path.as_ref().is_none_or(|p| i.path.starts_with(p.as_str()))
+                })
+                .collect();
+            let (mut done, mut failed) = (0usize, Vec::new());
+            let mut m365_folders: std::collections::HashMap<String, String> = Default::default();
+            let mut drive_folder: Option<String> = None;
+            for it in items {
+                let data = saas::store::read_item(&repo, it)?;
+                let r = match (&conn, it.kind.as_str()) {
+                    (SaasConn::M365(c), "file") => c.restore_file(&target, &folder, it, &data),
+                    (SaasConn::M365(c), "mail") => {
+                        let orig = it.meta["folder"].as_str().unwrap_or("Mail").to_string();
+                        let fid = match m365_folders.get(&orig) {
+                            Some(f) => Ok(f.clone()),
+                            None => {
+                                let top = match m365_folders.get("") {
+                                    Some(t) => t.clone(),
+                                    None => {
+                                        let t = c
+                                            .mail_folder(&target, &folder, None)
+                                            .map_err(saas_err)?;
+                                        m365_folders.insert(String::new(), t.clone());
+                                        t
+                                    }
+                                };
+                                c.mail_folder(&target, &orig, Some(&top)).inspect(|f| {
+                                    m365_folders.insert(orig.clone(), f.clone());
+                                })
+                            }
+                        };
+                        fid.and_then(|f| c.restore_mail(&target, &f, &data))
+                    }
+                    (SaasConn::Google(g), "mail") => g.restore_mail(&target, &folder, &data),
+                    (SaasConn::Google(g), "file") => {
+                        let f = match &drive_folder {
+                            Some(f) => f.clone(),
+                            None => {
+                                let f = g.drive_folder(&target, &folder).map_err(saas_err)?;
+                                drive_folder = Some(f.clone());
+                                f
+                            }
+                        };
+                        g.restore_file(&target, &f, it, &data)
+                    }
+                    (SaasConn::Salesforce(s), "record") => s
+                        .restore_record(it.meta["object"].as_str().unwrap_or(""), &data, overwrite)
+                        .map(|_| ()),
+                    _ => Err(saas::Error(format!(
+                        "{} items cannot be restored to {}",
+                        it.kind, svc.service
+                    ))),
+                };
+                match r {
+                    Ok(()) => done += 1,
+                    Err(e) => failed.push(format!("{}: {e}", it.path)),
+                }
+            }
+            let out = Outcome::new(
+                json!({ "restored": done, "failed": failed, "to": target, "folder": folder }),
+                format!("Restored {done} items to {target} ({folder})\n"),
+            );
+            Ok(if failed.is_empty() {
+                out
+            } else {
+                out.with_warnings(failed)
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod saas_paths {
+    use super::*;
+
+    fn item(kind: &str, path: &str) -> saas::store::Item {
+        saas::store::Item {
+            account: "ann@contoso.com".into(),
+            kind: kind.into(),
+            id: "AAMkADEyN2FhYzUwLTI".into(),
+            path: path.into(),
+            modified: String::new(),
+            size: 0,
+            hash: String::new(),
+            meta: serde_json::Value::Null,
+            chunks: vec![],
+        }
+    }
+
+    #[test]
+    fn exported_paths_stay_inside_the_folder() {
+        assert_eq!(
+            saas_rel(&item("mail", "Inbox/Re: plan?")),
+            PathBuf::from("ann@contoso.com/mail/Inbox/Re_ plan_ [AAMkADEyN2FhYzUw].eml")
+        );
+        assert_eq!(
+            saas_rel(&item("file", "../../etc/passwd")),
+            PathBuf::from("ann@contoso.com/file/etc/passwd")
+        );
+        assert_eq!(
+            saas_rel(&item("record", "Account/001A")),
+            PathBuf::from("ann@contoso.com/record/Account/001A.json")
+        );
+        assert!(!saas_rel(&item("file", "/abs/x")).is_absolute());
+    }
 }

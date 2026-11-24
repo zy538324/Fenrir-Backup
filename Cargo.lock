@@ -528,6 +528,7 @@ dependencies = [
  "k8s",
  "rpassword",
  "s3store",
+ "saas",
  "serde",
  "serde_json",
  "snapshot-linux",
