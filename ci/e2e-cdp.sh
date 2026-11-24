@@ -55,7 +55,7 @@ version 2
 sleep 9   # a journal swap between versions 2 and 3
 version 3
 wait "$RUN" || [ $? = 10 ]; RUN=
-jq . "$W/run.json"
+cat "$W/run.json"
 [ "$(jq '.result.cycles | length' "$W/run.json")" -ge 4 ] || { echo "expected several journal swaps" >&2; exit 1; }
 jq -e '.result.cycles[0].base_image' "$W/run.json" >/dev/null
 
