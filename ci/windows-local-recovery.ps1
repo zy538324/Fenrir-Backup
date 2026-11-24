@@ -27,11 +27,14 @@ if ($re -notmatch 'Windows RE location:\s+\\\\\?\\') {
     $base = @('--base-wim', $adk)
     Write-Host "  (no Windows RE here: building from the ADK's Windows PE)"
 }
+Get-Disk | Format-Table Number, PartitionStyle, Size, AllocatedSize | Out-Host
+Get-Partition | Format-Table DiskNumber, PartitionNumber, DriveLetter, Offset, Size, Type, GptType | Out-Host
+Get-PartitionSupportedSize -DriveLetter C | Out-Host
 $before = (Get-Partition -DriveLetter C).Size
 $seqBefore = ((bcdedit /enum '{current}') -match '^recoverysequence') -replace '^recoverysequence\s+', ''
 
-$out = & $Agent local-recovery install --settings "$Work\settings.json" --auto-start --yes @base
-if ($LASTEXITCODE -ne 0) { throw "install failed: $out" }
+$out = & $Agent local-recovery install --settings "$Work\settings.json" --auto-start --yes @base 2>&1
+if ($LASTEXITCODE -ne 0) { $out | Out-Host; throw "install failed" }
 Write-Host $out
 $r = ($out | Select-Object -Last 1) | ConvertFrom-Json
 $st = $r.state
