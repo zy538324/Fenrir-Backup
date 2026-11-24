@@ -394,7 +394,8 @@ async fn update_job(
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
     let kind: Option<JobKind> = serde_json::from_str(&kind_json).ok();
-    let is_backup = matches!(
+    // Disk images: checked for mass encryption.
+    let is_disk_backup = matches!(
         kind,
         Some(
             JobKind::BackupSystem { .. }
@@ -402,6 +403,16 @@ async fn update_job(
                 | JobKind::BackupHyperv { .. }
         )
     );
+    // Every backup: retention, copies and the work after it.
+    let is_backup = is_disk_backup
+        || matches!(
+            kind,
+            Some(
+                JobKind::BackupFiles { .. }
+                    | JobKind::BackupKubernetes { .. }
+                    | JobKind::BackupSaas { .. }
+            )
+        );
     let mut events: Vec<notify::Event> = Vec::new();
     let agent_name: String = db
         .query_row(
@@ -472,7 +483,7 @@ async fn update_job(
                         .transpose()?
                 ],
             )?;
-            if inserted == 1 && is_backup {
+            if inserted == 1 && is_disk_backup {
                 if let Some(reason) = check_anomaly(&db, rid, im)? {
                     let what = im.vm_name.clone().unwrap_or_else(|| im.hostname.clone());
                     db.execute(
@@ -526,6 +537,10 @@ async fn update_job(
                 "DELETE FROM boot_checks WHERE image_id = ?1",
                 params![removed.to_string()],
             )?;
+            db.execute(
+                "DELETE FROM scans WHERE image_id = ?1",
+                params![removed.to_string()],
+            )?;
         }
         if matches!(kind, Some(JobKind::Prune { dry_run: false })) && u.state == JobState::Succeeded
         {
@@ -553,6 +568,40 @@ async fn update_job(
                 &agent.agent_id,
                 u.images.as_deref().unwrap_or(&[]),
             )?;
+            if let Some((subject, body)) = crate::extras::after_backup(
+                &db,
+                pid,
+                rid,
+                &agent.agent_id,
+                u.images.as_deref().unwrap_or(&[]),
+            )? {
+                events.push(notify::Event {
+                    severity: notify::Severity::Error,
+                    subject,
+                    body,
+                    link: Some("/plans".into()),
+                });
+            }
+        }
+    }
+    if let Some(JobKind::ScanImage { image_id, .. }) = &kind {
+        if u.state.is_final() {
+            if let Some((subject, body)) = crate::extras::record_scan(
+                &db,
+                &id.to_string(),
+                &agent.agent_id,
+                &image_id.to_string(),
+                matches!(u.state, JobState::Succeeded | JobState::Warning),
+                u.error.as_deref(),
+                u.result.as_ref(),
+            )? {
+                events.push(notify::Event {
+                    severity: notify::Severity::Error,
+                    subject,
+                    body,
+                    link: Some("/restore".into()),
+                });
+            }
         }
     }
     if u.state.is_final() {

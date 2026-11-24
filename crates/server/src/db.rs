@@ -196,6 +196,28 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE images ADD COLUMN legal_hold_json TEXT;
     "#,
+    // 11: malware scans of images, the detection content they use, and
+    // plan options: scan each backup, keep a standby VM.
+    r#"
+    CREATE TABLE scans (
+        id INTEGER PRIMARY KEY,
+        image_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        agent_id TEXT,
+        job_id TEXT,
+        at INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        files_scanned INTEGER NOT NULL DEFAULT 0,
+        bytes_scanned INTEGER NOT NULL DEFAULT 0,
+        findings_json TEXT,
+        summary_json TEXT
+    );
+    CREATE INDEX scans_image ON scans(image_id, at);
+    CREATE TABLE scan_rules (name TEXT PRIMARY KEY, source TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE scan_indicators (sha256 TEXT PRIMARY KEY, note TEXT);
+    ALTER TABLE plans ADD COLUMN scan_after_backup INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE plans ADD COLUMN standby_json TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

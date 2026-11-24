@@ -1352,6 +1352,12 @@ struct NewPlan {
     /// Off-site copy: copy each backup to this repository too.
     #[serde(default)]
     copy_to_repository_id: Option<String>,
+    /// Scan each new backup for malware on the machine that took it.
+    #[serde(default)]
+    scan_after_backup: bool,
+    /// Keep a VM restored from the newest backup (replaced after each one).
+    #[serde(default)]
+    standby: Option<crate::extras::Standby>,
 }
 fn yes() -> bool {
     true
@@ -1366,6 +1372,8 @@ fn plan_from_row(r: &Row) -> rusqlite::Result<Value> {
         "enabled": r.get::<_, i64>(8)? != 0, "last_run": r.get::<_, Option<i64>>(9)?, "next_run": r.get::<_, Option<i64>>(10)?,
         "retention": r.get::<_, Option<String>>(11)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
         "copy_to_repository_id": r.get::<_, Option<String>>(12)?, "copy_to_repository_name": r.get::<_, Option<String>>(13)?,
+        "scan_after_backup": r.get::<_, i64>(14)? != 0,
+        "standby": r.get::<_, Option<String>>(15)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
     }))
 }
 
@@ -1373,7 +1381,7 @@ fn plans_query(st: &Shared, agent: Option<&str>) -> ApiResult<Vec<Value>> {
     let db = st.db();
     let base = "SELECT p.id, p.name, p.agent_id, COALESCE(a.display_name, a.hostname), p.repository_id, r.name, p.job_json, p.schedule_json, p.enabled,
         COALESCE((SELECT MAX(j.created) FROM jobs j WHERE j.plan_id = p.id AND j.kind_json NOT LIKE '{\"type\":\"apply_retention%'), p.last_run),
-        p.next_run, p.retention_json, p.copy_to_repository_id, c.name
+        p.next_run, p.retention_json, p.copy_to_repository_id, c.name, p.scan_after_backup, p.standby_json
         FROM plans p JOIN agents a ON a.id = p.agent_id JOIN repositories r ON r.id = p.repository_id
         LEFT JOIN repositories c ON c.id = p.copy_to_repository_id";
     let v = match agent {
@@ -1410,20 +1418,28 @@ async fn create_plan(
             | JobKind::BackupHyperv { .. }
             | JobKind::BackupKubernetes { .. }
             | JobKind::BackupSaas { .. }
+            | JobKind::BackupFiles { .. }
             | JobKind::Verify { .. }
     ) {
         return Err(ApiError::bad("plans run backups or verification"));
     }
     p.schedule.validate().map_err(ApiError::bad)?;
     validate_job(&st, &agent, &p.job, &Some(repo.clone()))?;
+    validate_files_job(&p.job)?;
     let copy_to = check_copy_target(&st, &agent, &repo, p.copy_to_repository_id.as_deref())?;
     let id = Uuid::new_v4().to_string();
     let t = now();
     let db = st.db();
+    let standby = p
+        .standby
+        .as_ref()
+        .map(|s| crate::extras::check_standby(&db, s, &repo))
+        .transpose()?;
     db.execute(
-        "INSERT INTO plans (id, name, agent_id, repository_id, job_json, schedule_json, enabled, next_run, created, retention_json, copy_to_repository_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO plans (id, name, agent_id, repository_id, job_json, schedule_json, enabled, next_run, created, retention_json, copy_to_repository_id, scan_after_backup, standby_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![id, p.name.trim(), agent, repo, serde_json::to_string(&p.job)?, serde_json::to_string(&p.schedule)?, p.enabled, p.schedule.next_after(t), t,
-                p.retention.map(|r| serde_json::to_string(&r)).transpose()?, copy_to],
+                p.retention.map(|r| serde_json::to_string(&r)).transpose()?, copy_to, p.scan_after_backup,
+                standby.map(|s| serde_json::to_string(&s)).transpose()?],
     )?;
     audit(&db, &a.username, "plan.created", p.name.trim());
     Ok(Json(json!({ "id": id })))
@@ -1445,6 +1461,45 @@ struct PlanPatch {
     /// Present (even null) to change the off-site copy; null = none.
     #[serde(default, deserialize_with = "some_value")]
     copy_to_repository_id: Option<Option<String>>,
+    #[serde(default)]
+    scan_after_backup: Option<bool>,
+    /// Present (even null) to change the standby VM; null = none.
+    #[serde(default, deserialize_with = "some_value")]
+    standby: Option<Option<crate::extras::Standby>>,
+}
+
+/// Files and folders: 1 to 100 full paths, up to 200 exclusions.
+fn validate_files_job(j: &JobKind) -> ApiResult<()> {
+    let JobKind::BackupFiles {
+        paths, excludes, ..
+    } = j
+    else {
+        return Ok(());
+    };
+    let full = |x: &str| {
+        let b = x.as_bytes();
+        x.starts_with('/')
+            || x.starts_with("\\\\")
+            || (b.len() >= 3
+                && b[0].is_ascii_alphabetic()
+                && b[1] == b':'
+                && (b[2] == b'\\' || b[2] == b'/'))
+    };
+    if paths.is_empty()
+        || paths.len() > 100
+        || paths.iter().any(|x| x.len() > 1000 || x.contains('\0'))
+    {
+        return Err(ApiError::bad("choose 1 to 100 files or folders to back up"));
+    }
+    if paths.iter().any(|x| !full(x.trim())) {
+        return Err(ApiError::bad(
+            "each path must be a full path on the machine: C:\\Users\\anna\\Documents, /home/anna or \\\\server\\share\\folder",
+        ));
+    }
+    if excludes.len() > 200 || excludes.iter().any(|x| x.len() > 500) {
+        return Err(ApiError::bad("up to 200 exclusions"));
+    }
+    Ok(())
 }
 
 /// An off-site copy destination for `agent`'s backups in `repo`: another
@@ -1500,8 +1555,25 @@ async fn update_plan(
     )?;
     if let Some(j) = &p.job {
         validate_job(&st, &agent, j, &Some(repo.clone()))?;
+        validate_files_job(j)?;
     }
     let db = st.db();
+    if let Some(v) = p.scan_after_backup {
+        db.execute(
+            "UPDATE plans SET scan_after_backup = ?1 WHERE id = ?2",
+            params![v, id],
+        )?;
+    }
+    if let Some(sb) = &p.standby {
+        let sb = sb
+            .as_ref()
+            .map(|s| crate::extras::check_standby(&db, s, &repo))
+            .transpose()?;
+        db.execute(
+            "UPDATE plans SET standby_json = ?1 WHERE id = ?2",
+            params![sb.map(|s| serde_json::to_string(&s)).transpose()?, id],
+        )?;
+    }
     if let Some(n) = p.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
         db.execute("UPDATE plans SET name = ?1 WHERE id = ?2", params![n, id])?;
     }
@@ -1679,12 +1751,21 @@ fn images_query(st: &Shared, agent: Option<&str>, repo: Option<&str>) -> ApiResu
                 "applications": r.get::<_, Option<String>>(17)?
                     .and_then(|s| serde_json::from_str::<Value>(&s).ok())
                     .unwrap_or(json!([])),
+                "source": if crate::extras::is_folder_backup(&r.get::<_, String>(4)?) { "files" } else { "disks" },
                 "legal_hold": r.get::<_, Option<String>>(18)?
                     .and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                 "boot_check": boot_json(r.get::<_, Option<String>>(19)?),
             }))
         })?
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<Vec<Value>, _>>()?;
+    let v = v
+        .into_iter()
+        .map(|mut i| {
+            let id = i["image_id"].as_str().unwrap_or_default().to_string();
+            i["last_scan"] = crate::extras::latest_scan(&db, &id).unwrap_or(Value::Null);
+            i
+        })
+        .collect();
     Ok(v)
 }
 
@@ -1979,6 +2060,9 @@ struct RestoreReq {
     target: protocol::RestoreTarget,
     #[serde(default)]
     disks: Vec<u32>,
+    /// Restore even though the latest malware scan found infected files.
+    #[serde(default)]
+    allow_infected: bool,
 }
 
 async fn create_restore(
@@ -1995,6 +2079,11 @@ async fn create_restore(
             |x| x.get(0),
         )
         .map_err(|_| ApiError::not_found("no such image"))?;
+    {
+        let db = st.db();
+        crate::extras::disks_only(&db, &r.image_id.to_string(), "it has no disks to restore")?;
+        crate::extras::malware_guard(&db, &r.image_id.to_string(), r.allow_infected, None)?;
+    }
     let need = match &r.target {
         protocol::RestoreTarget::Vhdx { directory } => {
             if directory.trim().is_empty() {
@@ -2286,6 +2375,7 @@ async fn create_boot_check(
 ) -> ApiResult<Json<Value>> {
     let image_id: Uuid = id.parse().map_err(|_| ApiError::bad("invalid image id"))?;
     let agent = uuid_param(&r.agent_id)?;
+    crate::extras::disks_only(&st.db(), &image_id.to_string(), "it has no system to boot")?;
     if r.memory_mb.is_some_and(|m| !(256..=65536).contains(&m))
         || r.cpus.is_some_and(|c| !(1..=16).contains(&c))
     {
@@ -2725,6 +2815,8 @@ struct RestoreFilesReq {
     disk: u32,
     partition: u32,
     paths: Vec<String>,
+    #[serde(default)]
+    allow_infected: bool,
     target: String,
     #[serde(default = "yes")]
     keep_structure: bool,
@@ -2739,6 +2831,8 @@ struct DownloadFilesReq {
     disk: u32,
     partition: u32,
     paths: Vec<String>,
+    #[serde(default)]
+    allow_infected: bool,
     /// The browser's one-time X25519 public key (base64).
     recipient: String,
 }
@@ -2759,6 +2853,12 @@ async fn download_files(
         .into_iter()
         .filter(|p| !p.trim_matches('/').is_empty())
         .collect();
+    crate::extras::malware_guard(
+        &st.db(),
+        &image_id.to_string(),
+        r.allow_infected,
+        Some(&paths),
+    )?;
     if paths.is_empty() || paths.len() > 1000 || paths.iter().any(|p| p.len() > 4000) {
         return Err(ApiError::bad("choose 1 to 1000 files or folders"));
     }
@@ -2830,6 +2930,12 @@ async fn restore_files(
         .into_iter()
         .filter(|p| !p.trim_matches('/').is_empty())
         .collect();
+    crate::extras::malware_guard(
+        &st.db(),
+        &image_id.to_string(),
+        r.allow_infected,
+        Some(&paths),
+    )?;
     if paths.is_empty() || paths.len() > 1000 || paths.iter().any(|p| p.len() > 4000) {
         return Err(ApiError::bad("choose 1 to 1000 files or folders"));
     }

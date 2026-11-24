@@ -9,6 +9,7 @@ pub mod anomaly;
 pub mod auth;
 pub mod db;
 pub mod downloads;
+pub mod extras;
 pub mod gateway;
 pub mod notify;
 pub mod schedule;
@@ -168,6 +169,7 @@ pub fn sha256_hex(s: &[u8]) -> String {
 pub fn router(state: Shared) -> Router {
     let api = ui_api::routes()
         .merge(agent_api::routes())
+        .merge(extras::routes())
         .merge(gateway::routes())
         .merge(downloads::routes());
     let mut app = Router::new()

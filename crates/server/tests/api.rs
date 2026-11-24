@@ -2648,3 +2648,201 @@ async fn kubernetes_and_saas_plans_carry_only_sealed_credentials() {
     let (s, v) = t.post(&url, job(ok, true, "PROD")).await;
     assert_eq!(s, StatusCode::OK, "{v}");
 }
+
+#[tokio::test]
+async fn scans_search_app_restore_folder_plans_standby_and_legal_hold() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    let caps: Vec<&str> = CAPS
+        .iter()
+        .copied()
+        .chain([
+            "backup_files",
+            "scan_images",
+            "search_files",
+            "restore_apps",
+            "restore_vm_files",
+            "legal_hold",
+        ])
+        .collect();
+    heartbeat(&mut t, &token, &caps, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+    heartbeat(&mut t, &token, &caps, None).await;
+
+    // Detection content: hashes are checked, rules named.
+    let (s, _, _) = t
+        .req(
+            "PUT",
+            "/api/scan-content",
+            Some(json!({ "rules": [], "indicators": ["nothex"] })),
+            None,
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let bad = "AB".repeat(32);
+    let (s, v, _) = t
+        .req("PUT", "/api/scan-content", Some(json!({ "rules": [{ "name": "eicar", "source": "rule eicar { condition: true }" }], "indicators": [bad] })), None, true)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // A plan of folders that scans each backup and keeps a standby VM.
+    let plan = json!({ "name": "Docs", "agent_id": agent_id, "repository_id": repo,
+        "job": { "type": "backup_files", "paths": ["relative/path"] }, "schedule": { "type": "manual" } });
+    let (s, _) = t.post("/api/plans", plan.clone()).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "paths must be full paths");
+    let mut plan = plan;
+    plan["job"]["paths"] = json!(["/home/anna", "C:\\Users\\anna\\Documents"]);
+    plan["scan_after_backup"] = json!(true);
+    plan["standby"] = json!({ "agent_id": agent_id, "type": "vm_files", "format": "qcow2", "name": "web standby", "directory": "/srv/standby" });
+    plan["retention"] = json!({ "keep_last": 1 });
+    let (s, p) = t.post("/api/plans", plan).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let plan_id = p["id"].as_str().unwrap().to_string();
+    let (_, plans) = t.get("/api/plans").await;
+    assert_eq!(plans[0]["scan_after_backup"], true);
+    assert_eq!(plans[0]["standby"]["format"], "qcow2");
+
+    // A disk image backup to scan, search and restore.
+    t.post(&format!("/api/plans/{plan_id}/run"), json!({}))
+        .await;
+    let mut im = image(1, 10, 10 << 20, 4 << 20);
+    im.applications = vec![protocol::ImageApplication {
+        writer: "SqlServerWriter".into(),
+        component: "WEB01\\sales".into(),
+        caption: "sales".into(),
+        included: true,
+        note: None,
+        file_sets: 2,
+    }];
+    let image_id = im.image_id;
+    let j = complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "images": [im] }),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(j.kind, JobKind::BackupFiles { .. }));
+    // After it: the file catalogue, a scan with the content, the standby, then retention.
+    // (handed out one per heartbeat; the others are finished as they come)
+    let mut jobs: Vec<JobSpec> = Vec::new();
+    for _ in 0..8 {
+        let hb = heartbeat(&mut t, &token, &caps, None).await;
+        for j in hb.jobs {
+            if !matches!(j.kind, JobKind::ScanImage { .. }) {
+                t.agent(
+                    &format!("/api/agent/jobs/{}/update", j.id),
+                    &token,
+                    json!({ "state": "succeeded" }),
+                )
+                .await;
+            }
+            jobs.push(j);
+        }
+    }
+    let kinds: Vec<&JobKind> = jobs.iter().map(|j| &j.kind).collect();
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, JobKind::IndexImage { image_id: i } if *i == image_id)),
+        "{kinds:?}"
+    );
+    let scan = jobs
+        .iter()
+        .find(|j| matches!(j.kind, JobKind::ScanImage { .. }))
+        .expect("a scan after the backup");
+    let JobKind::ScanImage {
+        rules, indicators, ..
+    } = &scan.kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(rules[0].name, "eicar");
+    assert_eq!(indicators[0], "ab".repeat(32));
+    let (_, all) = t.get("/api/jobs").await;
+    assert!(
+        all.as_array()
+            .unwrap()
+            .iter()
+            .any(|j| j["kind"]["type"] == "restore"
+                && j["kind"]["target"]["type"] == "vm_files"
+                && j["kind"]["target"]["replace"] == true),
+        "the standby VM is updated: {all}"
+    );
+    assert!(kinds
+        .iter()
+        .any(|k| matches!(k, JobKind::ApplyRetention { .. })));
+
+    // The scan finds malware: restores of that image need an explicit yes.
+    let (s, v) = t
+        .agent(
+            &format!("/api/agent/jobs/{}/update", scan.id),
+            &token,
+            json!({ "state": "succeeded", "result": { "image_id": image_id, "scan": {
+                "files_scanned": 40, "bytes_scanned": 1000, "volumes_scanned": ["C:\\\\"],
+                "findings": [{ "volume": "C:\\\\", "path": "Users/anna/evil.exe", "size": 68, "sha256": "ab".repeat(32),
+                               "detections": [{ "kind": "hash", "name": "known bad" }] }] } } }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, scans) = t.get(&format!("/api/images/{image_id}/scans")).await;
+    assert_eq!(scans[0]["state"], "infected");
+    let (_, imgs) = t.get("/api/images").await;
+    assert_eq!(imgs[0]["last_scan"]["state"], "infected");
+    let restore = json!({ "image_id": image_id, "agent_id": agent_id, "target": { "type": "vhdx", "directory": "/restore" } });
+    let (s, v) = t.post("/api/restores", restore.clone()).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let mut yes = restore;
+    yes["allow_infected"] = json!(true);
+    let (s, v) = t.post("/api/restores", yes).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // One database, into a folder, attached under a new name.
+    let url = format!("/api/images/{image_id}/restore-app");
+    let app = json!({ "agent_id": agent_id, "component": "WEB01\\sales", "directory": "D:\\Restores", "attach_as": "sales_copy", "allow_infected": true });
+    let (s, v) = t.post(&url, app.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let mut no = app.clone();
+    no["component"] = json!("WEB01\\nope");
+    assert_eq!(t.post(&url, no).await.0, StatusCode::BAD_REQUEST);
+    let mut rel = app;
+    rel["directory"] = json!("Restores");
+    assert_eq!(t.post(&url, rel).await.0, StatusCode::BAD_REQUEST);
+
+    // Search: one job per repository on a machine that can.
+    let (s, v) = t
+        .post(
+            "/api/search",
+            json!({ "query": "budget", "machine_id": "machine-1" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["jobs"].as_array().unwrap().len(), 1);
+
+    // Legal hold of a machine; released only with the password.
+    let (s, v) = t
+        .post(
+            "/api/legal-hold/machine",
+            json!({ "machine_id": "machine-1", "reason": "Case 42" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["held"], 1);
+    let hold = format!("/api/images/{image_id}/legal-hold");
+    let (s, _) = t
+        .post(&hold, json!({ "hold": false, "password": "wrong" }))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v) = t
+        .post(
+            &hold,
+            json!({ "hold": false, "password": "correct horse battery" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["legal_hold"].is_null());
+}
