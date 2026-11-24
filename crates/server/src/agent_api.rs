@@ -636,6 +636,49 @@ async fn update_job(
         }
     }
 
+    // Storage health checks: the result goes on the repository; a newly
+    // failing check raises an alert.
+    if let (Some(JobKind::CheckAccess { .. }), Some(rid), true) =
+        (&kind, &repo_id, u.state.is_final())
+    {
+        let by: Option<String> = db
+            .query_row(
+                "SELECT requested_by FROM jobs WHERE id = ?1",
+                params![id.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if by.as_deref() == Some("storage check") {
+            let error = match u.state {
+                JobState::Succeeded | JobState::Warning => None,
+                _ => Some(
+                    u.error
+                        .clone()
+                        .unwrap_or_else(|| "the storage could not be reached".into()),
+                ),
+            };
+            let (name, was): (String, Option<String>) = db.query_row(
+                "SELECT name, storage_error FROM repositories WHERE id = ?1",
+                params![rid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            db.execute(
+                "UPDATE repositories SET storage_checked_at = ?1, storage_error = ?2 WHERE id = ?3",
+                params![t, error, rid],
+            )?;
+            if let (Some(e), None) = (&error, &was) {
+                events.push(notify::Event {
+                    severity: notify::Severity::Error,
+                    subject: format!("Storage of {name} cannot be reached"),
+                    body: format!(
+                        "The daily check of the repository {name}'s storage from {agent_name} failed: {e}\n\nBackups into it will fail until this is fixed (an expired key or password, a full disk, or a share or bucket that moved)."
+                    ),
+                    link: Some("/repositories".into()),
+                });
+            }
+        }
+    }
     // Adopting an existing repository: its first listing names it.
     if matches!(kind, Some(JobKind::ListImages)) && u.state.is_final() {
         if let Some(rid) = &repo_id {

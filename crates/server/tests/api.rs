@@ -2846,3 +2846,71 @@ async fn scans_search_app_restore_folder_plans_standby_and_legal_hold() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["legal_hold"].is_null());
 }
+
+#[tokio::test]
+async fn storage_is_checked_daily_and_a_failure_is_shown_and_alerted() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "nas-client").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+
+    assert_eq!(server::schedule::check_storage(&t.st).unwrap(), 1);
+    assert_eq!(
+        server::schedule::check_storage(&t.st).unwrap(),
+        0,
+        "once a day"
+    );
+    let j = complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "failed", "error": "access denied: the key was revoked" }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(j.kind, JobKind::CheckAccess { .. }),
+        "{:?}",
+        j.kind
+    );
+    let (_, repos) = t.get("/api/repositories").await;
+    let r = repos
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == repo.as_str())
+        .unwrap();
+    assert_eq!(r["storage_error"], "access denied: the key was revoked");
+    assert!(r["storage_checked_at"].as_i64().is_some());
+
+    // The next day it works again: the error goes.
+    t.st.db()
+        .execute(
+            "UPDATE repositories SET storage_checked_at = storage_checked_at - 90000",
+            [],
+        )
+        .unwrap();
+    t.st.db()
+        .execute(
+            "UPDATE jobs SET created = created - 90000 WHERE requested_by = 'storage check'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(server::schedule::check_storage(&t.st).unwrap(), 1);
+    complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "result": { "free_bytes": 1 } }),
+    )
+    .await
+    .unwrap();
+    let (_, repos) = t.get("/api/repositories").await;
+    let r = repos
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == repo.as_str())
+        .unwrap();
+    assert!(r["storage_error"].is_null(), "{r}");
+}

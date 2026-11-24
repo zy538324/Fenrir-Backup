@@ -200,6 +200,9 @@ export interface Repository {
   share_auth: "none" | "machine" | "password";
   share_user: string | null;
   s3: S3Settings | null;
+  /** Daily check of the storage with a machine's credentials. */
+  storage_checked_at?: number | null;
+  storage_error?: string | null;
 }
 
 export interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number }

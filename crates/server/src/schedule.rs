@@ -264,6 +264,53 @@ pub fn run_maintenance(state: &Shared) -> rusqlite::Result<usize> {
     Ok(due.len())
 }
 
+/// Storage health: once a day per ready repository (not one reached through
+/// a gateway), a connection test of its storage with the sign-in a machine
+/// with access uses (share password, S3 or Azure keys, sealed to it). The
+/// result is kept on the repository; a failure raises an alert.
+pub fn check_storage(state: &Shared) -> rusqlite::Result<usize> {
+    let t = now();
+    let db = state.db();
+    let due: Vec<(String, String, Option<String>)> = db
+        .prepare(
+            "SELECT r.id, r.path, r.s3_json FROM repositories r
+             WHERE r.status = 'ready' AND r.gateway_agent_id IS NULL
+               AND COALESCE(r.storage_checked_at, 0) < ?1 - 86400
+               AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.repository_id = r.id AND j.requested_by = 'storage check'
+                               AND (j.state IN ('queued','dispatched','running') OR j.created > ?1 - 86400))",
+        )?
+        .query_map(params![t], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut n = 0;
+    for (repo, path, s3) in due {
+        // The maintenance machine, else the machine with access seen most recently.
+        let agent: Option<(String, Option<String>)> = db
+            .query_row(
+                "SELECT x.agent_id, x.sealed_share FROM repo_access x JOIN agents a ON a.id = x.agent_id
+                 JOIN repositories r ON r.id = x.repository_id
+                 WHERE x.repository_id = ?1 AND a.revoked = 0 AND x.via_gateway = 0
+                 ORDER BY (x.agent_id = r.maintenance_agent_id) DESC, a.last_seen DESC LIMIT 1",
+                params![repo],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((agent, sealed)) = agent else {
+            continue;
+        };
+        let kind = protocol::JobKind::CheckAccess {
+            path,
+            sealed_share: sealed.and_then(|s| serde_json::from_str(&s).ok()),
+            s3: s3.and_then(|s| serde_json::from_str(&s).ok()),
+        };
+        db.execute(
+            "INSERT INTO jobs (id, agent_id, repository_id, kind_json, state, created, requested_by) VALUES (?1, ?2, ?3, ?4, 'queued', ?5, 'storage check')",
+            params![uuid::Uuid::new_v4().to_string(), agent, repo, serde_json::to_string(&kind).unwrap_or_default(), t],
+        )?;
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// Boot verification: per repository with a boot host and an interval,
 /// queue a boot check of the newest image of each machine that has not
 /// been checked within the interval. One check per repository at a time.
@@ -426,6 +473,9 @@ pub async fn scheduler_loop(state: Shared) {
             purge_downloads(&s.cfg.downloads_dir, 24 * 3600);
             if let Err(e) = expire_recovery_sessions(&s) {
                 tracing::error!(error = %e, "recovery session cleanup");
+            }
+            if let Err(e) = check_storage(&s) {
+                tracing::error!(error = %e, "storage checks");
             }
             if let Err(e) = refresh_local_recovery(&s) {
                 tracing::error!(error = %e, "local recovery refresh");

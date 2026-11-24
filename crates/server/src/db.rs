@@ -218,6 +218,12 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE plans ADD COLUMN scan_after_backup INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE plans ADD COLUMN standby_json TEXT;
     "#,
+    // 12: storage health: a daily connection test of each repository's
+    // storage with the credentials machines use.
+    r#"
+    ALTER TABLE repositories ADD COLUMN storage_checked_at INTEGER;
+    ALTER TABLE repositories ADD COLUMN storage_error TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

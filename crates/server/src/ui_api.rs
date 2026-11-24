@@ -1164,7 +1164,7 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
             (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id AND i.anomaly IS NOT NULL),
             r.boot_agent_id, r.boot_every_days,
             (SELECT MAX(at) FROM boot_checks b WHERE b.repository_id = r.id AND b.outcome = 'verified'),
-            r.share_auth, r.share_user, r.s3_json
+            r.share_auth, r.share_user, r.s3_json, r.storage_checked_at, r.storage_error
          FROM repositories r ORDER BY r.created",
     )?;
     let mut repos: Vec<Value> = s
@@ -1181,6 +1181,7 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
                 "last_verified_boot": r.get::<_, Option<i64>>(19)?,
                 "share_auth": r.get::<_, String>(20)?, "share_user": r.get::<_, Option<String>>(21)?,
                 "s3": r.get::<_, Option<String>>(22)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+                "storage_checked_at": r.get::<_, Option<i64>>(23)?, "storage_error": r.get::<_, Option<String>>(24)?,
             }))
         })?
         .collect::<Result<_, _>>()?;

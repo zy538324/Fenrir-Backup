@@ -54,6 +54,8 @@ export default function RepositoriesPage() {
               <div className="card-body stack">
                 {r.status === "failed" && <Notice tone="bad">{r.status_message ?? "The machine could not create the repository."}</Notice>}
                 {r.hold && <HoldBanner repo={r} onChange={repos.reload} />}
+                {r.storage_error && <Notice tone="bad">The storage could not be reached at the last daily check ({ago(r.storage_checked_at ?? null)}): {r.storage_error}. Backups into this repository will fail until it is fixed.</Notice>}
+                {!r.storage_error && r.storage_checked_at && <div className="faint small"><ShieldCheck size={12} /> Storage reachable with the machines' sign-in, checked {ago(r.storage_checked_at)}</div>}
                 <div className="grid cols-3" style={{ gap: 10 }}>
                   <div><div className="faint small">Images</div><div style={{ fontWeight: 650, fontSize: 18 }}>{r.images}</div></div>
                   <div><div className="faint small">Stored</div><div style={{ fontWeight: 650, fontSize: 18 }}>{bytes(r.stored_bytes)}</div></div>
