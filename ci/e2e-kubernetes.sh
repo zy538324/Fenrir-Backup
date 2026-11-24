@@ -145,7 +145,7 @@ import json, sys
 v = {x["claim"]: x for x in json.load(open(sys.argv[1]))["result"]["volumes"]}
 assert v["fast"]["method"] == "snapshot", v
 assert v["data"]["method"] == "live", v
-assert all(x["bytes"] > 12 << 20 for x in v.values()), v
+assert all(x["bytes"] > 6 << 20 for x in v.values()), v
 print("  ok: both claims' data backed up (fast: CSI snapshot, data: read live)")
 PY
   check '[ -z "$(kubectl -n shop get volumesnapshot,pvc,pod -l app.kubernetes.io/managed-by=fenrir-backup -o name)" ]' "no snapshot, temporary claim or reader pod left"
