@@ -844,6 +844,10 @@ struct NewRepo {
     /// re-added): its images are listed instead of a new one being created.
     #[serde(default)]
     existing: bool,
+    /// Dedup group (docs/design/dedup-groups.md): "new" starts one at the
+    /// path; a repository id joins that repository's group (same storage).
+    #[serde(default)]
+    dedup: Option<String>,
     init_agent_id: String,
     access: Vec<SealedFor>,
     #[serde(flatten)]
@@ -888,14 +892,59 @@ async fn create_repo(
         (false, Some(u)) => u.to_string(),
         (false, None) => return Err(ApiError::bad("repo_uuid is required for a new repository")),
     };
+    // In a dedup group the repository lives in <group>/repos/<its id>.
+    let (path, dedup_source): (String, Option<String>) = match (n.dedup.as_deref(), n.existing) {
+        (None, _) | (Some(""), _) => (path.to_string(), None),
+        (Some(_), true) => {
+            return Err(ApiError::bad(
+                "an existing repository cannot be added to a dedup group",
+            ))
+        }
+        (Some("new"), false) => {
+            if protocol::dedup::split_member_path(path).is_some() {
+                return Err(ApiError::bad(
+                    "choose the folder for the new dedup group, not a repository inside one",
+                ));
+            }
+            (
+                protocol::dedup::member_path(path, &Uuid::parse_str(&repo_uuid).expect("checked")),
+                None,
+            )
+        }
+        (Some(src), false) => {
+            let src_id = uuid_param(src)?.to_string();
+            let src_path: String = st
+                .db()
+                .query_row(
+                    "SELECT path FROM repositories WHERE id = ?1",
+                    params![src_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| ApiError::bad("unknown repository to share a dedup group with"))?;
+            let (root, _) = protocol::dedup::split_member_path(&src_path)
+                .ok_or_else(|| ApiError::bad("that repository is not in a dedup group"))?;
+            // Same storage (and so the same sign-in or keys) as the group.
+            if path.trim_end_matches(['/', '\\']) != root {
+                return Err(ApiError::bad(format!(
+                    "a repository in this dedup group is stored in the group's folder: {root}"
+                )));
+            }
+            (
+                protocol::dedup::member_path(&root, &Uuid::parse_str(&repo_uuid).expect("checked")),
+                Some(src_id),
+            )
+        }
+    };
+    let path = path.as_str();
     let id = Uuid::new_v4().to_string();
     let t = now();
     {
         let db = st.db();
         let tx = db.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id, share_auth, share_user, s3_json) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9)",
-            params![id, name, path, repo_uuid, t, init, mode, n.share.user(), n.s3.as_ref().map(serde_json::to_string).transpose()?],
+            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id, share_auth, share_user, s3_json, dedup_source_id) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![id, name, path, repo_uuid, t, init, mode, n.share.user(), n.s3.as_ref().map(serde_json::to_string).transpose()?, dedup_source],
         )?;
         for x in &n.access {
             let agent = uuid_param(&x.agent_id)?;

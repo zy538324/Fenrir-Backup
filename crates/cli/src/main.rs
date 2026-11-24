@@ -138,6 +138,13 @@ enum RepoCmd {
         /// zstd compression level (1..19).
         #[arg(long, default_value_t = 3)]
         zstd_level: i32,
+        /// Dedup group (repositories sharing one chunk store): `new` starts a
+        /// group in --repo; a member's path (`<group>/repos/<id>`) adds a
+        /// repository to its group (that member's passphrase from
+        /// FENRIR_GROUP_PASSPHRASE, or prompted). The new repository is
+        /// `<group>/repos/<its id>`: use that as --repo from then on.
+        #[arg(long)]
+        dedup_group: Option<String>,
     },
     /// Show repository parameters and usage.
     Info,
@@ -365,7 +372,14 @@ fn run(ctx: &Ctx, cmd: Cmd) -> R<Outcome> {
             recovery_key_out,
             chunk_size_kib,
             zstd_level,
-        }) => repo_init(ctx, &recovery_key_out, chunk_size_kib, zstd_level),
+            dedup_group,
+        }) => repo_init(
+            ctx,
+            &recovery_key_out,
+            chunk_size_kib,
+            zstd_level,
+            dedup_group.as_deref(),
+        ),
         Cmd::Repo(RepoCmd::Info) => repo_info(ctx),
         Cmd::Key(KeyCmd::AddPassphrase) => {
             let repo = open_repo(ctx)?;
@@ -603,8 +617,22 @@ fn azure_from_env(url: &str) -> R<azstore::AzureBackend> {
 }
 
 /// The repository's storage: a folder, S3 for `s3://` locations, Azure Blob
-/// for `azure://`.
+/// for `azure://`; a dedup group member (`<group>/repos/<id>`) with the
+/// group's shared store.
 fn backend(path: &Path, create: bool) -> R<Arc<dyn Backend>> {
+    let s = path.to_string_lossy();
+    if let Some((root, _)) = core_format::group::split_member_path(&s) {
+        let member = location(path, create)?;
+        let shared = location(Path::new(&root), false)?;
+        return Ok(Arc::new(core_format::group::GroupBackend {
+            member,
+            shared,
+        }));
+    }
+    location(path, create)
+}
+
+fn location(path: &Path, create: bool) -> R<Arc<dyn Backend>> {
     let s = path.to_string_lossy();
     if s.starts_with("azure://") {
         let b = azure_from_env(&s)?;
@@ -679,7 +707,13 @@ fn write_secret_file(p: &Path, contents: &str) -> R<()> {
     Ok(())
 }
 
-fn repo_init(ctx: &Ctx, rk_out: &Path, chunk_kib: u32, zstd_level: i32) -> R<Outcome> {
+fn repo_init(
+    ctx: &Ctx,
+    rk_out: &Path,
+    chunk_kib: u32,
+    zstd_level: i32,
+    dedup_group: Option<&str>,
+) -> R<Outcome> {
     let path = repo_path(ctx)?;
     ensure_new_file(rk_out)?;
     if !(1..=19).contains(&zstd_level) {
@@ -696,16 +730,20 @@ fn repo_init(ctx: &Ctx, rk_out: &Path, chunk_kib: u32, zstd_level: i32) -> R<Out
     if pass.is_empty() {
         return Err(CliError::usage("passphrase must not be empty"));
     }
-    let backend = backend(path, true)?;
-    let (repo, rk) = Repository::init(
-        backend,
-        pass.as_bytes(),
-        InitOptions {
-            chunk_size,
-            zstd_level,
-            kdf: KdfParams::DEFAULT,
-        },
-    )?;
+    let opts = InitOptions {
+        chunk_size,
+        zstd_level,
+        kdf: KdfParams::DEFAULT,
+    };
+    let (repo, rk, path) = match dedup_group {
+        None => {
+            let backend = backend(path, true)?;
+            let (repo, rk) = Repository::init(backend, pass.as_bytes(), opts)?;
+            (repo, rk, path.to_path_buf())
+        }
+        Some(g) => init_in_group(path, g, &pass, opts)?,
+    };
+    let path = path.as_path();
     write_secret_file(rk_out, &rk.to_file_contents())?;
     let c = repo.config();
     Ok(Outcome::new(
@@ -717,6 +755,50 @@ fn repo_init(ctx: &Ctx, rk_out: &Path, chunk_kib: u32, zstd_level: i32) -> R<Out
             rk_out.display()
         ),
     ))
+}
+
+/// A new member of a dedup group: a new group in `path` (`new`), or the
+/// group of the member at `group`.
+fn init_in_group(
+    path: &Path,
+    group: &str,
+    pass: &str,
+    opts: InitOptions,
+) -> R<(Repository, core_format::RecoveryKey, PathBuf)> {
+    use core_format::group;
+    let (root, key, info) = if group == "new" {
+        let root = path.to_string_lossy().to_string();
+        let shared = backend(path, true)?;
+        let info = group::create(&*shared, opts.chunk_size)?;
+        (root, core_format::crypto::SecretKey::generate()?, info)
+    } else {
+        let (root, _) = group::split_member_path(group).ok_or_else(|| {
+            CliError::usage("--dedup-group takes `new` or the path of a repository in a group (<group>/repos/<id>)")
+        })?;
+        let other_pass = match std::env::var("FENRIR_GROUP_PASSPHRASE") {
+            Ok(p) => p,
+            Err(_) => {
+                rpassword::prompt_password(format!("Passphrase of {group}: ")).map_err(|e| {
+                    CliError::new(ExitCode::KeyError, format!("reading passphrase: {e}"))
+                })?
+            }
+        };
+        let other = Repository::unlock_with_passphrase(
+            backend(Path::new(group), false)?,
+            other_pass.as_bytes(),
+        )?;
+        let key = other
+            .group_key()
+            .cloned()
+            .ok_or_else(|| CliError::usage(format!("{group} is not in a dedup group")))?;
+        let info = group::read_info(&*backend(Path::new(&root), false)?)?;
+        (root, key, info)
+    };
+    let rk = core_format::RecoveryKey::generate(uuid::Uuid::new_v4())?;
+    let member = PathBuf::from(group::member_path(&root, &rk.repo_id));
+    let b = backend(&member, true)?;
+    let repo = Repository::init_member(b, pass.as_bytes(), opts, &rk, &info, &key)?;
+    Ok((repo, rk, member))
 }
 
 #[derive(Serialize)]

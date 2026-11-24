@@ -263,13 +263,32 @@ async fn heartbeat(
                 }
                 _ => Ok(None),
             };
-            let repository = match (repository, copy_target) {
-                (Ok(r), Ok(c)) => Ok((r, c)),
-                (Err(_), _) => Err("This machine has not been given access to the repository. Grant access on the Repositories page."),
-                (_, Err(e)) => Err(e),
+            // A repository joining a dedup group: the member it takes the
+            // group's key from, which this machine must be able to open.
+            let group_source = match (&kind, &repo_id) {
+                (JobKind::InitRepository, Some(rid)) => {
+                    let src: Option<String> = db
+                        .query_row(
+                            "SELECT dedup_source_id FROM repositories WHERE id = ?1",
+                            params![rid],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                        .flatten();
+                    match src {
+                        None => Ok(None),
+                        Some(s) => access_to(&s).map(Some).map_err(|_| "This machine has no access to the repository whose dedup group the new one joins. Grant it access there first."),
+                    }
+                }
+                _ => Ok(None),
+            };
+            let repository = match (repository, copy_target, group_source) {
+                (Ok(r), Ok(c), Ok(g)) => Ok((r, c, g)),
+                (Err(_), _, _) => Err("This machine has not been given access to the repository. Grant access on the Repositories page."),
+                (_, Err(e), _) | (_, _, Err(e)) => Err(e),
             };
             match repository {
-                Ok((repository, copy_target)) => {
+                Ok((repository, copy_target, group_source)) => {
                     db.execute(
                         "UPDATE jobs SET state = 'dispatched', dispatched = ?1 WHERE id = ?2",
                         params![t, id],
@@ -279,6 +298,7 @@ async fn heartbeat(
                         kind,
                         repository,
                         copy_target,
+                        group_source,
                     });
                 }
                 Err(why) => {

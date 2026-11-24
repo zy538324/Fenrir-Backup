@@ -187,6 +187,11 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE plans ADD COLUMN copy_to_repository_id TEXT REFERENCES repositories(id) ON DELETE SET NULL;
     "#,
+    // 9: dedup groups: a new repository joins the group of another one
+    // (its key comes from there when it is created).
+    r#"
+    ALTER TABLE repositories ADD COLUMN dedup_source_id TEXT REFERENCES repositories(id) ON DELETE SET NULL;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

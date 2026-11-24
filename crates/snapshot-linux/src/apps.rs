@@ -535,8 +535,8 @@ fn mysql(server: &Proc, unit_of: UnitOf) -> Option<(ApplicationInfo, Option<MySq
     };
     // One line: datadir, InnoDB log and data folders (may be relative or empty).
     let ask = "FLUSH TABLES WITH READ LOCK;\n\
-               SELECT CONCAT('fenrir-locked', CHAR(9), @@datadir, CHAR(9), \
-               IFNULL(@@innodb_log_group_home_dir, ''), CHAR(9), IFNULL(@@innodb_data_home_dir, ''));\n";
+               SELECT CONCAT_WS('|', 'fenrir-locked', @@datadir, \
+               IFNULL(@@innodb_log_group_home_dir, ''), IFNULL(@@innodb_data_home_dir, ''));\n";
     if let Err(e) = s.stdin.write_all(ask.as_bytes()) {
         return fail(e.to_string());
     }
@@ -557,7 +557,8 @@ fn mysql(server: &Proc, unit_of: UnitOf) -> Option<(ApplicationInfo, Option<MySq
             ));
         }
     };
-    let f: Vec<&str> = line.split('\t').collect();
+    // `|`: batch mode escapes tabs in values.
+    let f: Vec<&str> = line.split('|').collect();
     let datadir = PathBuf::from(f.get(1).copied().unwrap_or(""));
     let mut paths = vec![datadir.clone()];
     for extra in f.iter().skip(2).filter(|x| !x.is_empty() && **x != "./") {

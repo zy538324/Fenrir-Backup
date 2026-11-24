@@ -90,6 +90,7 @@ export default function RepositoriesPage() {
                 {r.status === "ready" && <BootVerification repo={r} agents={agents.data!} onSaved={repos.reload} />}
                 <div className="row">
                   <span className="faint small mono">ID {r.repo_uuid.slice(0, 8)}</span>
+                  {dedupRoot(r.path) && <span className="pill neutral" title={`Shares stored data with the other repositories in ${dedupRoot(r.path)}`}>dedup group</span>}
                   {!r.hold && r.status === "ready" && (
                     <button
                       className="btn sm ghost"
@@ -125,7 +126,7 @@ export default function RepositoriesPage() {
         </div>
       )}
 
-      {creating && <CreateWizard agents={agents.data} onClose={() => setCreating(false)} onDone={() => { setCreating(false); repos.reload(); }} />}
+      {creating && <CreateWizard agents={agents.data} repos={repos.data ?? []} onClose={() => setCreating(false)} onDone={() => { setCreating(false); repos.reload(); }} />}
       {granting && <GrantDialog repo={granting} agents={agents.data} onClose={() => setGranting(null)} onDone={() => { setGranting(null); repos.reload(); }} />}
     </div>
   );
@@ -146,7 +147,13 @@ function PassphraseFields({ value, onChange, confirm, onConfirm }: { value: stri
   );
 }
 
-function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: () => void; onDone: () => void }) {
+/** `<group>/repos/<uuid>` → the group's folder (dedup groups). */
+export function dedupRoot(path: string): string | null {
+  const m = /^(.+)[\\/]repos[\\/][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[\\/]?$/i.exec(path);
+  return m ? m[1] : null;
+}
+
+function CreateWizard({ agents, repos, onClose, onDone }: { agents: Agent[]; repos: Repository[]; onClose: () => void; onDone: () => void }) {
   const [step, setStep] = useState(1);
   const [name, setName] = useState("Main backups");
   const [path, setPath] = useState("");
@@ -160,6 +167,10 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
   const [saved, setSaved] = useState(false);
   // Add a repository that already exists (moved from another server): no new recovery key.
   const [existing, setExisting] = useState(false);
+  // Dedup group: "" none, "new" starts one in the folder, or a repository whose group to join.
+  const [dedup, setDedup] = useState("");
+  const groups = repos.filter((r) => dedupRoot(r.path) && r.status === "ready");
+  const joining = groups.find((r) => r.id === dedup);
   const [downloaded, setDownloaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -196,7 +207,7 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
         }),
       );
       await api.post("/api/repositories", {
-        name, path: location, ...(existing ? { existing: true } : { repo_uuid: recovery.repoId }), init_agent_id: creator, access,
+        name, path: location, ...(existing ? { existing: true } : { repo_uuid: recovery.repoId, dedup: dedup || null }), init_agent_id: creator, access,
         share_auth: isS3 ? "password" : share ? signin.mode : "none",
         share_user: isS3 ? s3.access_key.trim() : share && signin.mode === "password" ? signinDisplay(signin) : null,
         s3: isS3 ? s3Settings(s3) : null,
@@ -242,6 +253,21 @@ function CreateWizard({ agents, onClose, onDone }: { agents: Agent[]; onClose: (
             <input type="checkbox" checked={existing} onChange={(e) => setExisting(e.target.checked)} />
             <span>It already exists<div className="faint small">A repository moved from another Fenrir-Backup server, or added again: its backups and their history are listed, nothing is created. You need its passphrase.</div></span>
           </label>
+          {!existing && (
+            <Field label="Dedup group" hint="Repositories in one group store data they have in common once (same storage). Each keeps its own passphrase and backups, but anyone with one group member's passphrase can read the group's stored data: use groups for one owner's repositories only.">
+              <select className="input" value={dedup} onChange={(e) => {
+                const v = e.target.value;
+                setDedup(v);
+                const r = groups.find((g) => g.id === v);
+                if (r) { setKind("folder"); setPath(dedupRoot(r.path) ?? ""); }
+              }}>
+                <option value="">None</option>
+                <option value="new">Start a dedup group in this location</option>
+                {groups.map((r) => <option key={r.id} value={r.id}>Share storage with {r.name}</option>)}
+              </select>
+            </Field>
+          )}
+          {joining && <Notice tone="info">Stored in {joining.name}'s group folder, <span className="mono">{dedupRoot(joining.path)}</span>, with the same sign-in. The machine that creates it must already have access to {joining.name}.</Notice>}
           <Field label={existing ? "Opened by" : "Created by"} hint="This machine creates the repository folder and must be able to write to it.">
             <select className="input" value={creator} onChange={(e) => setCreator(e.target.value)}>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.online ? "" : " (offline)"}</option>)}

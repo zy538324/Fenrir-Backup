@@ -2322,3 +2322,98 @@ async fn files_download_through_the_server_encrypted_for_the_browser() {
         1
     );
 }
+
+#[tokio::test]
+async fn dedup_group_repositories_share_storage_and_key() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let sealed = seal(&key.public_b64(), b"{\"passphrase\":\"p\"}").unwrap();
+    let new_repo = |uuid: uuid::Uuid, dedup: &str| {
+        json!({ "name": format!("R {dedup}"), "path": "/mnt/group", "repo_uuid": uuid, "dedup": dedup,
+                "init_agent_id": agent_id, "access": [{ "agent_id": agent_id, "sealed": sealed }] })
+    };
+    // A new group: the repository lives in <group>/repos/<its id>.
+    let a_uuid = uuid::Uuid::new_v4();
+    let (s, r) = t.post("/api/repositories", new_repo(a_uuid, "new")).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let a = r["id"].as_str().unwrap().to_string();
+    let job = complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "repo_uuid": a_uuid }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        job.repository.as_ref().unwrap().path,
+        format!("/mnt/group/repos/{a_uuid}")
+    );
+    assert!(job.group_source.is_none(), "a new group makes its own key");
+
+    // Joining it: same group folder, and the group's key comes from A.
+    let b_uuid = uuid::Uuid::new_v4();
+    let mut elsewhere = new_repo(b_uuid, &a);
+    elsewhere["path"] = json!("/mnt/other");
+    let (s, _) = t.post("/api/repositories", elsewhere).await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "a member is stored in the group's folder"
+    );
+    let (s, r) = t.post("/api/repositories", new_repo(b_uuid, &a)).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let job = complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "repo_uuid": b_uuid }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        job.repository.as_ref().unwrap().path,
+        format!("/mnt/group/repos/{b_uuid}")
+    );
+    let src = job
+        .group_source
+        .as_ref()
+        .expect("the group's key comes from A");
+    assert_eq!(src.repository_id.to_string(), a);
+    assert_eq!(src.path, format!("/mnt/group/repos/{a_uuid}"));
+
+    // A repository in no group cannot be joined.
+    let plain = ready_repo(&mut t, &key, &agent_id, &token).await;
+    let (s, _) = t
+        .post("/api/repositories", new_repo(uuid::Uuid::new_v4(), &plain))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // A machine without access to A cannot create a member of its group.
+    let key2 = AgentKey::generate();
+    let (agent2, token2) = enroll(&mut t, &key2, "machine-2").await;
+    heartbeat(&mut t, &token2, CAPS, None).await;
+    let sealed2 = seal(&key2.public_b64(), b"{\"passphrase\":\"p\"}").unwrap();
+    let (s, r) = t
+        .post(
+            "/api/repositories",
+            json!({ "name": "C", "path": "/mnt/group", "repo_uuid": uuid::Uuid::new_v4(), "dedup": a,
+                    "init_agent_id": agent2, "access": [{ "agent_id": agent2, "sealed": sealed2 }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert!(heartbeat(&mut t, &token2, CAPS, None).await.jobs.is_empty());
+    let (_, jobs) = t.get("/api/jobs").await;
+    let failed = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["agent_id"] == agent2.as_str())
+        .unwrap();
+    assert_eq!(failed["state"], "failed");
+    assert!(
+        failed["error"].as_str().unwrap().contains("dedup group"),
+        "{failed}"
+    );
+}

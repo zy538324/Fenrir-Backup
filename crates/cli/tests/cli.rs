@@ -574,3 +574,65 @@ fn copy_to_another_repository() {
     assert_eq!(restored.len(), orig.len());
     assert_eq!(&restored[..4096], &orig[..4096], "partition table");
 }
+
+#[test]
+fn dedup_group_from_the_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = dir.path().join("group");
+    let img = dir.path().join("disk.img");
+    make_image(&img);
+    let init = |repo: &Path, pass: &str, g: &str, rk: &str| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_fenrir-backup"));
+        c.arg("--json")
+            .arg("--repo")
+            .arg(repo)
+            .args(["repo", "init", "--recovery-key-out"])
+            .arg(dir.path().join(rk))
+            .args(["--dedup-group", g])
+            .env("FENRIR_PASSPHRASE", pass)
+            .env("FENRIR_GROUP_PASSPHRASE", "pass a")
+            .env_remove("FENRIR_REPO");
+        let o = c.output().unwrap();
+        assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stdout));
+        std::path::PathBuf::from(json(&o)["result"]["path"].as_str().unwrap())
+    };
+    let a = init(&group, "pass a", "new", "a.json");
+    assert!(a.starts_with(group.join("repos")));
+    let b = init(&group, "pass b", a.to_str().unwrap(), "b.json");
+    assert_eq!(a.parent(), b.parent());
+    let backup = |repo: &Path, pass: &str| {
+        let o = fenrir(
+            repo,
+            pass,
+            &[
+                "backup",
+                "disk",
+                img.to_str().unwrap(),
+                "--machine-id",
+                "box",
+            ],
+        );
+        assert_eq!(code(&o), 0, "{}", String::from_utf8_lossy(&o.stdout));
+        json(&o)["result"]["stats"]["chunks_new"].as_u64().unwrap()
+    };
+    assert!(backup(&a, "pass a") > 0);
+    assert_eq!(backup(&b, "pass b"), 0, "already in the group");
+    // Each opens only with its own passphrase and lists only its own images.
+    assert_ne!(code(&fenrir(&b, "pass a", &["image", "list"])), 0);
+    let o = fenrir(&b, "pass b", &["image", "list"]);
+    assert_eq!(json(&o)["result"].as_array().unwrap().len(), 1);
+    // Joining with a path that is not a group member is refused.
+    let mut c = Command::new(env!("CARGO_BIN_EXE_fenrir-backup"));
+    let o = c
+        .arg("--json")
+        .arg("--repo")
+        .arg(&group)
+        .args(["repo", "init", "--recovery-key-out"])
+        .arg(dir.path().join("c.json"))
+        .args(["--dedup-group", "/not/a/member"])
+        .env("FENRIR_PASSPHRASE", "c")
+        .env_remove("FENRIR_REPO")
+        .output()
+        .unwrap();
+    assert_ne!(code(&o), 0);
+}

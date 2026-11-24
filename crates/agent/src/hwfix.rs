@@ -262,12 +262,16 @@ pub fn adapt(
 }
 
 /// Where staged driver packages go, and how DevicePath names it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const STAGED_DRIVERS: &[&str] = &["Windows", "Fenrir", "Drivers"];
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const STAGED_DEVICE_PATH: &str = r"%SystemRoot%\Fenrir\Drivers";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const DEVICE_PATH_KEY: &str = r"Microsoft\Windows\CurrentVersion";
 
 /// DevicePath with `add` appended (`None`: already there). Windows' default
 /// is `%SystemRoot%\inf`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn with_device_path(current: Option<&str>, add: &str) -> Option<String> {
     let cur = current
         .map(str::trim)
@@ -280,6 +284,7 @@ pub fn with_device_path(current: Option<&str>, add: &str) -> Option<String> {
 }
 
 /// A .reg file setting one REG_EXPAND_SZ value (hivexregedit syntax).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn reg_expand_sz(prefix: &str, key: &str, name: &str, value: &str) -> String {
     let mut bytes: Vec<u8> = value.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
     bytes.extend([0, 0]);
