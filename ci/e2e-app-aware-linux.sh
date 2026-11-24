@@ -57,7 +57,7 @@ mkdir -p "$MNT" && mount "/dev/$VG/data" "$MNT"
 
 # ---- PostgreSQL: a cluster on the volume, data and WAL together --------------------------------------
 mkdir -p "$MNT/pg" "$PGSOCK" && chown postgres:postgres "$MNT/pg" "$PGSOCK"
-runuser -u postgres -- "$PG_BIN/initdb" -q -D "$MNT/pg" >/dev/null
+runuser -u postgres -- "$PG_BIN/initdb" -D "$MNT/pg" >/dev/null
 runuser -u postgres -- "$PG_BIN/pg_ctl" -D "$MNT/pg" -l /tmp/fenrir-pg.log -w \
   -o "-p 54329 -k $PGSOCK -c listen_addresses=''" start >/dev/null
 pgc "CREATE TABLE t (id bigserial PRIMARY KEY, phase text, pad text); CREATE EXTENSION amcheck;"
