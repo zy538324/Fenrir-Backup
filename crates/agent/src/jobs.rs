@@ -765,6 +765,7 @@ fn backup_system(
             .into_iter()
             .filter(|p| p.is_absolute() && p.is_dir())
             .collect(),
+        hooks_dir: Some(std::path::PathBuf::from(snapshot_linux::apps::HOOKS_DIR)),
     })
     .map_err(|e| anyhow!("{e}"))?;
     let meta = ImageMeta {
@@ -779,7 +780,7 @@ fn backup_system(
         label: s.label.clone(),
         warnings: lb.warnings.clone(),
         vm: None,
-        applications: vec![],
+        applications: lb.applications.clone(),
     };
     let cb = progress_cb(rep, String::new());
     let result = engine::backup(repo, &lb.sources(), meta, &options(s), &ctx.ctl, &cb);

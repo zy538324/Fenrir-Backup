@@ -1016,6 +1016,7 @@ fn backup_system(ctx: &Ctx, common: CommonBackup, f: SystemFlags) -> R<Outcome> 
         state_dir: state,
         temp_dir: temp,
         exclude_paths: ctx.repo.iter().filter(|p| p.is_dir()).cloned().collect(),
+        hooks_dir: Some(hooks_dir()),
     })
     .map_err(|e| CliError::new(ExitCode::Safety, e.to_string()))?;
     if common.dry_run {
@@ -1048,7 +1049,7 @@ fn backup_system(ctx: &Ctx, common: CommonBackup, f: SystemFlags) -> R<Outcome> 
         label: common.label.clone(),
         warnings: lb.warnings.clone(),
         vm: None,
-        applications: vec![],
+        applications: lb.applications.clone(),
     };
     let pr = progress_printer(ctx.json);
     let result = engine::backup(
@@ -1562,6 +1563,14 @@ fn same_disk(a: &Path, b: &Path) -> bool {
 type Release = Box<dyn FnOnce() -> Option<String>>;
 
 /// An in-use disk through a snapshot: LVM on Linux.
+/// Freeze/thaw hooks for live Linux backups (FENRIR_HOOKS_DIR overrides).
+#[cfg(target_os = "linux")]
+fn hooks_dir() -> PathBuf {
+    std::env::var_os("FENRIR_HOOKS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(snapshot_linux::apps::HOOKS_DIR))
+}
+
 #[cfg(target_os = "linux")]
 fn live_source(
     disk: &Path,
@@ -1576,6 +1585,7 @@ fn live_source(
         state_dir: state,
         temp_dir: PathBuf::from("/var/tmp"),
         exclude_paths: vec![],
+        hooks_dir: None,
     })
     .map_err(|e| CliError::new(ExitCode::Safety, e.to_string()))?;
     warnings.extend(lb.warnings.clone());

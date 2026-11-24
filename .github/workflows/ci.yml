@@ -342,6 +342,25 @@ jobs:
           sudo lsblk -o NAME,TYPE,FSTYPE,MOUNTPOINT,SIZE || true
           sudo lvs -a || true
 
+  # Application-aware live Linux images with running PostgreSQL and MySQL
+  # (docs/design/app-aware-linux.md).
+  app-aware-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: tools
+        run: sudo apt-get update && sudo apt-get install -y lvm2 fdisk e2fsprogs util-linux postgresql postgresql-contrib mysql-server mysql-client
+      - name: build
+        run: cargo build --release --locked -p cli
+      - name: run
+        run: sudo ci/e2e-app-aware-linux.sh /tmp/e2e-apps target/release/fenrir-backup
+      - name: logs
+        if: failure()
+        run: |
+          sudo tail -n 50 /tmp/fenrir-pg*.log /tmp/fenrir-mysql*.log || true
+          sudo lvs -a || true
+
   # Growing onto a larger disk and cloning, with real ext4 and NTFS
   # (docs/design/phase-5-grow-clone.md).
   grow-clone:
