@@ -115,39 +115,74 @@ try:
     repo_id = r.json()["id"]
     wait_job(c, r.json()["init_job_id"], "create repository")
 
-    # A disk with varied content (and a zero run, which a restore must reproduce).
-    disk = W / "source-disk.img"
-    with open(disk, "wb") as f:
-        for i in range(SIZE >> 20):
-            f.write(bytes(1 << 20) if i == 7 else hashlib.sha256(str(i).encode()).digest() * 32768)
-    src = sha(disk, SIZE)
-    j = c.post(f"/api/agents/{a['id']}/jobs",
-               json={"kind": {"type": "backup_disks", "paths": [str(disk)]}, "repository_id": repo_id}).json()
-    _, backup_secs = wait_job(c, j["id"], "backup")
-    j = c.post(f"/api/agents/{a['id']}/jobs", json={"kind": {"type": "verify", "level": "full"}, "repository_id": repo_id}).json()
-    wait_job(c, j["id"], "full verify")
-    images = c.get("/api/images", params={"repository_id": repo_id}).json()
-    assert len(images) == 1, images
-    im = images[0]
+    evidence = []
+    caps = set(a["capabilities"])
+    assert caps & {"backup_disks", "backup_files"}, caps
 
-    target = W / "restored-disk.img"
-    t0 = time.time()
-    r = c.post("/api/restores", json={"image_id": im["image_id"], "agent_id": a["id"], "disks": [],
-                                      "target": {"type": "disk", "device": str(target), "disk": 0,
-                                                 "confirm": str(target) + "x"}})
-    assert r.status_code == 400, f"a wrong confirmation must be refused: {r.status_code} {r.text}"
-    r = c.post("/api/restores", json={"image_id": im["image_id"], "agent_id": a["id"], "disks": [],
-                                      "target": {"type": "disk", "device": str(target), "disk": 0,
-                                                 "confirm": str(target), "grow": False}})
-    assert r.status_code == 200, r.text
-    _, restore_secs = wait_job(c, r.json()["id"], "restore to a new disk file")
-    got = sha(target, SIZE)
-    print(f"  source   {src}\n  restored {got}")
-    assert got == src, "restored disk differs from the source"
-    print(json.dumps({"evidence": "AT-19", "os": a["os"]["family"], "image": im["image_id"],
-                      "recovery_point_unix": im["created"], "bytes": SIZE, "backup_seconds": round(backup_secs, 1),
-                      "restore_seconds": round(restore_secs, 1), "rto_measured_seconds": round(time.time() - t0, 1),
-                      "sha256": src}))
+    if "backup_disks" in caps:
+        # A disk with varied content (and a zero run, which a restore must reproduce).
+        disk = W / "source-disk.img"
+        with open(disk, "wb") as f:
+            for i in range(SIZE >> 20):
+                f.write(bytes(1 << 20) if i == 7 else hashlib.sha256(str(i).encode()).digest() * 32768)
+        src = sha(disk, SIZE)
+        r = c.post(f"/api/agents/{a['id']}/jobs",
+                   json={"kind": {"type": "backup_disks", "paths": [str(disk)]}, "repository_id": repo_id})
+        assert r.status_code == 200, r.text
+        _, backup_secs = wait_job(c, r.json()["id"], "disk backup")
+        r = c.post(f"/api/agents/{a['id']}/jobs", json={"kind": {"type": "verify", "level": "full"}, "repository_id": repo_id})
+        wait_job(c, r.json()["id"], "full verify")
+        im = [i for i in c.get("/api/images", params={"repository_id": repo_id}).json() if i["source"] == "disks"][0]
+        target = W / "restored-disk.img"
+        t0 = time.time()
+        r = c.post("/api/restores", json={"image_id": im["image_id"], "agent_id": a["id"], "disks": [],
+                                          "target": {"type": "disk", "device": str(target), "disk": 0,
+                                                     "confirm": str(target) + "x"}})
+        assert r.status_code == 400, f"a wrong confirmation must be refused: {r.status_code} {r.text}"
+        r = c.post("/api/restores", json={"image_id": im["image_id"], "agent_id": a["id"], "disks": [],
+                                          "target": {"type": "disk", "device": str(target), "disk": 0,
+                                                     "confirm": str(target), "grow": False}})
+        assert r.status_code == 200, r.text
+        _, restore_secs = wait_job(c, r.json()["id"], "restore to a new disk file")
+        got = sha(target, SIZE)
+        print(f"  source   {src}\n  restored {got}")
+        assert got == src, "restored disk differs from the source"
+        evidence.append({"kind": "disk", "image": im["image_id"], "recovery_point_unix": im["created"], "bytes": SIZE,
+                         "backup_seconds": round(backup_secs, 1), "restore_seconds": round(restore_secs, 1),
+                         "rto_measured_seconds": round(time.time() - t0, 1), "sha256": src})
+
+    if "backup_files" in caps:
+        # A folder of files (Windows backs up folders and whole systems, not raw disks).
+        src_dir = W / "source files"
+        files = {}
+        for n in range(12):
+            p = src_dir / f"sub{n % 3}" / f"file {n}.bin"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            data = hashlib.sha256(str(n).encode()).digest() * (1000 + n * 4000)
+            p.write_bytes(data)
+            files[p.name] = hashlib.sha256(data).hexdigest()
+        r = c.post(f"/api/agents/{a['id']}/jobs",
+                   json={"kind": {"type": "backup_files", "paths": [str(src_dir)]}, "repository_id": repo_id})
+        assert r.status_code == 200, r.text
+        _, backup_secs = wait_job(c, r.json()["id"], "files and folders backup")
+        im = [i for i in c.get("/api/images", params={"repository_id": repo_id}).json() if i["source"] == "files"][0]
+        # Folder backups are one volume (disk 1, partition 1) from the root: C:/... or home/...
+        sel = str(src_dir).replace("\\", "/").lstrip("/")
+        out = W / "restored files"
+        t0 = time.time()
+        r = c.post(f"/api/images/{im['image_id']}/restore-files",
+                   json={"agent_id": a["id"], "disk": 1, "partition": 1, "paths": [sel], "target": str(out),
+                         "keep_structure": True, "conflict": "overwrite"})
+        assert r.status_code == 200, r.text
+        _, restore_secs = wait_job(c, r.json()["id"], "restore the folder")
+        got = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in out.rglob("*") if p.is_file()}
+        assert got == files, f"restored files differ: {sorted(set(files) ^ set(got))} {len(got)}/{len(files)}"
+        print(f"  {len(files)} files restored byte-identical")
+        evidence.append({"kind": "files", "image": im["image_id"], "recovery_point_unix": im["created"],
+                         "files": len(files), "backup_seconds": round(backup_secs, 1),
+                         "restore_seconds": round(restore_secs, 1), "rto_measured_seconds": round(time.time() - t0, 1)})
+
+    print(json.dumps({"evidence": "AT-19", "os": a["os"]["family"], "round_trips": evidence}))
     print("E2E OK")
 finally:
     for p in procs:
