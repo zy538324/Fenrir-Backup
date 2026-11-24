@@ -165,6 +165,10 @@ pub struct Inventory {
     /// The local recovery partition, when installed (Windows).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_recovery: Option<LocalRecoveryInfo>,
+    /// Other backup software found on the machine (installed programs and
+    /// services that say they back up or replicate, the OS's own backup).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_backup: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

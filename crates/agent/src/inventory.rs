@@ -301,6 +301,11 @@ pub fn collect(role: &str, vms: Vec<protocol::VmSummary>, notes: Vec<String>) ->
         firmware: fw.0,
         secure_boot: fw.1,
         local_recovery: crate::localrec::load_state(&crate::config::state_dir()).map(|s| s.info()),
+        other_backup: if role == "recovery" {
+            vec![]
+        } else {
+            crate::discover::other_backup()
+        },
     }
 }
 

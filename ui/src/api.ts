@@ -66,7 +66,7 @@ export interface Vm { id: string; name: string; state: string; generation: numbe
 export interface Disk { path: string; size: number; model: string; system: boolean; serial?: string; sector_size?: number; in_use?: boolean }
 export interface RunningVm { session_id: string; image_id: string; started_unix: number; vnc_port: number; forwards: Record<string, number> }
 export interface LocalRecoveryInfo { disk: number; partition: number; size: number; built_unix: number; agent_version: string; expires: number; auto_start: boolean }
-export interface Inventory { hostname: string; os: OsSummary; capabilities: string[]; disks: Disk[]; vms: Vm[]; notes: string[]; agent_version: string; running_vms?: RunningVm[]; firmware?: "uefi" | "bios"; secure_boot?: boolean; local_recovery?: LocalRecoveryInfo | null }
+export interface Inventory { hostname: string; os: OsSummary; capabilities: string[]; disks: Disk[]; vms: Vm[]; notes: string[]; agent_version: string; running_vms?: RunningVm[]; firmware?: "uefi" | "bios"; secure_boot?: boolean; local_recovery?: LocalRecoveryInfo | null; other_backup?: string[] }
 
 export type JobKind =
   | { type: "init_repository" }

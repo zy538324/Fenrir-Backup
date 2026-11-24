@@ -84,6 +84,9 @@ export default function MachinePage({ id }: { id: string }) {
               <dt>Agent</dt><dd>{a.agent_version}</dd>
               <dt>Enrolled</dt><dd>{when(a.enrolled)}</dd>
               <dt>Repositories</dt><dd>{data.repositories.map((r) => r.name).join(", ") || "none"}</dd>
+              {(data.inventory?.other_backup ?? []).length > 0 && (
+                <><dt>Other backup software</dt><dd title="Installed programs and services whose names say they back up or replicate, and the system's own backup when set up">{data.inventory!.other_backup!.join(", ")}</dd></>
+              )}
             </dl>
             <div style={{ borderTop: "1px solid var(--border)", margin: "16px 0 12px" }} />
             <button className="btn danger sm" onClick={() => setDialog("remove")}><Trash2 size={14} /> Remove machine</button>

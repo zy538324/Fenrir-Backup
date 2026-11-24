@@ -7,6 +7,7 @@ mod browse;
 mod client;
 mod cloudrestore;
 mod config;
+mod discover;
 mod download;
 mod folders;
 mod gateway;
