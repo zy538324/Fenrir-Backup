@@ -2914,3 +2914,89 @@ async fn storage_is_checked_daily_and_a_failure_is_shown_and_alerted() {
         .unwrap();
     assert!(r["storage_error"].is_null(), "{r}");
 }
+
+#[tokio::test]
+async fn offline_media_set_copies_go_to_the_attached_drive() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let local = ready_repo(&mut t, &key, &agent_id, &token).await;
+    let drive_a = ready_repo(&mut t, &key, &agent_id, &token).await;
+    let drive_b = ready_repo(&mut t, &key, &agent_id, &token).await;
+    for d in [&drive_a, &drive_b] {
+        let (s, v) = t
+            .post(
+                &format!("/api/repositories/{d}/media-set"),
+                json!({ "media_set": "Weekly rotation" }),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let (_, repos) = t.get("/api/repositories").await;
+    assert_eq!(
+        repos
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["media_set"] == "Weekly rotation")
+            .count(),
+        2
+    );
+
+    let (s, plan) = t
+        .post("/api/plans", json!({ "name": "Nightly", "agent_id": agent_id, "repository_id": local,
+            "job": { "type": "backup_disks", "paths": ["/dev/sdb"] }, "schedule": { "type": "manual" }, "copy_to_repository_id": drive_a }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{plan}");
+    t.post(
+        &format!("/api/plans/{}/run", plan["id"].as_str().unwrap()),
+        json!({}),
+    )
+    .await;
+    complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "images": [image(1, 30, 30 << 20, 12 << 20)] }),
+    )
+    .await
+    .unwrap();
+    // The copy carries the other drive of the set and copies everything the drive lacks.
+    let hb = heartbeat(&mut t, &token, CAPS, None).await;
+    let copy = hb
+        .jobs
+        .iter()
+        .find(|j| matches!(j.kind, JobKind::CopyImages { .. }))
+        .expect("a copy");
+    let JobKind::CopyImages { images, .. } = &copy.kind else {
+        unreachable!()
+    };
+    assert!(
+        images.is_empty(),
+        "a rotated drive gets every image it lacks"
+    );
+    assert_eq!(
+        copy.copy_target.as_ref().unwrap().repository_id.to_string(),
+        drive_a
+    );
+    assert_eq!(copy.copy_alternatives.len(), 1);
+    assert_eq!(copy.copy_alternatives[0].repository_id.to_string(), drive_b);
+    // Drive B was attached: the copies are listed under it.
+    let mut copied = image(2, 30, 30 << 20, 12 << 20);
+    copied.machine_id = "machine-1".into();
+    let (s, v) = t
+        .agent(&format!("/api/agent/jobs/{}/update", copy.id), &token,
+               json!({ "state": "succeeded", "images": [copied], "result": { "target_repository_id": drive_b } }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, on_b) = t.get(&format!("/api/images?repository_id={drive_b}")).await;
+    let (_, on_a) = t.get(&format!("/api/images?repository_id={drive_a}")).await;
+    assert_eq!(
+        (
+            on_b.as_array().unwrap().len(),
+            on_a.as_array().unwrap().len()
+        ),
+        (1, 0)
+    );
+}

@@ -203,6 +203,8 @@ export interface Repository {
   /** Daily check of the storage with a machine's credentials. */
   storage_checked_at?: number | null;
   storage_error?: string | null;
+  /** Offline media set (rotated removable drives) this repository belongs to. */
+  media_set?: string | null;
 }
 
 export interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number; storage_class?: string | null }

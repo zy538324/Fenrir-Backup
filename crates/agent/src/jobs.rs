@@ -670,10 +670,30 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             ..
         } => {
             let src = open_repo(ctx, access.ok_or_else(|| anyhow!("no source repository"))?)?;
-            let target = spec.copy_target.as_ref().ok_or_else(|| {
+            let first = spec.copy_target.as_ref().ok_or_else(|| {
                 anyhow!("this machine has no access to the destination repository; grant it access there")
             })?;
-            let dst = open_repo(ctx, target)?;
+            // An offline media set: the first of its drives that is attached.
+            let mut tried = Vec::new();
+            let mut chosen = None;
+            for t in std::iter::once(first).chain(spec.copy_alternatives.iter()) {
+                match open_repo(ctx, t) {
+                    Ok(r) => {
+                        chosen = Some((t, r));
+                        break;
+                    }
+                    Err(e) if !spec.copy_alternatives.is_empty() => {
+                        tried.push(format!("{}: {e}", t.path))
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            let (target, dst) = chosen.ok_or_else(|| {
+                anyhow!(
+                    "no drive of the offline media set is attached ({})",
+                    tried.join("; ")
+                )
+            })?;
             let cb = |done: u64, total: u64| rep.progress("copying", done, total, &target.path);
             let ids = (!images.is_empty()).then_some(images.as_slice());
             let r = engine::copy::copy_images(&src, &dst, ids, *full_verify, &ctx.ctl, &cb)?;
@@ -685,6 +705,7 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 "bytes_stored": r.bytes_stored,
                 "verified": r.verified,
                 "to": target.path,
+                "target_repository_id": target.repository_id,
             }));
             // The destination's catalogue lists the copies.
             u.images = Some(

@@ -286,6 +286,24 @@ async fn heartbeat(
                 }
                 _ => Ok(None),
             };
+            // An offline media set: the other drives of the set this machine
+            // can write to, tried when the first is not attached.
+            let copy_alternatives: Vec<RepoAccess> = match &kind {
+                JobKind::CopyImages {
+                    target_repository_id,
+                    ..
+                } => {
+                    let others: Vec<String> = db
+                        .prepare(
+                            "SELECT o.id FROM repositories t JOIN repositories o ON o.media_set = t.media_set AND o.id != t.id
+                             WHERE t.id = ?1 AND t.media_set IS NOT NULL AND o.status = 'ready' ORDER BY o.name",
+                        )?
+                        .query_map(params![target_repository_id.to_string()], |r| r.get(0))?
+                        .collect::<Result<_, _>>()?;
+                    others.iter().filter_map(|o| access_to(o).ok()).collect()
+                }
+                _ => vec![],
+            };
             let repository = match (repository, copy_target, group_source) {
                 (Ok(r), Ok(c), Ok(g)) => Ok((r, c, g)),
                 (Err(_), _, _) => Err("This machine has not been given access to the repository. Grant access on the Repositories page."),
@@ -331,6 +349,7 @@ async fn heartbeat(
                         kind,
                         repository,
                         copy_target,
+                        copy_alternatives,
                         group_source,
                         recovery_settings,
                     });
@@ -449,10 +468,18 @@ async fn update_job(
 
     // A copy reports the images it put in the destination repository.
     let images_repo = match &kind {
+        // (an offline media set: the drive that was attached)
         Some(JobKind::CopyImages {
             target_repository_id,
             ..
-        }) => Some(target_repository_id.to_string()),
+        }) => Some(
+            u.result
+                .as_ref()
+                .and_then(|r| r["target_repository_id"].as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or(*target_repository_id)
+                .to_string(),
+        ),
         _ => repo_id.clone(),
     };
     if let (Some(rid), Some(images)) = (&images_repo, &u.images) {
@@ -819,9 +846,20 @@ fn queue_copy(
     let Ok(target_repository_id) = Uuid::parse_str(&target) else {
         return Ok(());
     };
+    // A drive of an offline media set gets everything it does not have
+    // yet (it may have been away for a while), not just this backup.
+    let media: bool = db.query_row(
+        "SELECT media_set IS NOT NULL FROM repositories WHERE id = ?1",
+        params![target],
+        |r| r.get(0),
+    )?;
     let kind = JobKind::CopyImages {
         target_repository_id,
-        images: images.iter().map(|i| i.image_id).collect(),
+        images: if media {
+            vec![]
+        } else {
+            images.iter().map(|i| i.image_id).collect()
+        },
         full_verify: false,
     };
     db.execute(

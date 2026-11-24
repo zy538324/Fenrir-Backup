@@ -373,6 +373,46 @@ pub fn check_alerts(state: &Shared) -> rusqlite::Result<()> {
         if cfg.email.is_none() && cfg.webhook.is_none() {
             return Ok(());
         }
+        // Offline media sets: a copy to some drive of the set at least weekly
+        // (drives rotated); otherwise the off-site copy is getting old.
+        let sets: Vec<(String, Option<i64>)> = db
+            .prepare(
+                "SELECT r.media_set, MAX(i.created) FROM repositories r LEFT JOIN images i ON i.repository_id = r.id
+                 WHERE r.media_set IS NOT NULL AND r.status = 'ready' GROUP BY r.media_set",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        for (set, newest) in sets {
+            let key = format!("media:{set}");
+            let stale = newest.is_none_or(|n| t - n > 8 * 86_400);
+            let alerted: Option<i64> = db
+                .query_row(
+                    "SELECT at FROM alert_state WHERE key = ?1",
+                    params![key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match (stale, alerted) {
+                (true, None) => {
+                    db.execute(
+                        "INSERT INTO alert_state (key, at) VALUES (?1, ?2)",
+                        params![key, t],
+                    )?;
+                    events.push(Event {
+                        severity: Severity::Warning,
+                        subject: format!("Offline copy overdue: {set}"),
+                        body: format!(
+                            "No backup has been copied to a drive of the offline media set {set} for more than 8 days. Attach the next drive of the rotation to the machine that makes the copies."
+                        ),
+                        link: Some("/repositories".into()),
+                    });
+                }
+                (false, Some(_)) => {
+                    db.execute("DELETE FROM alert_state WHERE key = ?1", params![key])?;
+                }
+                _ => {}
+            }
+        }
         let agents: Vec<(String, String, Option<i64>)> = db
             .prepare("SELECT id, COALESCE(display_name, hostname), last_seen FROM agents WHERE revoked = 0 AND role != 'recovery'")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?

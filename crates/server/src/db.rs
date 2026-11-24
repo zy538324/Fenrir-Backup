@@ -224,6 +224,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE repositories ADD COLUMN storage_checked_at INTEGER;
     ALTER TABLE repositories ADD COLUMN storage_error TEXT;
     "#,
+    // 13: offline media sets: repositories on removable drives that are
+    // rotated; a copy goes to whichever drive of the set is attached.
+    r#"
+    ALTER TABLE repositories ADD COLUMN media_set TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

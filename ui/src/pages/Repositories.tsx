@@ -56,6 +56,15 @@ export default function RepositoriesPage() {
                 {r.hold && <HoldBanner repo={r} onChange={repos.reload} />}
                 {r.storage_error && <Notice tone="bad">The storage could not be reached at the last daily check ({ago(r.storage_checked_at ?? null)}): {r.storage_error}. Backups into this repository will fail until it is fixed.</Notice>}
                 {!r.storage_error && r.storage_checked_at && <div className="faint small"><ShieldCheck size={12} /> Storage reachable with the machines' sign-in, checked {ago(r.storage_checked_at)}</div>}
+                <div className="faint small">
+                  Offline media set: <strong>{r.media_set ?? "none"}</strong>{" "}
+                  <button className="link-btn" style={{ textDecoration: "underline" }} title="Removable drives rotated off-site: a copy to any drive of a set goes to whichever one is attached, and an alert is raised when none has had a copy for 8 days." onClick={async () => {
+                    const v = window.prompt("Offline media set for this drive (the same name on each drive of a rotation; empty for none):", r.media_set ?? "");
+                    if (v === null) return;
+                    await api.post(`/api/repositories/${r.id}/media-set`, { media_set: v.trim() || null });
+                    repos.reload();
+                  }}>change</button>
+                </div>
                 <div className="grid cols-3" style={{ gap: 10 }}>
                   <div><div className="faint small">Images</div><div style={{ fontWeight: 650, fontSize: 18 }}>{r.images}</div></div>
                   <div><div className="faint small">Stored</div><div style={{ fontWeight: 650, fontSize: 18 }}>{bytes(r.stored_bytes)}</div></div>

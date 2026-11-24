@@ -58,6 +58,7 @@ pub fn routes() -> Router<Shared> {
         .route("/api/images", get(list_images))
         .route("/api/audit", get(list_audit))
         .route("/api/repositories/{id}/hold", post(set_hold))
+        .route("/api/repositories/{id}/media-set", post(set_media_set))
         .route("/api/repositories/{id}/maintenance", post(set_maintenance))
         .route("/api/repositories/{id}/prune", post(prune_now))
         .route("/api/repositories/{id}/copy", post(copy_now))
@@ -990,6 +991,53 @@ struct NewRepo {
     share: ShareAuth,
     #[serde(default)]
     s3: Option<protocol::S3Settings>,
+    /// An offline media set this repository (a removable drive) belongs to.
+    #[serde(default)]
+    media_set: Option<String>,
+}
+
+/// A media set name: what the drives of one rotation share.
+fn media_set_name(v: Option<&str>) -> ApiResult<Option<String>> {
+    let Some(n) = v.map(str::trim).filter(|n| !n.is_empty()) else {
+        return Ok(None);
+    };
+    if n.chars().count() > 60 || n.chars().any(|c| c.is_control()) {
+        return Err(ApiError::bad("a media set name is up to 60 characters"));
+    }
+    Ok(Some(n.to_string()))
+}
+
+#[derive(Deserialize)]
+struct MediaSetReq {
+    #[serde(default)]
+    media_set: Option<String>,
+}
+
+/// Put a repository in an offline media set (or take it out): copies to any
+/// repository of the set go to whichever of its drives is attached.
+async fn set_media_set(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<MediaSetReq>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    let set = media_set_name(r.media_set.as_deref())?;
+    let db = st.db();
+    let n = db.execute(
+        "UPDATE repositories SET media_set = ?1 WHERE id = ?2",
+        params![set, id],
+    )?;
+    if n == 0 {
+        return Err(ApiError::not_found("no such repository"));
+    }
+    audit(
+        &db,
+        &a.username,
+        "repository.media_set",
+        &format!("{id}: {}", set.as_deref().unwrap_or("none")),
+    );
+    Ok(Json(json!({ "media_set": set })))
 }
 
 async fn create_repo(
@@ -1079,8 +1127,9 @@ async fn create_repo(
         let db = st.db();
         let tx = db.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id, share_auth, share_user, s3_json, dedup_source_id) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![id, name, path, repo_uuid, t, init, mode, n.share.user(), n.s3.as_ref().map(serde_json::to_string).transpose()?, dedup_source],
+            "INSERT INTO repositories (id, name, path, repo_uuid, status, created, maintenance_agent_id, share_auth, share_user, s3_json, dedup_source_id, media_set) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![id, name, path, repo_uuid, t, init, mode, n.share.user(), n.s3.as_ref().map(serde_json::to_string).transpose()?, dedup_source,
+                    media_set_name(n.media_set.as_deref())?],
         )?;
         for x in &n.access {
             let agent = uuid_param(&x.agent_id)?;
@@ -1175,7 +1224,7 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
             (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id AND i.anomaly IS NOT NULL),
             r.boot_agent_id, r.boot_every_days,
             (SELECT MAX(at) FROM boot_checks b WHERE b.repository_id = r.id AND b.outcome = 'verified'),
-            r.share_auth, r.share_user, r.s3_json, r.storage_checked_at, r.storage_error
+            r.share_auth, r.share_user, r.s3_json, r.storage_checked_at, r.storage_error, r.media_set
          FROM repositories r ORDER BY r.created",
     )?;
     let mut repos: Vec<Value> = s
@@ -1193,6 +1242,7 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
                 "share_auth": r.get::<_, String>(20)?, "share_user": r.get::<_, Option<String>>(21)?,
                 "s3": r.get::<_, Option<String>>(22)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                 "storage_checked_at": r.get::<_, Option<i64>>(23)?, "storage_error": r.get::<_, Option<String>>(24)?,
+                "media_set": r.get::<_, Option<String>>(25)?,
             }))
         })?
         .collect::<Result<_, _>>()?;

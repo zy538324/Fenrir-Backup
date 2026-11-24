@@ -742,6 +742,10 @@ pub struct JobSpec {
     /// the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_target: Option<RepoAccess>,
+    /// An offline media set (rotated removable drives): the other drives of
+    /// the set, tried in order when `copy_target` is not attached.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy_alternatives: Vec<RepoAccess>,
     /// Creating a repository in an existing dedup group: a member of the
     /// group this machine can open, to take the group's key from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
