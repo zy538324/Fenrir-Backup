@@ -38,7 +38,7 @@ mkfs.ext4 -q -L data "/dev/$VG/data"
 B repo init --recovery-key-out "$W/recovery.key" >/dev/null
 
 B --json cdp enable --name e2e --volume "/dev/$VG/data" --journal-mb 96 > "$W/enable.json"
-DEV=$(jq -r .device "$W/enable.json")
+DEV=$(jq -r .result.device "$W/enable.json")
 [ "$DEV" = /dev/mapper/fenrir-cdp-e2e ]
 mkdir -p "$MNT" && mount "$DEV" "$MNT"
 
@@ -53,13 +53,13 @@ sleep 9   # a journal swap between versions 2 and 3
 version 3
 wait "$RUN"; RUN=
 jq . "$W/run.json"
-[ "$(jq '.cycles | length' "$W/run.json")" -ge 4 ] || { echo "expected several journal swaps" >&2; exit 1; }
-jq -e '.cycles[0].base_image' "$W/run.json" >/dev/null
+[ "$(jq '.result.cycles | length' "$W/run.json")" -ge 4 ] || { echo "expected several journal swaps" >&2; exit 1; }
+jq -e '.result.cycles[0].base_image' "$W/run.json" >/dev/null
 
 B --json cdp points --name e2e > "$W/points.json"
 jq . "$W/points.json"
-[ "$(jq '[.points[] | select(.kind == "cdp-base")] | length' "$W/points.json")" = 1 ]
-[ "$(jq ".latest >= $(cat "$W/t3")" "$W/points.json")" = true ]
+[ "$(jq '[.result.points[] | select(.kind == "cdp-base")] | length' "$W/points.json")" = 1 ]
+[ "$(jq ".result.latest >= $(cat "$W/t3")" "$W/points.json")" = true ]
 
 # Refused without --yes, and nothing written.
 if "$CLI" --repo "$W/repo" cdp restore --name e2e --at "$(cat "$W/t1")" --target "$W/refused.img" 2>/dev/null; then

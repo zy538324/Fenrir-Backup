@@ -1,3 +1,4 @@
+import type { Sealed } from "./seal";
 // Typed client for the fenrir-server API.
 
 export class ApiError extends Error {
@@ -82,7 +83,14 @@ export type JobKind =
   | { type: "stop_vm"; session_id: string }
   | { type: "check_access"; path: string }
   | { type: "browse_files"; image_id: string; volume: { disk: number; partition: number } | null; path: string }
-  | { type: "restore_files"; image_id: string; volume: { disk: number; partition: number }; paths: string[]; target: string; keep_structure?: boolean; conflict?: string };
+  | { type: "restore_files"; image_id: string; volume: { disk: number; partition: number }; paths: string[]; target: string; keep_structure?: boolean; conflict?: string }
+  | { type: "backup_kubernetes"; cluster: K8sCluster; sealed_token: Sealed }
+  | { type: "restore_kubernetes"; image_id: string; cluster: K8sCluster; sealed_token: Sealed; namespaces: string[]; rename_to?: string | null; replace?: boolean }
+  | { type: "backup_saas"; tenant: SaasTenant; sealed_secret: Sealed }
+  | { type: "restore_saas"; image_id: string; tenant: SaasTenant; sealed_secret: Sealed; account: string; to_account?: string | null; kind?: string | null; path?: string | null; overwrite?: boolean };
+
+export interface K8sCluster { name: string; api_server: string; ca_pem: string; namespaces: string[]; volume_image: string }
+export interface SaasTenant { service: string; tenant: string; client_id: string; domain_url: string; admin: string; users: string[]; objects: string[]; mail: boolean; files: boolean }
 
 export type BootOutcome = "verified" | "screen" | "failed";
 export interface BootCheck {

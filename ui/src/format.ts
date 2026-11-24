@@ -96,6 +96,14 @@ export function jobWhat(k: JobKind): string {
       return k.level === "full" ? "Full verification" : k.level === "sample" ? `Spot check (${k.sample_percent ?? 5}%)` : "Quick check";
     case "init_repository":
       return "Create repository";
+    case "backup_kubernetes":
+      return `Kubernetes ${k.cluster.name}: ${k.cluster.namespaces.join(", ")}`;
+    case "restore_kubernetes":
+      return `Into ${k.cluster.name}${k.rename_to ? ` as ${k.rename_to}` : ""}`;
+    case "backup_saas":
+      return `${k.tenant.service} ${k.tenant.tenant}`;
+    case "restore_saas":
+      return `${k.account}${k.to_account ? ` into ${k.to_account}` : ""}`;
     case "list_images":
       return "Refresh image list";
     case "copy_images":

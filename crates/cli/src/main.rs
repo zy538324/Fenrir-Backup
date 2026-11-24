@@ -2223,6 +2223,7 @@ fn k8s_cmd(ctx: &Ctx, k: K8sCmd) -> R<Outcome> {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// Disk `disk` of an image, written to `file` (its first `len` bytes).
 fn k8s_disk_to(
     repo: &Repository,
@@ -2234,6 +2235,7 @@ fn k8s_disk_to(
     k8s::repo::disk_to(repo, m, disk, file, len).map_err(k8s_e)
 }
 
+#[cfg(target_os = "linux")]
 fn tempfile_dir() -> R<PathBuf> {
     let d = std::env::temp_dir().join(format!("fenrir-k8s-{}", std::process::id()));
     std::fs::create_dir_all(&d)?;
@@ -2242,56 +2244,29 @@ fn tempfile_dir() -> R<PathBuf> {
 
 // ---------------------------------------------------------------- SaaS (docs/design/saas.md)
 
-enum SaasConn {
-    M365(saas::m365::M365),
-    Google(Box<saas::google::Google>),
-    Salesforce(saas::salesforce::Salesforce),
-}
-
-fn saas_conn(s: &SaasService) -> R<SaasConn> {
-    let read = |p: &Option<PathBuf>, what: &str| -> R<String> {
-        let p = p
-            .as_ref()
-            .ok_or_else(|| CliError::usage(format!("--{what} is needed for {}", s.service)))?;
-        Ok(std::fs::read_to_string(p)
-            .map_err(|e| CliError::usage(format!("{}: {e}", p.display())))?
-            .trim()
-            .to_string())
+fn saas_conn(s: &SaasService) -> R<(saas::run::Settings, saas::run::Conn)> {
+    let file = s
+        .key_file
+        .as_ref()
+        .or(s.secret_file.as_ref())
+        .ok_or_else(|| {
+            CliError::usage(if s.service == "google" {
+                "--key-file is needed for google"
+            } else {
+                "--secret-file is needed"
+            })
+        })?;
+    let secret = std::fs::read_to_string(file)
+        .map_err(|e| CliError::usage(format!("{}: {e}", file.display())))?;
+    let settings = saas::run::Settings {
+        service: s.service.clone(),
+        tenant: s.tenant.clone(),
+        client_id: s.client_id.clone().unwrap_or_default(),
+        domain_url: s.domain_url.clone().unwrap_or_default(),
+        admin: s.admin.clone().unwrap_or_default(),
     };
-    let need = |v: &Option<String>, what: &str| {
-        v.clone()
-            .ok_or_else(|| CliError::usage(format!("--{what} is needed for {}", s.service)))
-    };
-    Ok(match s.service.as_str() {
-        "m365" => SaasConn::M365(saas::m365::M365::new(saas::m365::Config::new(
-            &s.tenant,
-            &need(&s.client_id, "client-id")?,
-            &read(&s.secret_file, "secret-file")?,
-        ))),
-        "google" => SaasConn::Google(Box::new(
-            saas::google::Google::new(
-                saas::google::Config::from_key_file(
-                    &read(&s.key_file, "key-file")?,
-                    &need(&s.admin, "admin")?,
-                    &s.tenant,
-                )
-                .map_err(|e| CliError::usage(e.0))?,
-            )
-            .map_err(|e| CliError::usage(e.0))?,
-        )),
-        "salesforce" => SaasConn::Salesforce(saas::salesforce::Salesforce::new(
-            saas::salesforce::Config {
-                domain_url: need(&s.domain_url, "domain-url")?,
-                client_id: need(&s.client_id, "client-id")?,
-                client_secret: read(&s.secret_file, "secret-file")?,
-            },
-        )),
-        other => {
-            return Err(CliError::usage(format!(
-                "unknown service {other}: m365, google or salesforce"
-            )))
-        }
-    })
+    let conn = saas::run::connect(&settings, &secret).map_err(|e| CliError::usage(e.0))?;
+    Ok((settings, conn))
 }
 
 fn saas_err(e: saas::Error) -> CliError {
@@ -2351,62 +2326,38 @@ fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
             no_files,
             label,
         } => {
-            let conn = saas_conn(&svc)?;
+            let (settings, conn) = saas_conn(&svc)?;
             let repo = open_repo(ctx)?;
-            let started = std::time::Instant::now();
-            let prev = saas::store::previous(&repo, &svc.service, &svc.tenant)?;
-            let mut w = saas::store::Writer::new(&repo, &svc.service, &svc.tenant);
             let quiet = ctx.json;
-            let progress = |s: &str| {
-                if !quiet {
-                    eprintln!("  {s}")
-                }
-            };
-            let pi = prev.as_ref().map(|p| &p.1);
-            match &conn {
-                SaasConn::M365(m) => m.backup(
-                    &mut w,
-                    pi,
-                    &saas::m365::Options {
-                        users,
-                        mail: !no_mail,
-                        files: !no_files,
-                    },
-                    &progress,
-                ),
-                SaasConn::Google(g) => g.backup(
-                    &mut w,
-                    pi,
-                    &saas::google::Options {
-                        users,
-                        mail: !no_mail,
-                        files: !no_files,
-                    },
-                    &progress,
-                ),
-                SaasConn::Salesforce(s) => s.backup(
-                    &mut w,
-                    pi,
-                    &saas::salesforce::Options { objects },
-                    &progress,
-                ),
-            }
+            let r = saas::run::backup(
+                &repo,
+                &conn,
+                &settings,
+                &saas::run::Scope {
+                    users,
+                    objects,
+                    mail: !no_mail,
+                    files: !no_files,
+                },
+                label,
+                &|s: &str| {
+                    if !quiet {
+                        eprintln!("  {s}")
+                    }
+                },
+            )
             .map_err(saas_err)?;
-            let items = w.index.items.len();
-            let warnings = w.index.warnings.clone();
-            let new = w.stats.chunks_new;
-            let id = w.finish(label, started)?;
             let out = Outcome::new(
-                json!({ "image_id": id, "service": svc.service, "tenant": svc.tenant, "items": items, "chunks_new": new, "warnings": warnings }),
+                json!({ "image_id": r.image_id, "service": svc.service, "tenant": svc.tenant, "items": r.items, "chunks_new": r.chunks_new, "warnings": r.warnings }),
                 format!(
-                    "Backed up {items} items of {} {} as image {id}\n",
-                    svc.service, svc.tenant
+                    "Backed up {} items of {} {} as image {}\n",
+                    r.items, svc.service, svc.tenant, r.image_id
                 ),
             );
-            Ok(if warnings.is_empty() {
+            Ok(if r.warnings.is_empty() {
                 out
             } else {
-                out.with_warnings(warnings)
+                out.with_warnings(r.warnings.clone())
             })
         }
         SaasCmd::List { image, account } => {
@@ -2464,86 +2415,30 @@ fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
             kind,
             overwrite,
         } => {
-            let conn = saas_conn(&svc)?;
+            let (_, conn) = saas_conn(&svc)?;
             let repo = open_repo(ctx)?;
             let m = repo.load_manifest(&repo.resolve_image_id(&image)?)?;
-            let idx = saas::store::read_index(&repo, &m)?;
-            if idx.service != svc.service {
-                return Err(CliError::usage(format!("that is a {} backup", idx.service)));
-            }
-            let target = to_account.clone().unwrap_or_else(|| account.clone());
-            let folder = format!("Restored {}", m.created.get(..10).unwrap_or(""));
-            let items: Vec<&saas::store::Item> = idx
-                .items
-                .iter()
-                .filter(|i| {
-                    i.account == account
-                        && kind.as_ref().is_none_or(|k| &i.kind == k)
-                        && path.as_ref().is_none_or(|p| i.path.starts_with(p.as_str()))
-                })
-                .collect();
-            let (mut done, mut failed) = (0usize, Vec::new());
-            let mut m365_folders: std::collections::HashMap<String, String> = Default::default();
-            let mut drive_folder: Option<String> = None;
-            for it in items {
-                let data = saas::store::read_item(&repo, it)?;
-                let r = match (&conn, it.kind.as_str()) {
-                    (SaasConn::M365(c), "file") => c.restore_file(&target, &folder, it, &data),
-                    (SaasConn::M365(c), "mail") => {
-                        let orig = it.meta["folder"].as_str().unwrap_or("Mail").to_string();
-                        let fid = match m365_folders.get(&orig) {
-                            Some(f) => Ok(f.clone()),
-                            None => {
-                                let top = match m365_folders.get("") {
-                                    Some(t) => t.clone(),
-                                    None => {
-                                        let t = c
-                                            .mail_folder(&target, &folder, None)
-                                            .map_err(saas_err)?;
-                                        m365_folders.insert(String::new(), t.clone());
-                                        t
-                                    }
-                                };
-                                c.mail_folder(&target, &orig, Some(&top)).inspect(|f| {
-                                    m365_folders.insert(orig.clone(), f.clone());
-                                })
-                            }
-                        };
-                        fid.and_then(|f| c.restore_mail(&target, &f, &data))
-                    }
-                    (SaasConn::Google(g), "mail") => g.restore_mail(&target, &folder, &data),
-                    (SaasConn::Google(g), "file") => {
-                        let f = match &drive_folder {
-                            Some(f) => f.clone(),
-                            None => {
-                                let f = g.drive_folder(&target, &folder).map_err(saas_err)?;
-                                drive_folder = Some(f.clone());
-                                f
-                            }
-                        };
-                        g.restore_file(&target, &f, it, &data)
-                    }
-                    (SaasConn::Salesforce(s), "record") => s
-                        .restore_record(it.meta["object"].as_str().unwrap_or(""), &data, overwrite)
-                        .map(|_| ()),
-                    _ => Err(saas::Error(format!(
-                        "{} items cannot be restored to {}",
-                        it.kind, svc.service
-                    ))),
-                };
-                match r {
-                    Ok(()) => done += 1,
-                    Err(e) => failed.push(format!("{}: {e}", it.path)),
-                }
-            }
+            let r = saas::run::restore(
+                &repo,
+                &conn,
+                &m,
+                &saas::run::Selection {
+                    account,
+                    to_account,
+                    kind,
+                    path,
+                    overwrite,
+                },
+            )
+            .map_err(saas_err)?;
             let out = Outcome::new(
-                json!({ "restored": done, "failed": failed, "to": target, "folder": folder }),
-                format!("Restored {done} items to {target} ({folder})\n"),
+                serde_json::to_value(&r).unwrap_or_default(),
+                format!("Restored {} items to {} ({})\n", r.restored, r.to, r.folder),
             );
-            Ok(if failed.is_empty() {
+            Ok(if r.failed.is_empty() {
                 out
             } else {
-                out.with_warnings(failed)
+                out.with_warnings(r.failed)
             })
         }
     }
@@ -2913,6 +2808,7 @@ fn cdp_cmd(_: &Ctx, _: CdpCmd) -> R<Outcome> {
     ))
 }
 
+#[cfg(target_os = "linux")]
 /// `YYYY-MM-DDTHH:MM:SSZ` (UTC) to unix seconds.
 fn parse_utc(s: &str) -> Option<i64> {
     let s = s.strip_suffix('Z').unwrap_or(s);
@@ -2930,7 +2826,7 @@ fn parse_utc(s: &str) -> Option<i64> {
     Some(core_format::timefmt::days_from_civil(y, mo, da) * 86400 + h * 3600 + mi * 60 + se)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod parse_utc_tests {
     #[test]
     fn utc_times() {

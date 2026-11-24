@@ -74,6 +74,17 @@ fenrir-backup saas restore --image IMAGE --account ann@... [--to-account ...] [-
 
 Exported paths are made safe (no `..`, no absolute paths, no characters Windows refuses).
 
+## From the server ("Apps & clusters")
+
+The page connects a tenant or a cluster and picks the machine that runs its backups (any agent: the work is HTTPS
+calls, and it reports the `saas` and `kubernetes` capabilities). The secret (client secret, service account key or
+token) is sealed **in the browser** to that machine's public key, exactly like a repository passphrase, and stored in
+a backup plan (`backup_saas` / `backup_kubernetes` job); the server keeps and forwards only the sealed form, and the
+agent opens it for each job and never writes it down. Restores (`restore_saas` / `restore_kubernetes`) run on the same
+machine with the plan's sealed secret. Restores that overwrite what is there now (Kubernetes objects replaced,
+Salesforce records updated) need the cluster's or tenant's name typed; the server refuses them otherwise.
+The backup and restore code is shared by the command line and the agent (`saas::run`, `k8s::repo`).
+
 ## Tests
 
 `crates/saas/tests/{m365,google,salesforce}_mock.rs`: each connector against a local mock of the vendor's API: a full

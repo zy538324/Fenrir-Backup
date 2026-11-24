@@ -405,6 +405,9 @@ struct NewJob {
     kind: JobKind,
     #[serde(default)]
     repository_id: Option<String>,
+    /// The cluster's or tenant's name, typed, for restores that overwrite.
+    #[serde(default)]
+    confirm: Option<String>,
 }
 
 fn validate_job(
@@ -428,8 +431,19 @@ fn validate_job(
         JobKind::BackupDisks { .. } => Some("backup_disks"),
         JobKind::BackupHyperv { .. } => Some("backup_hyperv"),
         JobKind::Verify { .. } => Some("verify"),
+        JobKind::BackupKubernetes { .. } | JobKind::RestoreKubernetes { .. } => Some("kubernetes"),
+        JobKind::BackupSaas { .. } | JobKind::RestoreSaas { .. } => Some("saas"),
         _ => None,
     };
+    match kind {
+        JobKind::BackupKubernetes { cluster, .. } | JobKind::RestoreKubernetes { cluster, .. } => {
+            cluster.validate().map_err(ApiError::bad)?
+        }
+        JobKind::BackupSaas { tenant, .. } | JobKind::RestoreSaas { tenant, .. } => {
+            tenant.validate().map_err(ApiError::bad)?
+        }
+        _ => {}
+    }
     if let Some(n) = need {
         if !caps.iter().any(|c| c == n) {
             return Err(ApiError::bad(format!(
@@ -501,10 +515,39 @@ async fn create_job(
             | JobKind::BackupHyperv { .. }
             | JobKind::Verify { .. }
             | JobKind::ListImages
+            | JobKind::BackupKubernetes { .. }
+            | JobKind::RestoreKubernetes { .. }
+            | JobKind::BackupSaas { .. }
+            | JobKind::RestoreSaas { .. }
     ) {
         return Err(ApiError::bad(
             "use the Repositories page (create, reclaim space) or the Restore dialog for that",
         ));
+    }
+    // Overwriting what is in the cluster or the service now: its name typed.
+    let typed = j.confirm.as_deref().unwrap_or("").trim().to_lowercase();
+    match &j.kind {
+        JobKind::RestoreKubernetes {
+            cluster,
+            replace: true,
+            ..
+        } if typed != cluster.name.to_lowercase() => {
+            return Err(ApiError::bad(format!(
+                "replacing objects in {}: type the cluster's name to confirm",
+                cluster.name
+            )));
+        }
+        JobKind::RestoreSaas {
+            tenant,
+            overwrite: true,
+            ..
+        } if typed != tenant.tenant.to_lowercase() => {
+            return Err(ApiError::bad(format!(
+                "overwriting records in {}: type the tenant's name to confirm",
+                tenant.tenant
+            )));
+        }
+        _ => {}
     }
     let repo = j.repository_id.as_deref().map(uuid_param).transpose()?;
     validate_job(&st, &id, &j.kind, &repo)?;
@@ -1364,6 +1407,8 @@ async fn create_plan(
         JobKind::BackupSystem { .. }
             | JobKind::BackupDisks { .. }
             | JobKind::BackupHyperv { .. }
+            | JobKind::BackupKubernetes { .. }
+            | JobKind::BackupSaas { .. }
             | JobKind::Verify { .. }
     ) {
         return Err(ApiError::bad("plans run backups or verification"));

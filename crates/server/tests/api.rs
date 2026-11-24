@@ -2580,3 +2580,70 @@ async fn local_recovery_partition_jobs_and_their_enrolment_code() {
         .await;
     assert_ne!(s, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn kubernetes_and_saas_plans_carry_only_sealed_credentials() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "runner").await;
+    heartbeat(&mut t, &token, CAPS, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+    let sealed_secret = seal(&key.public_b64(), b"client-secret-value").unwrap();
+    let saas = json!({ "type": "backup_saas", "sealed_secret": sealed_secret,
+        "tenant": { "service": "m365", "tenant": "contoso.onmicrosoft.com", "client_id": "app-id" } });
+    let plan = |job: Value| json!({ "name": "SaaS", "agent_id": agent_id, "repository_id": repo, "job": job, "schedule": { "type": "manual" } });
+
+    // A machine that does not report the capability cannot run it.
+    let (s, v) = t.post("/api/plans", plan(saas.clone())).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v.to_string().contains("saas"), "{v}");
+    let caps: Vec<&str> = CAPS.iter().copied().chain(["kubernetes", "saas"]).collect();
+    heartbeat(&mut t, &token, &caps, None).await;
+
+    // Incomplete settings are refused.
+    let mut bad = saas.clone();
+    bad["tenant"]["client_id"] = json!("");
+    let (s, _) = t.post("/api/plans", plan(bad)).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let (s, p) = t.post("/api/plans", plan(saas)).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let p = p["id"].as_str().unwrap().to_string();
+    t.post(&format!("/api/plans/{p}/run"), json!({})).await;
+    let hb = heartbeat(&mut t, &token, &caps, None).await;
+    let JobKind::BackupSaas {
+        tenant,
+        sealed_secret,
+    } = &hb.jobs[0].kind
+    else {
+        panic!("{:?}", hb.jobs[0].kind)
+    };
+    assert_eq!(tenant.service, "m365");
+    assert_eq!(
+        &key.open(sealed_secret).unwrap()[..],
+        b"client-secret-value"
+    );
+    let (_, plans) = t.get("/api/plans").await;
+    assert!(!plans.to_string().contains("client-secret-value"));
+
+    // Kubernetes: the cluster must name namespaces; a restore renames one.
+    let sealed_token = seal(&key.public_b64(), b"eyJ-token").unwrap();
+    let cluster = json!({ "name": "prod", "api_server": "https://k8s.lan:6443", "ca_pem": "", "namespaces": [] });
+    let url = format!("/api/agents/{agent_id}/jobs");
+    let job = |c: Value, replace: bool, confirm: &str| json!({ "repository_id": repo, "confirm": confirm, "kind": { "type": "restore_kubernetes", "image_id": uuid::Uuid::new_v4(), "cluster": c, "sealed_token": sealed_token, "namespaces": ["shop"], "rename_to": "shop-restored", "replace": replace } });
+    let (s, _) = t.post(&url, job(cluster.clone(), false, "")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "no namespaces");
+    let mut ok = cluster;
+    ok["namespaces"] = json!(["shop"]);
+    let (s, v) = t.post(&url, job(ok.clone(), false, "")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _) = t.post(&url, job(ok.clone(), true, "")).await;
+    assert_eq!(
+        s,
+        StatusCode::BAD_REQUEST,
+        "replacing objects needs the name typed"
+    );
+    let (s, v) = t.post(&url, job(ok, true, "PROD")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
