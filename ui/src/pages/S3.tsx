@@ -80,7 +80,7 @@ export function S3Fields({ value: f, onChange }: { value: S3Form; onChange: (f: 
         <input className="input mono" value={f.endpoint} onChange={(e) => set({ endpoint: e.target.value })} />
       </Field>
       <div className="grid cols-2">
-        <Field label={isAzure(f) ? "Container" : "Bucket"} hint={isAzure(f) ? "It must exist. For immutable backups, enable version-level immutability on it (and versioning on the account)." : "It must exist. For Object Lock it must have been created with Object Lock enabled."}>
+        <Field label={isAzure(f) ? "Container" : "Bucket"} hint={isAzure(f) ? "Created with the repository if it does not exist (with version-level immutability when locked; versioning must be on for the account)." : "Created with the repository if it does not exist (with Object Lock when locked). An existing bucket needs Object Lock enabled for locked backups."}>
           <input className="input mono" value={f.bucket} onChange={(e) => set({ bucket: e.target.value.toLowerCase() })} placeholder="company-backups" />
         </Field>
         <Field label="Folder in the bucket" hint="Must be empty; several repositories can share a bucket.">

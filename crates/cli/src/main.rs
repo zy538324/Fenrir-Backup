@@ -608,6 +608,9 @@ fn backend(path: &Path, create: bool) -> R<Arc<dyn Backend>> {
     let s = path.to_string_lossy();
     if s.starts_with("azure://") {
         let b = azure_from_env(&s)?;
+        if create {
+            b.ensure_container()?;
+        }
         if create && !b.is_empty()? {
             return Err(CliError::usage(format!(
                 "{s} already holds data: choose an empty container or another folder in it"
@@ -617,6 +620,9 @@ fn backend(path: &Path, create: bool) -> R<Arc<dyn Backend>> {
     }
     if s.starts_with("s3://") {
         let b = s3_from_env(&s)?;
+        if create {
+            b.ensure_bucket()?;
+        }
         if create && !b.is_empty()? {
             return Err(CliError::usage(format!(
                 "{s} already holds data: choose an empty bucket or prefix"

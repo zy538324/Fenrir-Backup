@@ -437,19 +437,7 @@ fn s3_repository_with_object_lock() {
     let endpoint = format!("http://127.0.0.1:{port}");
     let key = std::env::var("FENRIR_TEST_S3_KEY").unwrap_or_else(|_| "testing".into());
     let secret = std::env::var("FENRIR_TEST_S3_SECRET").unwrap_or_else(|_| "testing".into());
-    s3store::S3Backend::new(s3store::S3Config {
-        endpoint: endpoint.clone(),
-        region: "us-east-1".into(),
-        bucket: "cli-backups".into(),
-        prefix: String::new(),
-        path_style: true,
-        access_key: key.clone(),
-        secret_key: secret.clone(),
-        lock: None,
-    })
-    .unwrap()
-    .create_bucket(true)
-    .unwrap();
+    // No bucket yet: `repo init` creates it, with Object Lock because FENRIR_S3_LOCK is set.
 
     let dir = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {

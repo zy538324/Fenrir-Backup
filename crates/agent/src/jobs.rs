@@ -185,6 +185,19 @@ impl ObjectStore {
             ObjectStore::Azure(b) => b.is_empty(),
         }
     }
+    pub fn exists(&self) -> core_format::Result<bool> {
+        match self {
+            ObjectStore::S3(b) => b.bucket_exists(),
+            ObjectStore::Azure(b) => b.container_exists(),
+        }
+    }
+    /// Create the bucket or container if it does not exist yet (new repository).
+    pub fn ensure_exists(&self) -> core_format::Result<bool> {
+        match self {
+            ObjectStore::S3(b) => b.ensure_bucket(),
+            ObjectStore::Azure(b) => b.ensure_container(),
+        }
+    }
     pub fn check(&self) -> core_format::Result<String> {
         match self {
             ObjectStore::S3(b) => b.check(),
@@ -289,6 +302,10 @@ fn storage(ctx: &Ctx, access: &RepoAccess, create: bool) -> anyhow::Result<Arc<d
     }
     if let Some(s) = &access.s3 {
         let b = object_store(ctx.key, &access.path, s, access.sealed_share.as_ref())?;
+        if create {
+            b.ensure_exists()
+                .with_context(|| format!("creating {}", access.path))?;
+        }
         if create && !b.is_empty()? {
             bail!(
                 "{} already holds data: choose an empty bucket or container, or another folder in it",
@@ -621,6 +638,24 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
             s3: Some(s3),
         } => {
             let b = object_store(ctx.key, path, s3, sealed_share.as_ref())?;
+            if !b.exists()? {
+                // Signed in fine; nothing to write to yet. Creating the repository creates it.
+                let what = if path.starts_with("azure://") {
+                    "container"
+                } else {
+                    "bucket"
+                };
+                let mut u = done(JobState::Succeeded);
+                u.result = Some(json!({ "s3": true, "repository": false, "note": format!(
+                    "the keys work; the {what} does not exist yet and is created with the repository{}",
+                    if s3.lock_mode.as_deref().is_some_and(|m| !m.is_empty() && m != "none") {
+                        " (with immutability on)"
+                    } else {
+                        ""
+                    }
+                ) }));
+                return Ok(u);
+            }
             let note = b.check()?;
             let mut u = done(JobState::Succeeded);
             u.result = Some(

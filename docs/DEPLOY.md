@@ -249,12 +249,19 @@ ransomware holding the keys, not the storage account's owner, not
 Fenrir-Backup. That is the strongest protection against an attacker who
 gets administrator rights on your network.
 
-1. Create the bucket with **Object Lock enabled** (it can only be turned on
-   when the bucket is created; it also turns on versioning). Do not set a
-   default retention on the bucket: Fenrir-Backup locks each object itself.
+1. Either let Fenrir-Backup create the bucket (creating the repository creates
+   it when it does not exist, with **Object Lock enabled** when you choose a
+   lock; the key then also needs `s3:CreateBucket`), or create it yourself
+   with Object Lock enabled (it can only be turned on when the bucket is
+   created; it also turns on versioning). Do not set a default retention on
+   the bucket: Fenrir-Backup locks each object itself.
 2. Create an access key for Fenrir-Backup only, allowed on that bucket:
    `s3:PutObject`, `s3:GetObject`, `s3:ListBucket`, `s3:DeleteObject`,
-   `s3:DeleteObjectVersion`, `s3:GetObjectRetention`, `s3:PutObjectRetention`.
+   `s3:DeleteObjectVersion`, `s3:GetObjectRetention`, `s3:PutObjectRetention`
+   (and `s3:CreateBucket` if Fenrir-Backup creates the bucket).
+   Azure: creating the repository likewise creates the container, with
+   version-level immutability when you choose it (versioning must be on for
+   the storage account).
 3. In the web UI: provider, region, bucket, a folder in the bucket, the
    keys, the lock mode and days. **Test connection** writes a test object
    and checks that the bucket refuses to delete it. The keys are encrypted
