@@ -433,12 +433,14 @@ jobs:
       - name: build
         run: cargo build --release --locked -p cli
       - name: run
-        run: sudo ci/e2e-cdp.sh /tmp/e2e-cdp target/release/fenrir-backup
+        run: sudo timeout 900 ci/e2e-cdp.sh /tmp/e2e-cdp target/release/fenrir-backup
       - name: logs
-        if: failure()
+        if: always()
         run: |
           sudo dmsetup table || true
           sudo dmsetup status || true
+          sudo dmsetup info -c || true
+          ps -eo pid,stat,etime,wchan:30,cmd | grep -E "fenrir|lvcreate|dmsetup|sync" | grep -v grep || true
           sudo lvs -a || true
           sudo dmesg | tail -n 40 || true
 

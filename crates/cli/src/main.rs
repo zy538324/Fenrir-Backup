@@ -2509,12 +2509,13 @@ fn cdp_cycle(ctx: &Ctx, st: &mut cdp::control::State, base: bool) -> R<serde_jso
     let dir = cdp_state_dir();
     let err = |e: String| CliError::new(ExitCode::Error, e);
     let snap = format!("{}-fenrir-cdp-base", st.lv);
-    let (journal, seq) =
+    let (journal, seq, base_mark) =
         cdp::control::rotate(&dir, st, base.then_some(snap.as_str())).map_err(err)?;
     let mut out = json!({ "journal_seq": seq });
     if base {
         let snap_path = PathBuf::from(format!("/dev/{}/{snap}", st.vg));
-        let t = cdp::control::now();
+        // Valid from its mark on (see cdp::control::rotate).
+        let t = base_mark.unwrap_or_else(cdp::control::now);
         let r = cdp_store(
             ctx,
             &st.name,

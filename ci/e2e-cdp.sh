@@ -49,7 +49,7 @@ RUN=$!
 echo "e2e-cdp: cdp run started"
 sleep 6   # the base image first
 
-version() { echo "version $1 $(head -c 300000 /dev/urandom | base64 -w0)" > "$MNT/file.txt"; sync; sha256sum "$MNT/file.txt" | cut -d' ' -f1 > "$W/v$1.sha"; sleep 3; date +%s > "$W/t$1"; sleep 2; }
+version() { echo "version $1 $(head -c 300000 /dev/urandom | base64 -w0)" > "$MNT/file.txt"; timeout 120 sync; sha256sum "$MNT/file.txt" | cut -d' ' -f1 > "$W/v$1.sha"; sleep 3; date +%s > "$W/t$1"; sleep 2; }
 version 1
 version 2
 sleep 9   # a journal swap between versions 2 and 3
