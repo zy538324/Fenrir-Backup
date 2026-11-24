@@ -64,15 +64,17 @@ $p = New-Partition -DiskNumber $data -UseMaximumSize -AssignDriveLetter
 Format-Volume -Partition $p -FileSystem NTFS -NewFileSystemLabel SQLDATA -Confirm:$false | Out-Null
 $s = (Get-Partition -DiskNumber $data -PartitionNumber $p.PartitionNumber).DriveLetter
 New-Item -ItemType Directory "${s}:\sql" | Out-Null
-# SQL Server needs the folder, and the root to reach it: grant the account its service runs as (read from
-# Windows) and its service SID.
+# SQL Server needs the folder, and the root to reach it. Grant the account its service runs as (as Windows and as
+# SQL Server report it) and its service SID; this volume is a throwaway VHD, so Everyone as well, which keeps the
+# test about the backup rather than about the runner's account set-up.
 $svcName = 'MSSQL$' + ($Instance -replace '^.*\\', '')
 $runsAs = (Get-CimInstance Win32_Service -Filter "Name='$svcName'").StartName
-Write-Host "  SQL Server runs as: $runsAs"
-foreach ($who in @("NT SERVICE\$svcName", $runsAs) | Where-Object { $_ } | Select-Object -Unique) {
-    icacls "${s}:\" /grant "${who}:(RX)" | Out-Host
-    icacls "${s}:\sql" /grant "${who}:(OI)(CI)F" | Out-Host
+$sqlSays = (sqlcmd -S $Instance -E -h -1 -W -Q "SET NOCOUNT ON; SELECT service_account FROM sys.dm_server_services WHERE servicename LIKE 'SQL Server (%'") | Select-Object -First 1
+Write-Host "  SQL Server runs as: $runsAs (SQL Server says: $sqlSays)"
+foreach ($who in @("NT SERVICE\$svcName", $runsAs, $sqlSays, '*S-1-1-0') | Where-Object { $_ } | Select-Object -Unique) {
+    icacls "${s}:\" /grant "${who}:(OI)(CI)F" | Out-Host
 }
+icacls "${s}:\sql" /reset /T | Out-Host
 
 Sql "CREATE DATABASE fenrirci ON (NAME = fenrirci, FILENAME = '${s}:\sql\fenrirci.mdf') LOG ON (NAME = fenrirci_log, FILENAME = '${s}:\sql\fenrirci_log.ldf');" | Out-Null
 Sql "ALTER DATABASE fenrirci SET RECOVERY FULL;" | Out-Null
