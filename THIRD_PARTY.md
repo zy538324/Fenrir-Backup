@@ -19,6 +19,7 @@ Regenerate the Rust tables with `scripts/third-party.py` after changing dependen
 | argon2 | 0.5.3 | MIT OR Apache-2.0 | Passphrase and administrator password hashing (Argon2id) |
 | axum | 0.8.9 | MIT | Server HTTP routing |
 | axum-server | 0.9.2 | MIT | Server TLS listener |
+| boreal | 1.4 | MIT OR Apache-2.0 | YARA rules in malware scans of backups (`scan`) |
 | rustls-pki-types | 1.16.0 | MIT OR Apache-2.0 | Reading the server certificate (PEM) |
 | base64 | 0.22.1 | MIT OR Apache-2.0 | Base64 in JSON |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception | Keyed chunk hashing, subkey derivation (bundles BLAKE3 C/asm, CC0/Apache-2.0) |
