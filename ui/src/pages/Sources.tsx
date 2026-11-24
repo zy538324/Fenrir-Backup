@@ -98,7 +98,7 @@ function ConnectDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: 
   const { usable } = useRepos(agent?.id ?? "");
   const [repo, setRepo] = useState("");
   const repoId = repo || usable[0]?.id || "";
-  const [f, setF] = useState({ tenant: "", client_id: "", domain_url: "", admin: "", users: "", objects: "", mail: true, files: true, name: "", api_server: "", ca_pem: "", namespaces: "", volume_image: "" });
+  const [f, setF] = useState({ tenant: "", client_id: "", domain_url: "", admin: "", users: "", objects: "", mail: true, files: true, sites: false, teams: false, directory: false, name: "", api_server: "", ca_pem: "", namespaces: "", volume_image: "" });
   const [secret, setSecret] = useState("");
   const [time, setTime] = useState("01:00");
   const [retention, setRetention] = useState<Retention | null>(RETENTION_PRESETS[1].r);
@@ -121,7 +121,7 @@ function ConnectDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: 
         job = { type: "backup_kubernetes", cluster, sealed_token: sealed };
         label = `Kubernetes ${cluster.name}`;
       } else {
-        const tenant: SaasTenant = { service: kind, tenant: f.tenant.trim(), client_id: f.client_id.trim(), domain_url: f.domain_url.trim(), admin: f.admin.trim(), users: lines(f.users), objects: lines(f.objects), mail: f.mail, files: f.files };
+        const tenant: SaasTenant = { service: kind, tenant: f.tenant.trim(), client_id: f.client_id.trim(), domain_url: f.domain_url.trim(), admin: f.admin.trim(), users: lines(f.users), objects: lines(f.objects), mail: f.mail, files: f.files, ...(kind === "m365" ? { sites: f.sites, teams: f.teams, directory: f.directory } : {}) };
         job = { type: "backup_saas", tenant, sealed_secret: sealed };
         label = `${meta.label} ${tenant.tenant}`;
       }
@@ -190,6 +190,11 @@ function ConnectDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: 
                 <div className="row" style={{ gap: 20 }}>
                   <label className="check"><input type="checkbox" checked={f.mail} onChange={(e) => setF({ ...f, mail: e.target.checked })} /> Mail</label>
                   <label className="check"><input type="checkbox" checked={f.files} onChange={(e) => setF({ ...f, files: e.target.checked })} /> {kind === "m365" ? "OneDrive" : "Drive"} files</label>
+                  {kind === "m365" && <>
+                    <label className="check" title="Needs Sites.ReadWrite.All"><input type="checkbox" checked={f.sites} onChange={(e) => setF({ ...f, sites: e.target.checked })} /> SharePoint sites</label>
+                    <label className="check" title="Needs ChannelMessage.Read.All (Microsoft approves this permission per app)"><input type="checkbox" checked={f.teams} onChange={(e) => setF({ ...f, teams: e.target.checked })} /> Teams messages</label>
+                    <label className="check" title="Needs Directory.Read.All and Policy.Read.All"><input type="checkbox" checked={f.directory} onChange={(e) => setF({ ...f, directory: e.target.checked })} /> Entra ID</label>
+                  </>}
                 </div>
               </>
             )}
@@ -277,6 +282,8 @@ function RestoreDialog({ plan, onClose }: { plan: Plan; onClose: () => void }) {
                 <option value="mail">Mail</option>
                 <option value="file">Files</option>
                 <option value="record">Records</option>
+                <option value="site-file">SharePoint files (account: the site's address)</option>
+                <option value="directory">Entra ID objects (account: directory:tenant)</option>
               </select>
             </Field>
             <Field label="Path starts with" hint="A folder, mail folder or object name; empty: all."><input className="input" value={f.path} onChange={set("path")} /></Field>

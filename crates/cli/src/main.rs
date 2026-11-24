@@ -304,6 +304,16 @@ enum SaasCmd {
         /// Leave files out (OneDrive, Google Drive).
         #[arg(long)]
         no_files: bool,
+        /// Microsoft 365: SharePoint sites' document libraries (Sites.ReadWrite.All).
+        #[arg(long)]
+        sites: bool,
+        /// Microsoft 365: Teams channel messages (ChannelMessage.Read.All).
+        #[arg(long)]
+        teams: bool,
+        /// Microsoft 365: Entra ID objects and Conditional Access policies
+        /// (Directory.Read.All, Policy.Read.All).
+        #[arg(long)]
+        directory: bool,
         #[arg(long)]
         label: Option<String>,
     },
@@ -2366,6 +2376,9 @@ fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
             objects,
             no_mail,
             no_files,
+            sites,
+            teams,
+            directory,
             label,
         } => {
             let (settings, conn) = saas_conn(&svc)?;
@@ -2380,6 +2393,9 @@ fn saas_cmd(ctx: &Ctx, c: SaasCmd) -> R<Outcome> {
                     objects,
                     mail: !no_mail,
                     files: !no_files,
+                    sites,
+                    teams,
+                    directory,
                 },
                 label,
                 &|s: &str| {

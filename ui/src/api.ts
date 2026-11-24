@@ -95,7 +95,7 @@ export type JobKind =
   | { type: "restore_saas"; image_id: string; tenant: SaasTenant; sealed_secret: Sealed; account: string; to_account?: string | null; kind?: string | null; path?: string | null; overwrite?: boolean };
 
 export interface K8sCluster { name: string; api_server: string; ca_pem: string; namespaces: string[]; volume_image: string }
-export interface SaasTenant { service: string; tenant: string; client_id: string; domain_url: string; admin: string; users: string[]; objects: string[]; mail: boolean; files: boolean }
+export interface SaasTenant { service: string; tenant: string; client_id: string; domain_url: string; admin: string; users: string[]; objects: string[]; mail: boolean; files: boolean; sites?: boolean; teams?: boolean; directory?: boolean }
 
 export type BootOutcome = "verified" | "screen" | "failed";
 export interface BootCheck {

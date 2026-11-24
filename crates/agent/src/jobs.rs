@@ -791,6 +791,9 @@ fn execute(ctx: &Ctx, spec: &JobSpec, rep: &Reporter) -> anyhow::Result<JobUpdat
                 objects: tenant.objects.clone(),
                 mail: tenant.mail,
                 files: tenant.files,
+                sites: tenant.sites,
+                teams: tenant.teams,
+                directory: tenant.directory,
             };
             let r = saas::run::backup(&repo, &conn, &settings, &scope, None, &progress)
                 .map_err(|e| anyhow!("{e}"))?;

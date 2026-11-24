@@ -42,7 +42,7 @@ head -c 40M /dev/urandom > "$MNT/big.bin"
 mkdir -p "$MNT/docs" && seq 1 20000 > "$MNT/docs/list.txt"
 sync
 
-B --json cbt backup --name e2e > "$W/b1.json"
+B --json cbt backup --name e2e > "$W/b1.json" || { cat "$W/b1.json"; exit 1; }
 jq -c .result "$W/b1.json"
 [ "$(jq -r .result.read_mode "$W/b1.json")" = full ]
 
@@ -51,7 +51,7 @@ echo "added after the first backup" > "$MNT/docs/new.txt"
 sync
 sha256sum "$MNT/big.bin" "$MNT/docs/list.txt" "$MNT/docs/new.txt" | sed "s|$MNT/||" > "$W/expected.sha"
 
-B --json cbt backup --name e2e > "$W/b2.json"
+B --json cbt backup --name e2e > "$W/b2.json" || { cat "$W/b2.json"; exit 1; }
 jq -c .result "$W/b2.json"
 [ "$(jq -r .result.read_mode "$W/b2.json")" = changed_blocks ] || { echo "the second backup did not use the tracking" >&2; exit 1; }
 unchanged=$(jq -r .result.bytes_unchanged "$W/b2.json")
