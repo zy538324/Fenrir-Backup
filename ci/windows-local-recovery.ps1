@@ -80,8 +80,9 @@ if ($LASTEXITCODE -ne 0) { throw "remove failed: $out" }
 Write-Host $out
 Check (-not (Get-Partition -DiskNumber $st.disk | Where-Object { $_.Offset -eq $st.offset })) 'the partition is gone'
 Check ((Get-Partition -DriveLetter C).Size -eq $before) 'C: has its space back'
-bcdedit /enum $st.bcd_entry 2>&1 | Out-Null
-Check ($LASTEXITCODE -ne 0) 'the boot entry is gone'
+$all = (bcdedit /enum all) -join "`n"
+Check (-not $all.Contains($st.bcd_entry)) 'the boot entry is gone'
+Check (-not $all.Contains($st.ramdisk_entry)) 'the RAM disk entry is gone'
 $seqAfter = ((bcdedit /enum '{current}') -match '^recoverysequence') -replace '^recoverysequence\s+', ''
 Check ("$seqAfter" -eq "$seqBefore") "the previous recovery sequence is back ($seqBefore)"
 Check (-not (Test-Path "$Work\state\local-recovery.json")) 'the agent forgot it'

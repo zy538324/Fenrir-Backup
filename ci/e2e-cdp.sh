@@ -33,10 +33,12 @@ LOOP=$(losetup -f --show "$W/disk.img")
 pvcreate -q "$LOOP"
 vgcreate -q "$VG" "$LOOP"
 lvcreate -q -y -L 256M -n data "$VG"
-udevadm settle
+timeout 30 udevadm settle || true
+echo "e2e-cdp: volume ready"
 mkfs.ext4 -q -L data "/dev/$VG/data"
 B repo init --recovery-key-out "$W/recovery.key" >/dev/null
 
+echo "e2e-cdp: enabling"
 B --json cdp enable --name e2e --volume "/dev/$VG/data" --journal-mb 96 > "$W/enable.json"
 DEV=$(jq -r .result.device "$W/enable.json")
 [ "$DEV" = /dev/mapper/fenrir-cdp-e2e ]
@@ -44,6 +46,7 @@ mkdir -p "$MNT" && mount "$DEV" "$MNT"
 
 timeout 300 "$CLI" --repo "$W/repo" --json cdp run --name e2e --mark-every 1 --rotate-every 8 --for 40 > "$W/run.json" &
 RUN=$!
+echo "e2e-cdp: cdp run started"
 sleep 6   # the base image first
 
 version() { echo "version $1 $(head -c 300000 /dev/urandom | base64 -w0)" > "$MNT/file.txt"; sync; sha256sum "$MNT/file.txt" | cut -d' ' -f1 > "$W/v$1.sha"; sleep 3; date +%s > "$W/t$1"; sleep 2; }
