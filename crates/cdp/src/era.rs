@@ -241,15 +241,41 @@ pub fn snapshot(st: &State, snap: &str) -> Result<(String, u64)> {
 /// Byte ranges written since `era` (from a metadata snapshot), merged.
 pub fn written_since(st: &State, era: u64) -> Result<Vec<(u64, u64)>> {
     message(&st.name, "take_metadata_snap")?;
-    let out = run(
-        "era_invalidate",
-        &[
-            "--metadata-snapshot",
-            "--written-since",
-            &era.to_string(),
-            &st.metadata,
-        ],
-    );
+    let out = (|| -> Result<String> {
+        // The held snapshot's root block is the status's last field.
+        let status = run("dmsetup", &["status", &dm_name(&st.name)])?;
+        let root = status
+            .split_whitespace()
+            .nth(6)
+            .filter(|r| *r != "-")
+            .map(str::to_string);
+        let since = era.to_string();
+        let with_root = root.as_ref().map(|r| {
+            run(
+                "era_invalidate",
+                &[
+                    "--metadata-snapshot",
+                    r,
+                    "--written-since",
+                    &since,
+                    &st.metadata,
+                ],
+            )
+        });
+        match with_root {
+            Some(Ok(o)) => Ok(o),
+            // Older versions take the flag without a value.
+            _ => run(
+                "era_invalidate",
+                &[
+                    "--metadata-snapshot",
+                    "--written-since",
+                    &since,
+                    &st.metadata,
+                ],
+            ),
+        }
+    })();
     let _ = message(&st.name, "drop_metadata_snap");
     let blocks = parse_invalidate(&out?)?;
     let bs = st.block_sectors * 512;
