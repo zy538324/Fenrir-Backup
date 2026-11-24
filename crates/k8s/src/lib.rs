@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub mod archive;
+pub mod tar;
+pub mod volumes;
 
 const SA: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
 
@@ -29,7 +31,7 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-fn err(s: impl Into<String>) -> Error {
+pub(crate) fn err(s: impl Into<String>) -> Error {
     Error(s.into())
 }
 
@@ -65,9 +67,9 @@ impl Connect {
 }
 
 pub struct Client {
-    agent: ureq::Agent,
-    server: String,
-    token: String,
+    pub(crate) agent: ureq::Agent,
+    pub(crate) server: String,
+    pub(crate) token: String,
 }
 
 /// One API resource type: where its objects are listed and created.
@@ -139,7 +141,12 @@ impl Client {
         })
     }
 
-    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value)> {
+    pub(crate) fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Value)> {
         let req = self
             .agent
             .request(method, &format!("{}{path}", self.server))
@@ -409,6 +416,7 @@ pub fn export(
         namespaces: vec![],
         objects: vec![],
         warnings: vec![],
+        volumes: vec![],
     };
     for ns in namespaces {
         let meta = c
@@ -448,6 +456,8 @@ pub fn export(
 /// What a restore did.
 #[derive(Debug, Default, Serialize)]
 pub struct RestoreReport {
+    /// Claims whose data was written back.
+    pub volumes: Vec<Value>,
     pub created: usize,
     pub existing: usize,
     pub failed: Vec<String>,
@@ -462,6 +472,19 @@ pub fn restore(
     only: &[String],
     map: &[(String, String)],
     replace: bool,
+) -> Result<RestoreReport> {
+    restore_with(c, a, only, map, replace, &mut |_| Ok(()))
+}
+
+/// As `restore`, calling `after_claims` once the claims exist and before
+/// anything that would use them is created (to put their data back).
+pub fn restore_with(
+    c: &Client,
+    a: &archive::Archive,
+    only: &[String],
+    map: &[(String, String)],
+    replace: bool,
+    after_claims: &mut dyn FnMut(&mut RestoreReport) -> Result<()>,
 ) -> Result<RestoreReport> {
     let target = |ns: &str| {
         map.iter()
@@ -478,7 +501,13 @@ pub fn restore(
     }
     let mut objs: Vec<&archive::Object> = a.objects.iter().filter(|o| pick(&o.namespace)).collect();
     objs.sort_by_key(|o| restore_rank(&o.resource.kind));
+    let claims_rank = restore_rank("PersistentVolumeClaim");
+    let mut hooked = false;
     for o in objs {
+        if !hooked && restore_rank(&o.resource.kind) > claims_rank {
+            hooked = true;
+            after_claims(&mut rep)?;
+        }
         let t = target(&o.namespace);
         let mut obj = o.object.clone();
         obj["metadata"]["namespace"] = json!(t);
@@ -497,6 +526,9 @@ pub fn restore(
             Ok(false) => rep.existing += 1,
             Err(e) => rep.failed.push(e.0),
         }
+    }
+    if !hooked {
+        after_claims(&mut rep)?;
     }
     Ok(rep)
 }

@@ -32,6 +32,9 @@ pub struct Archive {
     pub objects: Vec<Object>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// Claims whose data is in the image (stage 2).
+    #[serde(default)]
+    pub volumes: Vec<crate::volumes::VolumeRecord>,
 }
 
 impl Archive {
@@ -92,6 +95,7 @@ mod tests {
                 object: serde_json::json!({ "metadata": { "name": "web" } }),
             }],
             warnings: vec![],
+            volumes: vec![],
         };
         let d = a.to_disk().unwrap();
         assert_eq!(d.len() % 4096, 0);

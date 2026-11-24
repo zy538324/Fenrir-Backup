@@ -375,10 +375,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: build
-        run: cargo build --release --locked -p cli
+      - name: build (and the CLI image for volume pods)
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --locked -p cli
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p cli
+          docker build -f Dockerfile.cli -t fenrir-backup:ci .
+      - name: cluster with a CSI driver that snapshots
+        run: |
+          kind create cluster --name fenrir --wait 120s
+          kind load docker-image fenrir-backup:ci --name fenrir
+          SNAP=v8.2.0
+          kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter/client/config/crd?ref=$SNAP"
+          kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter/deploy/kubernetes/snapshot-controller?ref=$SNAP"
+          git clone --depth 1 https://github.com/kubernetes-csi/csi-driver-host-path /tmp/hostpath
+          /tmp/hostpath/deploy/kubernetes-latest/deploy.sh
+          kubectl apply -f /tmp/hostpath/examples/csi-storageclass.yaml
+          kubectl get storageclass,volumesnapshotclass
       - name: run
-        run: ci/e2e-kubernetes.sh /tmp/e2e-k8s target/release/fenrir-backup
+        run: ci/e2e-kubernetes.sh /tmp/e2e-k8s target/release/fenrir-backup fenrir-backup:ci
       - name: state
         if: failure()
         run: kubectl get all -A || true

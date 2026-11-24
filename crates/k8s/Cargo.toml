@@ -12,3 +12,6 @@ serde_json.workspace = true
 ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pki-types = { version = "1.9", features = ["std"] }
+
+[dev-dependencies]
+tempfile.workspace = true
