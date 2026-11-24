@@ -205,7 +205,7 @@ export interface Repository {
   storage_error?: string | null;
 }
 
-export interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number }
+export interface S3Settings { endpoint: string; region: string; path_style: boolean; lock_mode: "governance" | "compliance" | null; lock_days: number; storage_class?: string | null }
 
 export type Schedule =
   | { type: "interval"; hours: number; minutes?: number }

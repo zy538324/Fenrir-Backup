@@ -11,6 +11,8 @@ export interface S3Form {
   path_style: boolean;
   lock_mode: "none" | "governance" | "compliance";
   lock_days: number;
+  /** Archive tier for backup data ("" = the bucket's default). */
+  storage_class: string;
   access_key: string;
   secret_key: string;
 }
@@ -24,6 +26,7 @@ export const emptyS3 = (): S3Form => ({
   path_style: false,
   lock_mode: "compliance",
   lock_days: 30,
+  storage_class: "",
   access_key: "",
   secret_key: "",
 });
@@ -47,6 +50,7 @@ export const s3Settings = (f: S3Form): S3Settings => ({
   path_style: f.path_style,
   lock_mode: f.lock_mode === "none" ? null : f.lock_mode,
   lock_days: f.lock_mode === "none" ? 0 : f.lock_days,
+  storage_class: f.storage_class || null,
 });
 
 export const s3Complete = (f: S3Form) =>
@@ -111,6 +115,21 @@ export function S3Fields({ value: f, onChange }: { value: S3Form; onChange: (f: 
           </Field>
         )}
       </div>
+      <Field label="Storage tier for backup data" hint="Cheaper tiers for long-term or archive repositories (for example an off-site copy kept for years). All of these are read at once; the repository's catalogue stays in the default tier.">
+        <select className="input" value={f.storage_class} onChange={(e) => set({ storage_class: e.target.value })}>
+          <option value="">Default</option>
+          {isAzure(f) ? (
+            <><option value="Cool">Cool</option><option value="Cold">Cold</option></>
+          ) : (
+            <>
+              <option value="STANDARD_IA">Standard-IA (infrequent access)</option>
+              <option value="ONEZONE_IA">One Zone-IA</option>
+              <option value="INTELLIGENT_TIERING">Intelligent-Tiering</option>
+              <option value="GLACIER_IR">Glacier Instant Retrieval</option>
+            </>
+          )}
+        </select>
+      </Field>
       {f.lock_mode === "compliance" && (
         <Notice tone="info">
           Every backup stays undeletable for at least {f.lock_days} days: not by ransomware with these keys, not by the storage account owner, not by Fenrir-Backup. Old backups are removed only after their lock ends, so storage use is at least {f.lock_days} days of changes. Locks of backups still in use are renewed by maintenance.

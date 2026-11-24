@@ -929,6 +929,17 @@ fn check_s3(path: &str, s3: Option<&protocol::S3Settings>, prune_every_days: i64
                     ));
                 }
             }
+            if let Some(c) = s.storage_class.as_deref().filter(|c| !c.is_empty()) {
+                let azure = path.trim().starts_with("azure://");
+                let ok = if azure { protocol::AZURE_ACCESS_TIERS.contains(&c) } else { protocol::S3_STORAGE_CLASSES.contains(&c) };
+                if !ok {
+                    return Err(ApiError::bad(if azure {
+                        "the access tier is Hot, Cool or Cold (Archive needs a rehydration before every read)"
+                    } else {
+                        "the storage class is STANDARD, STANDARD_IA, ONEZONE_IA, INTELLIGENT_TIERING or GLACIER_IR (Glacier Flexible Retrieval and Deep Archive need a restore before every read)"
+                    }));
+                }
+            }
             match s.lock_mode.as_deref() {
                 None | Some("") | Some("none") => Ok(()),
                 Some("governance") | Some("compliance") => {

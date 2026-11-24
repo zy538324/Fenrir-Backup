@@ -673,7 +673,23 @@ pub struct S3Settings {
     pub lock_mode: Option<String>,
     #[serde(default)]
     pub lock_days: u32,
+    /// Archive tier for backup data (chunks): S3 `STANDARD_IA`,
+    /// `ONEZONE_IA`, `INTELLIGENT_TIERING` or `GLACIER_IR`; Azure `Cool` or
+    /// `Cold`. Only tiers read without a restore request; the repository's
+    /// configuration, manifests and locks stay in the default tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_class: Option<String>,
 }
+
+/// Storage classes that can be read at once (no restore request first).
+pub const S3_STORAGE_CLASSES: &[&str] = &[
+    "STANDARD",
+    "STANDARD_IA",
+    "ONEZONE_IA",
+    "INTELLIGENT_TIERING",
+    "GLACIER_IR",
+];
+pub const AZURE_ACCESS_TIERS: &[&str] = &["Hot", "Cool", "Cold"];
 
 fn default_region() -> String {
     "us-east-1".into()

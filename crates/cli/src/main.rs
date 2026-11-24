@@ -849,6 +849,8 @@ fn s3_from_env(url: &str) -> R<s3store::S3Backend> {
         access_key: need("AWS_ACCESS_KEY_ID")?,
         secret_key: need("AWS_SECRET_ACCESS_KEY")?,
         lock,
+        // Archive tier for chunks (STANDARD_IA, GLACIER_IR, ...).
+        storage_class: var("FENRIR_S3_STORAGE_CLASS").filter(|c| !c.is_empty()),
     })?)
 }
 
@@ -891,6 +893,8 @@ fn azure_from_env(url: &str) -> R<azstore::AzureBackend> {
         prefix,
         credential,
         lock,
+        // Archive tier for chunks (Cool, Cold).
+        access_tier: var("FENRIR_AZURE_TIER").filter(|c| !c.is_empty()),
     })?)
 }
 

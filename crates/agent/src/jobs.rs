@@ -302,6 +302,7 @@ pub(crate) fn object_store(
                 prefix,
                 credential: azstore::credential_from(&creds.password),
                 lock,
+                access_tier: s.storage_class.clone(),
             },
         )?));
     }
@@ -326,6 +327,7 @@ pub(crate) fn object_store(
             access_key: creds.username,
             secret_key: creds.password,
             lock,
+            storage_class: s.storage_class.clone(),
         },
     )?))
 }
