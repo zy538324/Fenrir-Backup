@@ -2517,11 +2517,11 @@ async fn get_download(
     let path = st.cfg.downloads_dir.join(format!("{id}.bin"));
     let bytes =
         std::fs::read(&path).map_err(|_| ApiError::not_found("the download has expired"))?;
-    Ok(axum::response::Response::builder()
+    axum::response::Response::builder()
         .header("Content-Type", "application/octet-stream")
         .header("Cache-Control", "no-store")
         .body(axum::body::Body::from(bytes))
-        .map_err(|e| ApiError::internal(e.to_string()))?)
+        .map_err(|e| ApiError::internal(e.to_string()))
 }
 
 /// Copy chosen files and folders out of a backup into a folder on a machine.

@@ -179,7 +179,7 @@ fn interop_sample() {
     let data: Vec<u8> = (0..(FRAME + 12345)).map(|i| (i * 7 % 256) as u8).collect();
     let mut stream = e.frame(&data[..FRAME], false);
     stream.extend(e.frame(&data[FRAME..], true));
-    std::fs::write(dir.join("private.bin"), &*browser.to_bytes()).unwrap();
+    std::fs::write(dir.join("private.bin"), *browser.to_bytes()).unwrap();
     std::fs::write(dir.join("public.b64"), browser.public_b64()).unwrap();
     std::fs::write(
         dir.join("header.json"),
