@@ -110,6 +110,8 @@ Versions are pinned in `ui/package-lock.json`.
 | blake2 | 0.10.6 | MIT OR Apache-2.0 |
 | blake3 | 1.8.7 | CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception |
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 |
+| boreal | 1.4.0 | MIT OR Apache-2.0 |
+| boreal-parser | 1.2.0 | MIT OR Apache-2.0 |
 | bumpalo | 3.20.4 | MIT OR Apache-2.0 |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT |
 | byteorder | 1.5.0 | Unlicense OR MIT |
@@ -123,6 +125,7 @@ Versions are pinned in `ui/package-lock.json`.
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 |
 | clap_derive | 4.6.9 | MIT OR Apache-2.0 |
 | clap_lex | 1.1.2 | MIT OR Apache-2.0 |
+| codespan-reporting | 0.13.1 | Apache-2.0 |
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
 | const-oid | 0.9.6 | Apache-2.0 OR MIT |
 | constant_time_eq | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
@@ -228,6 +231,7 @@ Versions are pinned in `ui/package-lock.json`.
 | num-conv | 0.2.2 | MIT OR Apache-2.0 |
 | num-integer | 0.1.47 | MIT OR Apache-2.0 |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
+| object | 0.40.0 | Apache-2.0 OR MIT |
 | oid-registry | 0.7.1 | MIT OR Apache-2.0 |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 |
@@ -271,6 +275,7 @@ Versions are pinned in `ui/package-lock.json`.
 | serde_json | 1.0.154 | MIT OR Apache-2.0 |
 | serde_path_to_error | 0.1.20 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
+| sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | sharded-slab | 0.1.7 | MIT |
 | shlex | 2.0.1 | MIT OR Apache-2.0 |
@@ -292,6 +297,7 @@ Versions are pinned in `ui/package-lock.json`.
 | synstructure | 0.13.2 | MIT |
 | synstructure | 0.14.0 | MIT |
 | tempfile | 3.27.0 | MIT OR Apache-2.0 |
+| termcolor | 1.4.1 | Unlicense OR MIT |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
@@ -301,6 +307,7 @@ Versions are pinned in `ui/package-lock.json`.
 | time-core | 0.1.9 | MIT OR Apache-2.0 |
 | time-macros | 0.2.32 | MIT OR Apache-2.0 |
 | tinystr | 0.8.5 | Unicode-3.0 |
+| tlsh2 | 1.1.0 | Apache-2.0 OR BSD-3-Clause |
 | tokio | 1.54.1 | MIT |
 | tokio-macros | 2.7.2 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
@@ -318,6 +325,7 @@ Versions are pinned in `ui/package-lock.json`.
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | unicase | 2.10.0 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| unicode-width | 0.2.3 | MIT OR Apache-2.0 |
 | universal-hash | 0.5.1 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
 | ureq | 2.12.1 | MIT OR Apache-2.0 |
@@ -337,6 +345,7 @@ Versions are pinned in `ui/package-lock.json`.
 | webpki-roots | 0.26.11 | CDLA-Permissive-2.0 |
 | webpki-roots | 1.0.12 | CDLA-Permissive-2.0 |
 | widestring | 1.2.1 | MIT OR Apache-2.0 |
+| winapi-util | 0.1.11 | Unlicense OR MIT |
 | windows | 0.62.2 | MIT OR Apache-2.0 |
 | windows-collections | 0.3.2 | MIT OR Apache-2.0 |
 | windows-core | 0.62.2 | MIT OR Apache-2.0 |
