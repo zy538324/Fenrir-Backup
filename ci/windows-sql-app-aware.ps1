@@ -76,7 +76,22 @@ foreach ($who in @("NT SERVICE\$svcName", $runsAs, $sqlSays, '*S-1-1-0') | Where
 }
 icacls "${s}:\sql" /reset /T | Out-Host
 
-Sql "CREATE DATABASE fenrirci ON (NAME = fenrirci, FILENAME = '${s}:\sql\fenrirci.mdf') LOG ON (NAME = fenrirci_log, FILENAME = '${s}:\sql\fenrirci_log.ldf');" | Out-Null
+$create = "CREATE DATABASE fenrirci ON (NAME = fenrirci, FILENAME = '${s}:\sql\fenrirci.mdf') LOG ON (NAME = fenrirci_log, FILENAME = '${s}:\sql\fenrirci_log.ldf');"
+sqlcmd -S $Instance -E -b -Q $create | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    # Diagnose from inside SQL Server's own process: who it is, and whether it can write on the data disk at all.
+    Write-Host '  SQL Server could not create its files on the data disk; what its process can do:'
+    sqlcmd -S $Instance -E -Q "EXEC sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE;" | Out-Null
+    sqlcmd -S $Instance -E -Q "EXEC xp_cmdshell 'whoami /all'; EXEC xp_cmdshell 'echo x> ${s}:\sql\probe.txt && echo WROTE-DATA-DISK'; EXEC xp_cmdshell 'echo x> %TEMP%\probe.txt && echo WROTE-TEMP'" | Out-Host
+    fsutil fsinfo volumeinfo "${s}:" | Out-Host
+    # The test is about the VSS SQL writer, not the service account: run SQL Server as LocalSystem and retry.
+    Write-Host '  retrying with SQL Server running as LocalSystem'
+    sc.exe config $svcName obj= LocalSystem | Out-Host
+    Restart-Service $svcName -Force
+    Start-Sleep -Seconds 5
+    Restart-Service SQLWriter -Force -ErrorAction SilentlyContinue
+    Sql $create | Out-Null
+}
 Sql "ALTER DATABASE fenrirci SET RECOVERY FULL;" | Out-Null
 Sql "CREATE TABLE fenrirci.dbo.t (id INT PRIMARY KEY, v NVARCHAR(100)); INSERT INTO fenrirci.dbo.t SELECT TOP 5000 ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 'row before the backup' FROM sys.all_objects a CROSS JOIN sys.all_objects b;" | Out-Null
 Check ((Sql "SELECT COUNT(*) FROM fenrirci.dbo.t") -eq '5000') 'the database has 5000 rows'
