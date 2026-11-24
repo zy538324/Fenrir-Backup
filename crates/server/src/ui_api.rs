@@ -74,6 +74,8 @@ pub fn routes() -> Router<Shared> {
         .route("/api/images/{id}/browse", post(browse_files))
         .route("/api/repositories/{id}/gateway", post(set_gateway))
         .route("/api/images/{id}/restore-files", post(restore_files))
+        .route("/api/images/{id}/download-files", post(download_files))
+        .route("/api/jobs/{id}/download", get(get_download))
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/export", get(export_config))
         .route("/api/settings/test-notification", post(test_notification))
@@ -2437,6 +2439,89 @@ struct RestoreFilesReq {
     keep_structure: bool,
     #[serde(default)]
     conflict: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DownloadFilesReq {
+    #[serde(default)]
+    agent_id: Option<String>,
+    disk: u32,
+    partition: u32,
+    paths: Vec<String>,
+    /// The browser's one-time X25519 public key (base64).
+    recipient: String,
+}
+
+/// Send chosen files to this browser, encrypted for its one-time key: the
+/// machine restores and encrypts them, the server only relays ciphertext.
+async fn download_files(
+    State(st): State<Shared>,
+    a: Admin,
+    Path(id): Path<String>,
+    Json(r): Json<DownloadFilesReq>,
+) -> ApiResult<Json<Value>> {
+    let image_id: Uuid = id.parse().map_err(|_| ApiError::bad("invalid image id"))?;
+    let (agent, name, repo, _) = file_agent(&st, &image_id.to_string(), r.agent_id.as_deref())?;
+    let volume = volume_of(Some(r.disk), Some(r.partition))?.expect("both given");
+    let paths: Vec<String> = r
+        .paths
+        .into_iter()
+        .filter(|p| !p.trim_matches('/').is_empty())
+        .collect();
+    if paths.is_empty() || paths.len() > 1000 || paths.iter().any(|p| p.len() > 4000) {
+        return Err(ApiError::bad("choose 1 to 1000 files or folders"));
+    }
+    use base64::Engine as _;
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(r.recipient.trim())
+        .map_err(|_| ApiError::bad("recipient must be a base64 X25519 public key"))?;
+    if key.len() != 32 {
+        return Err(ApiError::bad(
+            "recipient must be a 32-byte X25519 public key",
+        ));
+    }
+    let kind = JobKind::DownloadFiles {
+        image_id,
+        volume,
+        paths: paths.clone(),
+        recipient: r.recipient.trim().to_string(),
+    };
+    let job = insert_job(&st, &agent, &kind, Some(&repo), None, &a.username)?;
+    audit(
+        &st.db(),
+        &a.username,
+        "files.download_requested",
+        &format!("{} item(s) of image {image_id} on {name}", paths.len()),
+    );
+    Ok(Json(json!({ "id": job })))
+}
+
+/// The encrypted stream of a finished download (only this browser's key
+/// opens it).
+async fn get_download(
+    State(st): State<Shared>,
+    _a: Admin,
+    Path(id): Path<String>,
+) -> ApiResult<axum::response::Response> {
+    let id = uuid_param(&id)?;
+    let state: String = st
+        .db()
+        .query_row("SELECT state FROM jobs WHERE id = ?1", params![id], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .ok_or_else(|| ApiError::not_found("no such job"))?;
+    if state != "succeeded" && state != "warning" {
+        return Err(ApiError::conflict("the download is not ready"));
+    }
+    let path = st.cfg.downloads_dir.join(format!("{id}.bin"));
+    let bytes =
+        std::fs::read(&path).map_err(|_| ApiError::not_found("the download has expired"))?;
+    Ok(axum::response::Response::builder()
+        .header("Content-Type", "application/octet-stream")
+        .header("Cache-Control", "no-store")
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| ApiError::internal(e.to_string()))?)
 }
 
 /// Copy chosen files and folders out of a backup into a folder on a machine.

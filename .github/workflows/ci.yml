@@ -356,6 +356,23 @@ jobs:
       - name: run
         run: sudo ci/e2e-grow-clone.sh /tmp/e2e-grow target/release/fenrir-backup
 
+  # The browser decrypts file downloads the agent encrypted (same key
+  # agreement, derivation and frames; docs/design/file-download.md).
+  download-interop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --prefix ui
+      - name: Rust encrypts, the browser code decrypts
+        run: |
+          d=$(mktemp -d)
+          FENRIR_INTEROP_DIR=$d cargo test --locked -p protocol interop_sample
+          node ci/download-interop.mjs "$d" ui/src/seal.ts
+
   # Server bundles: fenrir-server + web UI + agent builds for every
   # platform and the recovery ISO, ready to unpack and run. SHA256SUMS covers
   # every file.

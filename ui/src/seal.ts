@@ -68,3 +68,56 @@ export function newRecoveryKey(): { repoId: string; slotId: string; fileContents
   };
   return { repoId, slotId, fileContents: JSON.stringify(file, null, 2) + "\n" };
 }
+
+/** Open a download's sealed content key and decrypt its frames (docs/design/file-download.md). */
+export async function decryptDownload(privateKey: CryptoKey, publicKey: Uint8Array<ArrayBuffer>, header: { sealed_key: Sealed }, stream: ArrayBuffer): Promise<Uint8Array<ArrayBuffer>> {
+  const subtle = crypto.subtle;
+  const s = header.sealed_key;
+  const epk = unb64(s.epk);
+  const eph = await subtle.importKey("raw", epk, { name: "X25519" }, false, []);
+  const shared = await subtle.deriveBits({ name: "X25519", public: eph }, privateKey, 256);
+  const salt = new Uint8Array(64);
+  salt.set(epk, 0);
+  salt.set(publicKey, 32);
+  const hk = await subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  const k = await subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt, info: enc.encode("fenrir-agent-seal-v1") }, hk, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const raw = new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv: unb64(s.nonce) }, k, unb64(s.ct)));
+  const key = await subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["decrypt"]);
+  const view = new DataView(stream);
+  const parts: Uint8Array[] = [];
+  let pos = 0;
+  let i = 0;
+  let total = 0;
+  while (pos < stream.byteLength) {
+    if (pos + 4 > stream.byteLength) throw new Error("the download is incomplete");
+    const len = view.getUint32(pos);
+    if (pos + 4 + len > stream.byteLength) throw new Error("the download is incomplete");
+    const ct = new Uint8Array(stream, pos + 4, len);
+    pos += 4 + len;
+    const iv = new Uint8Array(12);
+    new DataView(iv.buffer).setBigUint64(4, BigInt(i));
+    const last = pos === stream.byteLength ? 1 : 0;
+    const p = new Uint8Array(await subtle.decrypt({ name: "AES-GCM", iv, additionalData: new Uint8Array([last]) }, key, ct));
+    parts.push(p);
+    total += p.length;
+    i++;
+  }
+  if (i === 0) throw new Error("the download is empty");
+  const out = new Uint8Array(new ArrayBuffer(total));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
+
+/**
+ * A one-time key pair for receiving files from a machine (docs/design/file-download.md). Only the public key
+ * leaves the browser; the machine seals a content key to it and encrypts the files in frames.
+ */
+export async function downloadKey(): Promise<{ publicB64: string; decrypt: (header: { sealed_key: Sealed }, stream: ArrayBuffer) => Promise<Uint8Array<ArrayBuffer>> }> {
+  const pair = (await crypto.subtle.generateKey({ name: "X25519" }, false, ["deriveBits"])) as CryptoKeyPair;
+  const pk = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  return { publicB64: b64(pk), decrypt: (header, stream) => decryptDownload(pair.privateKey, pk, header, stream) };
+}

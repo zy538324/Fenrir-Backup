@@ -13,11 +13,73 @@ use crate::db::audit;
 use crate::{anomaly, notify};
 use crate::{now, sha256_hex, ApiError, ApiResult, Shared};
 
+/// Most bytes one encrypted download may hold (the agent's limit, framed).
+pub const DOWNLOAD_MAX: u64 = (4 << 30) + (64 << 20);
+
+#[derive(serde::Deserialize)]
+struct UploadAt {
+    offset: u64,
+}
+
+/// The agent appends to the encrypted stream of its `download_files` job.
+/// Uploads carry their offset so a retried request is harmless.
+async fn upload_download(
+    State(st): State<Shared>,
+    agent: AgentAuth,
+    Path(id): Path<Uuid>,
+    axum::extract::Query(q): axum::extract::Query<UploadAt>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<serde_json::Value>> {
+    let (owner, state, kind_json): (String, String, String) = st.db().query_row(
+        "SELECT agent_id, state, kind_json FROM jobs WHERE id = ?1",
+        params![id.to_string()],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    if owner != agent.agent_id {
+        return Err(ApiError::forbidden("job belongs to another agent"));
+    }
+    if !matches!(
+        serde_json::from_str::<JobKind>(&kind_json),
+        Ok(JobKind::DownloadFiles { .. })
+    ) || JobState::parse(&state).is_some_and(|s| s.is_final())
+    {
+        return Err(ApiError::conflict("not a running download"));
+    }
+    let dir = &st.cfg.downloads_dir;
+    std::fs::create_dir_all(dir).map_err(|e| ApiError::internal(e.to_string()))?;
+    let path = dir.join(format!("{id}.bin"));
+    let have = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let end = q.offset + body.len() as u64;
+    if end > DOWNLOAD_MAX {
+        return Err(ApiError::bad("the download is too large"));
+    }
+    if q.offset > have {
+        return Err(ApiError::conflict(format!("expected offset {have}")));
+    }
+    if end > have {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        f.seek(SeekFrom::Start(q.offset))
+            .and_then(|_| f.write_all(&body))
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+    }
+    Ok(Json(serde_json::json!({ "have": end.max(have) })))
+}
+
 pub fn routes() -> Router<Shared> {
     Router::new()
         .route("/api/agent/enroll", post(enroll))
         .route("/api/agent/heartbeat", post(heartbeat))
         .route("/api/agent/jobs/{id}/update", post(update_job))
+        .route(
+            "/api/agent/jobs/{id}/download",
+            post(upload_download).layer(axum::extract::DefaultBodyLimit::max(16 << 20)),
+        )
 }
 
 /// A dispatched job the agent stopped mentioning for this long is

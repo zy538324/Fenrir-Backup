@@ -49,6 +49,8 @@ pub struct Config {
     pub ui_dir: Option<PathBuf>,
     pub tls: Option<TlsInfo>,
     pub poll_seconds: u32,
+    /// Encrypted file downloads waiting for the browser (kept 24 hours).
+    pub downloads_dir: PathBuf,
 }
 
 pub struct AppState {

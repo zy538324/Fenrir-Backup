@@ -142,6 +142,26 @@ pub fn run_due(state: &Shared) -> rusqlite::Result<usize> {
 
 /// Recovery sessions (machines booted from recovery media) not seen for a
 /// week are removed, with any access given to them.
+/// Delete encrypted downloads older than `max_age` seconds.
+pub fn purge_downloads(dir: &std::path::Path, max_age: u64) -> usize {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age.as_secs() >= max_age);
+        if old && std::fs::remove_file(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 pub fn expire_recovery_sessions(state: &Shared) -> rusqlite::Result<usize> {
     let db = state.db();
     let old: Vec<String> = db
@@ -354,6 +374,7 @@ pub async fn scheduler_loop(state: Shared) {
             if let Err(e) = run_boot_checks(&s) {
                 tracing::error!(error = %e, "boot verification scheduler");
             }
+            purge_downloads(&s.cfg.downloads_dir, 24 * 3600);
             if let Err(e) = expire_recovery_sessions(&s) {
                 tracing::error!(error = %e, "recovery session cleanup");
             }

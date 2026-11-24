@@ -37,6 +37,7 @@ impl T {
                     pinned: true,
                 }),
                 poll_seconds: 15,
+                downloads_dir: dir.path().join("downloads"),
             },
         )
         .unwrap();
@@ -2205,5 +2206,119 @@ async fn existing_repository_is_adopted_and_config_exported() {
     assert!(
         !text.contains("sealed") && !text.contains("passphrase"),
         "no secrets: {text}"
+    );
+}
+
+#[tokio::test]
+async fn files_download_through_the_server_encrypted_for_the_browser() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    let caps: Vec<&str> = CAPS.iter().copied().chain(["restore_files"]).collect();
+    heartbeat(&mut t, &token, &caps, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+    t.post(
+        &format!("/api/agents/{agent_id}/jobs"),
+        json!({ "kind": { "type": "backup_disks", "paths": ["/dev/sda"] }, "repository_id": repo }),
+    )
+    .await;
+    let im = image(1, 30, 30 << 20, 12 << 20);
+    complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "images": [im] }),
+    )
+    .await
+    .unwrap();
+
+    let browser = AgentKey::generate();
+    let url = format!("/api/images/{}/download-files", im.image_id);
+    let (s, _) = t
+        .post(
+            &url,
+            json!({ "disk": 0, "partition": 2, "paths": ["/Users/ann"], "recipient": "not-a-key" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, j) = t
+        .post(&url, json!({ "disk": 0, "partition": 2, "paths": ["/Users/ann"], "recipient": browser.public_b64() }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+    let job = j["id"].as_str().unwrap().to_string();
+    let hb = heartbeat(&mut t, &token, &caps, None).await;
+    assert!(
+        matches!(&hb.jobs[0].kind, JobKind::DownloadFiles { recipient, .. } if *recipient == browser.public_b64())
+    );
+
+    // The agent uploads the stream in parts; a retried part is harmless, a gap is refused.
+    let up = format!("/api/agent/jobs/{job}/download?offset=");
+    let (a, b) = (vec![1u8; 1000], vec![2u8; 500]);
+    assert_eq!(
+        raw(&t.st, "POST", &format!("{up}0"), &token, a.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        raw(&t.st, "POST", &format!("{up}0"), &token, a.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        raw(&t.st, "POST", &format!("{up}5000"), &token, b.clone())
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        raw(&t.st, "POST", &format!("{up}1000"), &token, b.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // Another machine cannot write to it.
+    let (_, other) = enroll(&mut t, &AgentKey::generate(), "machine-2").await;
+    assert_eq!(
+        raw(&t.st, "POST", &format!("{up}1500"), &other, b.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    // Not before the job finishes; then the stream as uploaded.
+    let (s, _) = t.get(&format!("/api/jobs/{job}/download")).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    t.agent(
+        &format!("/api/agent/jobs/{job}/update"),
+        &token,
+        json!({ "state": "succeeded", "result": { "download": {} } }),
+    )
+    .await;
+    let (s, _, body) = t
+        .req(
+            "GET",
+            &format!("/api/jobs/{job}/download"),
+            None,
+            None,
+            false,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let body = body.expect("binary body").into_bytes();
+    let stored = std::fs::read(t.st.cfg.downloads_dir.join(format!("{job}.bin"))).unwrap();
+    assert_eq!(stored, [a, b].concat());
+    assert_eq!(body.len(), stored.len());
+    // A finished download takes no more uploads.
+    assert_eq!(
+        raw(&t.st, "POST", &format!("{up}1500"), &token, vec![3u8])
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        server::schedule::purge_downloads(&t.st.cfg.downloads_dir, 0),
+        1
     );
 }

@@ -112,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
             ui_dir: ui_dir.clone(),
             tls: tls.as_ref().map(|t| t.info.clone()),
             poll_seconds: a.poll_seconds.clamp(5, 300),
+            downloads_dir: a.data_dir.join("downloads"),
         },
     )?;
     tokio::spawn(schedule::scheduler_loop(state.clone()));

@@ -2,7 +2,8 @@
 // disk. A machine with access to the repository reads the backup with the key it was given; this server only relays
 // folder listings (kept a day) and never sees file contents.
 import { useEffect, useMemo, useState } from "react";
-import { File, Folder, FolderOpen, Link2, Loader2, RotateCcw } from "lucide-react";
+import { Download, File, Folder, FolderOpen, Link2, Loader2, RotateCcw } from "lucide-react";
+import { downloadKey } from "../seal";
 import { api, type Agent, type Image, type Job, type Repository } from "../api";
 import { bytes, when } from "../format";
 import { Field, Modal, Notice, useApi, useToast } from "../ui";
@@ -181,11 +182,40 @@ function RestoreFiles({ image, volume, paths, reader, onClose }: { image: Image;
       setState({ err: (e as Error).message });
     }
   };
+  // Download to this browser: the machine encrypts the files for a key made here; the server relays ciphertext.
+  const download = async () => {
+    setState({ busy: true, progress: "Preparing…" });
+    try {
+      const k = await downloadKey();
+      const { id } = await api.post<{ id: string }>(`/api/images/${image.image_id}/download-files`, {
+        agent_id: agent!.id, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64,
+      });
+      const job = await waitFast(id, (j) => setState({ busy: true, progress: j.progress ? `${j.progress.phase} ${j.progress.message ?? ""}` : undefined }), 24 * 3600);
+      if (job.state !== "succeeded" && job.state !== "warning") throw new Error(job.error || "the machine could not prepare the files");
+      const header = (job.result as { download: { sealed_key: import("../seal").Sealed; file_name: string } }).download;
+      setState({ busy: true, progress: "Downloading and decrypting…" });
+      const resp = await fetch(`/api/jobs/${id}/download`, { credentials: "same-origin" });
+      if (!resp.ok) throw new Error(`download failed (${resp.status})`);
+      const plain = await k.decrypt(header, await resp.arrayBuffer());
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([plain], { type: "application/x-tar" }));
+      a.download = header.file_name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+      setState({});
+      toast("ok", `Downloaded ${header.file_name}`);
+    } catch (e) {
+      setState({ err: (e as Error).message });
+    }
+  };
   const r = state.job?.result as Report | undefined;
   return (
     <Modal title={`Restore ${paths.length} item${paths.length === 1 ? "" : "s"}`} onClose={() => onClose(!!state.job)}
       foot={state.job ? <button className="btn primary" onClick={() => onClose(true)}>Done</button>
-        : <button className={`btn ${conflict === "overwrite" ? "danger" : "primary"}`} disabled={!agent || state.busy || !target} onClick={go}>{state.busy ? <Loader2 size={14} className="spin" /> : <RotateCcw size={14} />} Restore</button>}>
+        : <>
+          <button className="btn" disabled={!agent || state.busy} onClick={download} title="The machine encrypts the files for this browser; the server only relays them (up to 4 GiB, as a .tar)"><Download size={14} /> Download here</button>
+          <button className={`btn ${conflict === "overwrite" ? "danger" : "primary"}`} disabled={!agent || state.busy || !target} onClick={go}>{state.busy ? <Loader2 size={14} className="spin" /> : <RotateCcw size={14} />} Restore</button>
+        </>}>
       <div className="mono small" style={{ maxHeight: 90, overflowY: "auto", marginBottom: 10 }}>{paths.map((p) => <div key={p}>{p}</div>)}</div>
       {!state.job && (
         <div className="stack tight">
