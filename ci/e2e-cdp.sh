@@ -42,7 +42,7 @@ DEV=$(jq -r .result.device "$W/enable.json")
 [ "$DEV" = /dev/mapper/fenrir-cdp-e2e ]
 mkdir -p "$MNT" && mount "$DEV" "$MNT"
 
-B --json cdp run --name e2e --mark-every 1 --rotate-every 8 --for 40 > "$W/run.json" &
+timeout 300 "$CLI" --repo "$W/repo" --json cdp run --name e2e --mark-every 1 --rotate-every 8 --for 40 > "$W/run.json" &
 RUN=$!
 sleep 6   # the base image first
 
@@ -51,7 +51,7 @@ version 1
 version 2
 sleep 9   # a journal swap between versions 2 and 3
 version 3
-wait "$RUN"; RUN=
+wait "$RUN" || [ $? = 10 ]; RUN=
 jq . "$W/run.json"
 [ "$(jq '.result.cycles | length' "$W/run.json")" -ge 4 ] || { echo "expected several journal swaps" >&2; exit 1; }
 jq -e '.result.cycles[0].base_image' "$W/run.json" >/dev/null
