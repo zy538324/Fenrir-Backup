@@ -7,3 +7,4 @@
 *.img
 compose.override.yaml
 /agents/
+__pycache__/
