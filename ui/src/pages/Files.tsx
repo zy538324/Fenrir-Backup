@@ -18,7 +18,7 @@ const label = (v: Volume) => v.mount_points[0] || v.name || `Disk ${v.disk + 1},
 const join = (dir: string, name: string) => `${dir.replace(/\/+$/, "")}/${name}`;
 
 /** Poll a job quickly: browsing is interactive (the machine polls every second meanwhile). */
-async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180, base = "/api"): Promise<Job> {
+export async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180, base = "/api"): Promise<Job> {
   const until = Date.now() + seconds * 1000;
   while (Date.now() < until) {
     await new Promise((r) => setTimeout(r, 700));

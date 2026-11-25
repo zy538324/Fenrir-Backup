@@ -1740,8 +1740,16 @@ async fn set_legal_hold(
                 "say why the backup is held (a case or matter reference), 3 to 500 characters",
             ));
         }
-        if current.is_none() {
-            let v = json!({ "reason": reason, "by": a.username, "at": now() });
+        let cur: Value = current
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(Value::Null);
+        if current.is_none() || cur["case_only"] == true {
+            // A hold by hand on top of an eDiscovery case's: kept when the case closes.
+            let mut v = json!({ "reason": reason, "by": a.username, "at": now() });
+            if cur["cases"].is_array() {
+                v["cases"] = cur["cases"].clone();
+            }
             db.execute(
                 "UPDATE images SET legal_hold_json = ?1 WHERE image_id = ?2",
                 params![v.to_string(), id],
@@ -1762,9 +1770,18 @@ async fn set_legal_hold(
         if !crate::auth::verify_password(&r.password, &hash) {
             return Err(ApiError::bad("enter your password to release the hold"));
         }
+        let mut cur: Value = current
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(Value::Null);
+        // An open case's hold stays until the case is closed.
+        let keep = cur["cases"].as_array().is_some_and(|c| !c.is_empty());
+        if keep {
+            cur["case_only"] = json!(true);
+        }
         db.execute(
-            "UPDATE images SET legal_hold_json = NULL WHERE image_id = ?1",
-            params![id],
+            "UPDATE images SET legal_hold_json = ?1 WHERE image_id = ?2",
+            params![keep.then(|| cur.to_string()), id],
         )?;
         audit(
             &db,

@@ -510,6 +510,9 @@ async fn update_job(
                         .transpose()?
                 ],
             )?;
+            if inserted == 1 {
+                crate::cases::hold_new_image(&db, &im.image_id.to_string(), &im.machine_id)?;
+            }
             if inserted == 1 && is_disk_backup {
                 if let Some(reason) = check_anomaly(&db, rid, im)? {
                     let what = im.vm_name.clone().unwrap_or_else(|| im.hostname.clone());
@@ -663,6 +666,28 @@ async fn update_job(
         }
     }
 
+    // eDiscovery: a case's search or export finished.
+    if u.state.is_final() {
+        let by: Option<String> = db
+            .query_row(
+                "SELECT requested_by FROM jobs WHERE id = ?1",
+                params![id.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(by) = by.filter(|b| b.starts_with("case:")) {
+            crate::cases::record_job(
+                &db,
+                &st,
+                &id.to_string(),
+                &by,
+                u.state.as_str(),
+                u.result.as_ref(),
+                u.error.as_deref(),
+            )?;
+        }
+    }
     // Storage health checks: the result goes on the repository; a newly
     // failing check raises an alert.
     if let (Some(JobKind::CheckAccess { .. }), Some(rid), true) =

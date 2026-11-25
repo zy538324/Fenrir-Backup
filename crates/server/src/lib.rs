@@ -7,6 +7,7 @@
 pub mod agent_api;
 pub mod anomaly;
 pub mod auth;
+pub mod cases;
 pub mod db;
 pub mod downloads;
 pub mod extras;
@@ -172,6 +173,7 @@ pub fn router(state: Shared) -> Router {
         .merge(agent_api::routes())
         .merge(extras::routes())
         .merge(selfservice::routes())
+        .merge(cases::routes())
         .merge(gateway::routes())
         .merge(downloads::routes());
     let mut app = Router::new()

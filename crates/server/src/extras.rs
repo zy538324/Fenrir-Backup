@@ -810,10 +810,27 @@ async fn hold_machine(
     }
     let db = st.db();
     let v = json!({ "reason": reason, "by": a.username, "at": now() }).to_string();
-    let n = db.execute(
+    let mut n = db.execute(
         "UPDATE images SET legal_hold_json = ?1 WHERE machine_id = ?2 AND legal_hold_json IS NULL",
         params![v, r.machine_id],
     )?;
+    // Backups an eDiscovery case holds get this hold too (kept when the case closes).
+    let case_held: Vec<(String, String)> = db
+        .prepare("SELECT image_id, legal_hold_json FROM images WHERE machine_id = ?1 AND legal_hold_json IS NOT NULL")?
+        .query_map(params![r.machine_id], |x| Ok((x.get(0)?, x.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    for (img, cur) in case_held {
+        let cur: Value = serde_json::from_str(&cur).unwrap_or_default();
+        if cur["case_only"] == true {
+            let mut nv = json!({ "reason": reason, "by": a.username, "at": now() });
+            nv["cases"] = cur["cases"].clone();
+            db.execute(
+                "UPDATE images SET legal_hold_json = ?1 WHERE image_id = ?2",
+                params![nv.to_string(), img],
+            )?;
+            n += 1;
+        }
+    }
     let total: i64 = db.query_row(
         "SELECT COUNT(*) FROM images WHERE machine_id = ?1",
         params![r.machine_id],

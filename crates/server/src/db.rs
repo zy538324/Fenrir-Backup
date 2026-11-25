@@ -235,6 +235,24 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin';
     ALTER TABLE users ADD COLUMN machines_json TEXT;
     "#,
+    // 15: eDiscovery cases (docs/design/ediscovery.md).
+    r#"
+    CREATE TABLE cases (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        matter TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'open',
+        custodians_json TEXT NOT NULL DEFAULT '[]',
+        hold_new INTEGER NOT NULL DEFAULT 1,
+        searches_json TEXT NOT NULL DEFAULT '[]',
+        exports_json TEXT NOT NULL DEFAULT '[]',
+        created_by TEXT NOT NULL,
+        created INTEGER NOT NULL,
+        closed_by TEXT,
+        closed INTEGER
+    );
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

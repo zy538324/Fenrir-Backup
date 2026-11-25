@@ -3100,3 +3100,207 @@ async fn restore_users_see_and_restore_only_their_machines() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+async fn ediscovery_case_holds_searches_exports_and_chain_of_custody() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (agent_id, token) = enroll(&mut t, &key, "machine-1").await;
+    let caps: Vec<&str> = CAPS
+        .iter()
+        .copied()
+        .chain(["search_files", "ediscovery"])
+        .collect();
+    heartbeat(&mut t, &token, &caps, None).await;
+    let repo = ready_repo(&mut t, &key, &agent_id, &token).await;
+    heartbeat(&mut t, &token, &caps, None).await;
+    let backup = |n: u64, machine: &str| {
+        let mut im = image(n, 30, 30 << 20, 12 << 20);
+        im.machine_id = machine.into();
+        im
+    };
+    let first = backup(1, "machine-1");
+    let saas = backup(2, "saas:m365:contoso");
+    let (s, v) = t
+        .post(
+            &format!("/api/agents/{agent_id}/jobs"),
+            json!({ "kind": { "type": "backup_disks", "paths": ["/dev/sdb"] }, "repository_id": repo }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "images": [first, saas] }),
+    )
+    .await
+    .unwrap();
+    while complete_next_with(&mut t, &token, &caps, json!({ "state": "succeeded" }))
+        .await
+        .is_some()
+    {}
+
+    let (s, _) = t
+        .post(
+            "/api/cases",
+            json!({ "name": "Smith v Acme", "custodians": [{ "machine_id": "nobody" }] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, case) = t
+        .post("/api/cases", json!({ "name": "Smith v Acme", "matter": "M-14", "custodians": [
+            { "machine_id": "machine-1" }, { "machine_id": "saas:m365:contoso", "accounts": ["ann@contoso.com"] }] }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{case}");
+    assert_eq!(case["held_backups"], 2);
+    let id = case["id"].as_str().unwrap().to_string();
+
+    // A later backup of a custodian is held too.
+    let later = backup(3, "machine-1");
+    let later_id = later.image_id.to_string();
+    t.post(
+        &format!("/api/agents/{agent_id}/jobs"),
+        json!({ "kind": { "type": "backup_disks", "paths": ["/dev/sdb"] }, "repository_id": repo }),
+    )
+    .await;
+    complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "images": [later] }),
+    )
+    .await
+    .unwrap();
+    while complete_next_with(&mut t, &token, &caps, json!({ "state": "succeeded" }))
+        .await
+        .is_some()
+    {}
+    let (_, c) = t.get(&format!("/api/cases/{id}")).await;
+    assert_eq!(c["held_backups"], 3);
+
+    // Search: the matches are kept, only the case's accounts of the tenant.
+    let (s, v) = t
+        .post(
+            &format!("/api/cases/{id}/search"),
+            json!({ "query": "budget" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let hits = json!({ "hits": [
+        { "image_id": first.image_id, "path": "/home/ann/budget.xlsx", "size": 10, "folder": false, "volume": { "disk": 1, "partition": 1 } },
+        { "image_id": saas.image_id, "account": "ann@contoso.com", "kind": "mail", "path": "Inbox/Budget", "size": 5 },
+        { "image_id": saas.image_id, "account": "bob@contoso.com", "kind": "mail", "path": "Inbox/Budget", "size": 5 }] });
+    let spec = complete_next_with(
+        &mut t,
+        &token,
+        &caps,
+        json!({ "state": "succeeded", "result": hits }),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(spec.kind, JobKind::SearchFiles { .. }));
+    let (_, c) = t.get(&format!("/api/cases/{id}")).await;
+    assert_eq!(c["searches"][0]["state"], "done");
+    assert_eq!(c["searches"][0]["hits"].as_array().unwrap().len(), 2);
+
+    // Export: SaaS items for this browser, with the hashes recorded.
+    let browser = AgentKey::generate();
+    let (s, _) = t
+        .post(&format!("/api/cases/{id}/export"), json!({ "image_id": saas.image_id, "accounts": ["bob@contoso.com"], "recipient": browser.public_b64() }))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, ex) = t
+        .post(&format!("/api/cases/{id}/export"), json!({ "image_id": saas.image_id, "kinds": ["mail"], "recipient": browser.public_b64() }))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{ex}");
+    let hb = heartbeat(&mut t, &token, &caps, None).await;
+    let JobKind::ExportSaas {
+        accounts, kinds, ..
+    } = &hb.jobs[0].kind
+    else {
+        panic!("{:?}", hb.jobs[0].kind)
+    };
+    assert_eq!(
+        (accounts.clone(), kinds.clone()),
+        (
+            vec!["ann@contoso.com".to_string()],
+            vec!["mail".to_string()]
+        )
+    );
+    let stream = b"ciphertext".repeat(20);
+    let (s, _, _) = raw(
+        &t.st,
+        "POST",
+        &format!("/api/agent/jobs/{}/download?offset=0", hb.jobs[0].id),
+        &token,
+        stream.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    t.agent(&format!("/api/agent/jobs/{}/update", hb.jobs[0].id), &token,
+            json!({ "state": "succeeded", "result": { "download": {}, "manifest_sha256": "ab".repeat(32), "manifest_files": 3 } }))
+        .await;
+    let eid = ex["id"].as_str().unwrap();
+    let (s, _) = t
+        .post(
+            &format!("/api/cases/{id}/exports/{eid}/receipt"),
+            json!({ "sha256": "cd".repeat(32), "bytes": 100 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, doc) = t.get(&format!("/api/cases/{id}/manifest")).await;
+    assert_eq!(s, StatusCode::OK);
+    let ex = &doc["exports"][0];
+    assert_eq!(ex["manifest_sha256"], "ab".repeat(32));
+    assert_eq!(
+        ex["ciphertext_sha256"],
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&stream))
+    );
+    assert_eq!(ex["receipts"][0]["sha256"], "cd".repeat(32));
+    assert_eq!(doc["holds"].as_array().unwrap().len(), 3);
+    let mut body = doc.clone();
+    body.as_object_mut().unwrap().remove("sha256");
+    assert_eq!(
+        doc["sha256"],
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(
+            serde_json::to_vec(&body).unwrap()
+        ))
+    );
+
+    // A hold by hand stays when the case closes; the case's own are released.
+    let (s, _) = t
+        .post(
+            &format!("/api/images/{}/legal-hold", first.image_id),
+            json!({ "hold": true, "reason": "HR matter" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = t
+        .post(
+            &format!("/api/cases/{id}/close"),
+            json!({ "password": "wrong" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, c) = t
+        .post(
+            &format!("/api/cases/{id}/close"),
+            json!({ "password": "correct horse battery" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{c}");
+    assert_eq!(c["held_backups"], 0);
+    let (_, imgs) = t.get(&format!("/api/images?repository_id={repo}")).await;
+    let hold_of = |i: &str| {
+        imgs.as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["image_id"] == i)
+            .unwrap()["legal_hold"]
+            .clone()
+    };
+    assert!(hold_of(&later_id).is_null());
+    assert_eq!(hold_of(&first.image_id.to_string())["reason"], "HR matter");
+}

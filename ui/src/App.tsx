@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Activity, Settings2, CalendarClock, Database, LayoutDashboard, LogOut, Menu, Moon, MonitorSmartphone, PlusCircle, ShieldCheck, Sun, Lock, Server, Cloud, Search } from "lucide-react";
+import { Activity, Settings2, CalendarClock, Database, LayoutDashboard, LogOut, Menu, Moon, MonitorSmartphone, PlusCircle, ShieldCheck, Sun, Lock, Server, Cloud, Search, Briefcase } from "lucide-react";
 import { api, type Overview, type Status } from "./api";
 import { Field, Link, Logo, Notice, useApi, useRoute } from "./ui";
 import { passwordStrength } from "./format";
@@ -10,6 +10,7 @@ import RepositoriesPage from "./pages/Repositories";
 import PlansPage from "./pages/Plans";
 import SourcesPage from "./pages/Sources";
 import SearchPage from "./pages/Search";
+import CasesPage from "./pages/Cases";
 import SelfServicePage from "./pages/SelfService";
 import ActivityPage from "./pages/Activity";
 import AddMachinePage from "./pages/AddMachine";
@@ -162,6 +163,7 @@ function Shell({ user, version, onSignOut }: { user: string; version: string; on
   else if (path.startsWith("/plans")) page = <PlansPage />;
   else if (path.startsWith("/apps")) page = <SourcesPage />;
   else if (path.startsWith("/search")) page = <SearchPage />;
+  else if (path.startsWith("/ediscovery")) page = <CasesPage />;
   else if (path.startsWith("/activity")) page = <ActivityPage />;
   else if (path.startsWith("/add")) page = <AddMachinePage />;
   else if (path.startsWith("/settings")) page = <SettingsPage />;
@@ -182,6 +184,7 @@ function Shell({ user, version, onSignOut }: { user: string; version: string; on
         <NavItem to="/plans" icon={<CalendarClock size={17} />}>Backup plans</NavItem>
         <NavItem to="/apps" icon={<Cloud size={17} />}>Apps & clusters</NavItem>
         <NavItem to="/search" icon={<Search size={17} />}>Search backups</NavItem>
+        <NavItem to="/ediscovery" icon={<Briefcase size={17} />}>eDiscovery</NavItem>
         <NavItem to="/repositories" icon={<Database size={17} />}>Repositories</NavItem>
         <NavItem to="/activity" icon={<Activity size={17} />}>Activity</NavItem>
         <div className="nav-sep" />
