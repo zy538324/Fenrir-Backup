@@ -116,7 +116,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release -p cli --locked
+      - run: cargo build --release -p cli -p server -p agent --locked
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx cryptography
       - name: SQL Server Express
         shell: pwsh
         run: |
@@ -132,6 +136,15 @@ jobs:
         run: |
           $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + $env:Path
           ./ci/windows-sql-app-aware.ps1 -Cli target/release/fenrir-backup.exe
+      - name: one database restored by a real agent through the server
+        shell: pwsh
+        run: |
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + $env:Path
+          python ci/e2e-sql-app-restore.py "$env:RUNNER_TEMP\sql-e2e" target/release/fenrir-server.exe target/release/fenrir-backup-agent.exe "$env:RUNNER_TEMP\fenrir-sql\repo" "ci sql passphrase"
+      - name: logs
+        if: failure()
+        shell: pwsh
+        run: Get-Content "$env:RUNNER_TEMP\sql-e2e\*.log" -Tail 80 -ErrorAction SilentlyContinue
 
   # Agent, CLI and server binaries for every platform the server offers
   # downloads for. Linux builds are static (musl) so one binary runs on
