@@ -2936,6 +2936,7 @@ pub(crate) async fn download_files(
         volume,
         paths: paths.clone(),
         recipient: r.recipient.trim().to_string(),
+        manifest: false,
     };
     let job = insert_job(&st, &agent, &kind, Some(&repo), None, &a.username)?;
     audit(

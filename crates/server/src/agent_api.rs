@@ -44,7 +44,7 @@ async fn upload_download(
     }
     if !matches!(
         serde_json::from_str::<JobKind>(&kind_json),
-        Ok(JobKind::DownloadFiles { .. })
+        Ok(JobKind::DownloadFiles { .. } | JobKind::ExportSaas { .. })
     ) || JobState::parse(&state).is_some_and(|s| s.is_final())
     {
         return Err(ApiError::conflict("not a running download"));
