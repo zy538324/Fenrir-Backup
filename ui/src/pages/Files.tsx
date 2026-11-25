@@ -18,11 +18,11 @@ const label = (v: Volume) => v.mount_points[0] || v.name || `Disk ${v.disk + 1},
 const join = (dir: string, name: string) => `${dir.replace(/\/+$/, "")}/${name}`;
 
 /** Poll a job quickly: browsing is interactive (the machine polls every second meanwhile). */
-async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180): Promise<Job> {
+async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180, base = "/api"): Promise<Job> {
   const until = Date.now() + seconds * 1000;
   while (Date.now() < until) {
     await new Promise((r) => setTimeout(r, 700));
-    const j = await api.get<Job>(`/api/jobs/${id}`);
+    const j = await api.get<Job>(`${base}/jobs/${id}`);
     if (FINAL.includes(j.state)) {
       if (j.state === "failed" || j.state === "cancelled") throw new Error(j.error || `the job was ${j.state}`);
       return j;
@@ -32,7 +32,13 @@ async function waitFast(id: string, onProgress?: (j: Job) => void, seconds = 180
   throw new Error("The machine did not answer in time. Is it online, or busy with another job (see Activity)?");
 }
 
-export function FileBrowser({ image, onClose }: { image: Image; onClose: () => void }) {
+/**
+ * Browse a backup's files. `selfService`: a restore user's view (their own
+ * machines' backups, through /api/self): files can only be downloaded here.
+ */
+export function FileBrowser({ image, onClose, selfService }: { image: Image; onClose: () => void; selfService?: boolean }) {
+  const base = selfService ? "/api/self" : "/api";
+  const toast = useToast();
   const [agentId, setAgentId] = useState<string | undefined>();
   const [agentName, setAgentName] = useState("");
   const [volumes, setVolumes] = useState<Volume[] | null>(null);
@@ -49,11 +55,11 @@ export function FileBrowser({ image, onClose }: { image: Image; onClose: () => v
     setBusy(what);
     setErr(null);
     try {
-      const r = await api.post<{ id: string; agent_id: string; agent_name: string; agent_online: boolean }>(`/api/images/${image.image_id}/browse`, { ...body, agent_id: agentId });
+      const r = await api.post<{ id: string; agent_id: string; agent_name: string; agent_online: boolean }>(`${base}/images/${image.image_id}/browse`, { ...body, agent_id: selfService ? null : agentId });
       setAgentId(r.agent_id);
       setAgentName(r.agent_name);
       if (!r.agent_online) setBusy(`${what} ${r.agent_name} is offline; waiting for it…`);
-      return (await waitFast(r.id)).result as { volumes?: Volume[]; listing?: Listing };
+      return (await waitFast(r.id, undefined, 180, base)).result as { volumes?: Volume[]; listing?: Listing };
     } catch (e) {
       setErr((e as Error).message);
       return null;
@@ -93,7 +99,21 @@ export function FileBrowser({ image, onClose }: { image: Image; onClose: () => v
       foot={volume && <>
         <span className="faint small grow">{selected.size ? `${selected.size} selected` : "Tick files or folders to restore them"}</span>
         {selected.size > 0 && <button className="btn" onClick={() => setSelected(new Set())}>Clear</button>}
-        <button className="btn primary" disabled={!selected.size} onClick={() => setRestoring(true)}><RotateCcw size={14} /> Restore {selected.size || ""}…</button>
+        {selfService
+          ? <button className="btn primary" disabled={!selected.size || !!busy} onClick={async () => {
+              if (!volume) return;
+              setBusy("Preparing the download…");
+              setErr(null);
+              try {
+                const name = await downloadToBrowser(base, image, volume, [...selected].sort(), (m) => setBusy(m));
+                if (name) toast("ok", `Downloaded ${name}`);
+              } catch (e) {
+                setErr((e as Error).message);
+              } finally {
+                setBusy(null);
+              }
+            }}><Download size={14} /> Download {selected.size || ""}</button>
+          : <button className="btn primary" disabled={!selected.size} onClick={() => setRestoring(true)}><RotateCcw size={14} /> Restore {selected.size || ""}…</button>}
       </>}>
       {err && <Notice tone="bad">{err}</Notice>}
       {busy && <div className="row small muted" style={{ gap: 6, margin: "6px 0" }}><Loader2 size={14} className="spin" /> {busy}</div>}
@@ -145,6 +165,27 @@ export function FileBrowser({ image, onClose }: { image: Image; onClose: () => v
       {restoring && volume && <RestoreFiles image={image} volume={volume} paths={[...selected].sort()} reader={agentId} onClose={(done) => { setRestoring(false); if (done) setSelected(new Set()); }} />}
     </Modal>
   );
+}
+
+/** Files from a backup, encrypted by the machine for a key made in this browser, saved as a .tar. */
+async function downloadToBrowser(base: string, image: Image, volume: Volume, paths: string[], progress: (m: string) => void): Promise<string | null> {
+  const k = await downloadKey();
+  const r = await guardInfected((allow_infected) => api.post<{ id: string }>(`${base}/images/${image.image_id}/download-files`, {
+    agent_id: null, disk: volume.disk, partition: volume.partition, paths, recipient: k.publicB64, allow_infected,
+  }));
+  if (r === null) return null;
+  const job = await waitFast(r.id, (j) => progress(j.progress ? `${j.progress.phase} ${j.progress.message ?? ""}` : "Preparing…"), 24 * 3600, base);
+  const header = (job.result as { download: { sealed_key: import("../seal").Sealed; file_name: string } }).download;
+  progress("Downloading and decrypting…");
+  const resp = await fetch(`${base}/jobs/${r.id}/download`, { credentials: "same-origin" });
+  if (!resp.ok) throw new Error(`download failed (${resp.status})`);
+  const plain = await k.decrypt(header, await resp.arrayBuffer());
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([plain], { type: "application/x-tar" }));
+  a.download = header.file_name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+  return header.file_name;
 }
 
 interface Report { target: string; files: number; bytes: number; skipped: number; renamed: number; failed: { path: string; error: string }[]; failed_total: number }

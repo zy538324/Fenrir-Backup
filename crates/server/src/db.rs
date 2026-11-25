@@ -229,6 +229,12 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE repositories ADD COLUMN media_set TEXT;
     "#,
+    // 14: self-service restores: "restore" users see only the backups of
+    // the machines they are given, and download files from them.
+    r#"
+    ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin';
+    ALTER TABLE users ADD COLUMN machines_json TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

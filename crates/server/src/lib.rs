@@ -13,6 +13,7 @@ pub mod extras;
 pub mod gateway;
 pub mod notify;
 pub mod schedule;
+pub mod selfservice;
 pub mod tls;
 pub mod ui_api;
 
@@ -170,6 +171,7 @@ pub fn router(state: Shared) -> Router {
     let api = ui_api::routes()
         .merge(agent_api::routes())
         .merge(extras::routes())
+        .merge(selfservice::routes())
         .merge(gateway::routes())
         .merge(downloads::routes());
     let mut app = Router::new()

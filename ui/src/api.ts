@@ -37,7 +37,7 @@ export const api = {
 export interface Status {
   setup_required: boolean;
   version: string;
-  user: { username: string } | null;
+  user: { username: string; role?: "admin" | "restore" } | null;
   tls: { pinned: boolean; cert_sha256: string } | null;
 }
 

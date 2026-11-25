@@ -4,6 +4,7 @@ import { api, type Delivery, type EmailSettings, type NotifySettings, type Setti
 import { when } from "../format";
 import { Field, Loading, Notice, Switch, useApi, useToast } from "../ui";
 import { ScanContentCard } from "./ScanContent";
+import { UsersCard } from "./Users";
 
 const EMPTY_EMAIL: EmailSettings = { host: "", port: 587, security: "starttls", username: "", password: "", from: "", to: [] };
 const EMPTY_HOOK: WebhookSettings = { url: "", format: "generic" };
@@ -200,6 +201,7 @@ export default function SettingsPage() {
         </div>
       )}
       <ScanContentCard />
+      <UsersCard />
     </div>
   );
 }

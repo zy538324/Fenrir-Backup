@@ -10,6 +10,7 @@ import RepositoriesPage from "./pages/Repositories";
 import PlansPage from "./pages/Plans";
 import SourcesPage from "./pages/Sources";
 import SearchPage from "./pages/Search";
+import SelfServicePage from "./pages/SelfService";
 import ActivityPage from "./pages/Activity";
 import AddMachinePage from "./pages/AddMachine";
 import SettingsPage from "./pages/Settings";
@@ -33,6 +34,7 @@ export default function App() {
   if (!status) return null;
   if (status.setup_required) return <AuthScreen mode="setup" onDone={refresh} />;
   if (!status.user) return <AuthScreen mode="login" onDone={refresh} />;
+  if (status.user.role === "restore") return <SelfServicePage onSignOut={refresh} />;
   return <Shell user={status.user.username} version={status.version} onSignOut={refresh} />;
 }
 

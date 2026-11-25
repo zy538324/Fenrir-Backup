@@ -3000,3 +3000,103 @@ async fn offline_media_set_copies_go_to_the_attached_drive() {
         (1, 0)
     );
 }
+
+#[tokio::test]
+async fn restore_users_see_and_restore_only_their_machines() {
+    let mut t = T::new();
+    setup_admin(&mut t).await;
+    let key = AgentKey::generate();
+    let (mine, token) = enroll(&mut t, &key, "anna-laptop").await;
+    let (other, other_token) = enroll(&mut t, &AgentKey::generate(), "finance-server").await;
+    let caps: Vec<&str> = CAPS.iter().copied().chain(["restore_files"]).collect();
+    heartbeat(&mut t, &token, &caps, None).await;
+    heartbeat(&mut t, &other_token, &caps, None).await;
+    let repo = ready_repo(&mut t, &key, &mine, &token).await;
+    heartbeat(&mut t, &token, &caps, None).await;
+    // One backup of each machine in the repository.
+    for (agent, machine) in [(&mine, "anna"), (&other, "finance")] {
+        let mut im = image(1, 1, 1, 1);
+        im.machine_id = machine.into();
+        t.st.db()
+            .execute(
+                "INSERT INTO images (image_id, repository_id, agent_id, machine_id, hostname, created, kind, consistency, captured_bytes, stored_new_bytes, disks_json)
+                 VALUES (?1, ?2, ?3, ?4, ?4, 1, 'full', 'crash', 1, 1, '[1]')",
+                rusqlite::params![im.image_id.to_string(), repo, agent, machine],
+            )
+            .unwrap();
+    }
+    let (s, v) = t
+        .post(
+            "/api/users",
+            json!({ "username": "anna", "password": "anna's long password", "machines": [mine] }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let admin_cookie = t.cookie.clone();
+
+    // Anna signs in: her machine's backups only, nothing administrative.
+    t.cookie = None;
+    let (s, _) = t
+        .post(
+            "/api/login",
+            json!({ "username": "anna", "password": "anna's long password" }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, st) = t.get("/api/status").await;
+    assert_eq!(st["user"]["role"], "restore");
+    assert_eq!(t.get("/api/agents").await.0, StatusCode::FORBIDDEN);
+    assert_eq!(t.get("/api/images").await.0, StatusCode::FORBIDDEN);
+    let (_, imgs) = t.get("/api/self/images").await;
+    let imgs = imgs.as_array().unwrap().clone();
+    assert_eq!(imgs.len(), 1);
+    let my_image = imgs[0]["image_id"].as_str().unwrap().to_string();
+    let theirs: String =
+        t.st.db()
+            .query_row(
+                "SELECT image_id FROM images WHERE machine_id = 'finance'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(
+        t.post(&format!("/api/self/images/{theirs}/browse"), json!({}))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let (s, v) = t
+        .post(&format!("/api/self/images/{my_image}/browse"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let job = v["id"].as_str().unwrap().to_string();
+    let (s, j) = t.get(&format!("/api/self/jobs/{job}")).await;
+    assert_eq!(s, StatusCode::OK, "{j}");
+
+    // Someone else's job is not hers.
+    t.cookie = admin_cookie;
+    let (_, admin_job) = t
+        .post(&format!("/api/images/{theirs}/browse"), json!({}))
+        .await;
+    let (_, users) = t.get("/api/users").await;
+    assert!(users
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|u| u["username"] == "anna" && u["role"] == "restore"));
+    t.cookie = None;
+    t.post(
+        "/api/login",
+        json!({ "username": "anna", "password": "anna's long password" }),
+    )
+    .await;
+    assert_eq!(
+        t.get(&format!(
+            "/api/self/jobs/{}",
+            admin_job["id"].as_str().unwrap()
+        ))
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+}

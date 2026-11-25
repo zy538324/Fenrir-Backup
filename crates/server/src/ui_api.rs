@@ -104,24 +104,19 @@ async fn status(
         .db()
         .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
     let mut p = parts;
-    let user = Admin::from_request_parts_opt(&mut p, &st).await;
+    let user = {
+        use axum::extract::FromRequestParts;
+        auth::SessionUser::from_request_parts(&mut p, &st)
+            .await
+            .ok()
+    };
     Ok(Json(json!({
         "setup_required": users == 0,
         "version": crate::VERSION,
-        "user": user.map(|u| json!({ "username": u.username })),
+        "user": user.map(|u| json!({ "username": u.username, "role": u.role })),
         "tls": st.cfg.tls.as_ref().map(|t| json!({ "pinned": t.pinned, "cert_sha256": t.cert_sha256 })),
         "server_time": now(),
     })))
-}
-
-impl Admin {
-    async fn from_request_parts_opt(
-        parts: &mut axum::http::request::Parts,
-        st: &Shared,
-    ) -> Option<Admin> {
-        use axum::extract::FromRequestParts;
-        Admin::from_request_parts(parts, st).await.ok()
-    }
 }
 
 #[derive(Deserialize)]
@@ -714,7 +709,7 @@ async fn list_jobs(
     )?))
 }
 
-async fn get_job(
+pub(crate) async fn get_job(
     State(st): State<Shared>,
     _a: Admin,
     Path(id): Path<String>,
@@ -2828,7 +2823,7 @@ fn volume_of(disk: Option<u32>, partition: Option<u32>) -> ApiResult<Option<prot
 }
 
 #[derive(Deserialize)]
-struct BrowseReq {
+pub(crate) struct BrowseReq {
     #[serde(default)]
     agent_id: Option<String>,
     #[serde(default)]
@@ -2840,7 +2835,7 @@ struct BrowseReq {
 }
 
 /// List an image's volumes (no volume given) or one folder; poll the job for the listing.
-async fn browse_files(
+pub(crate) async fn browse_files(
     State(st): State<Shared>,
     a: Admin,
     Path(id): Path<String>,
@@ -2890,7 +2885,7 @@ struct RestoreFilesReq {
 }
 
 #[derive(Deserialize)]
-struct DownloadFilesReq {
+pub(crate) struct DownloadFilesReq {
     #[serde(default)]
     agent_id: Option<String>,
     disk: u32,
@@ -2904,7 +2899,7 @@ struct DownloadFilesReq {
 
 /// Send chosen files to this browser, encrypted for its one-time key: the
 /// machine restores and encrypts them, the server only relays ciphertext.
-async fn download_files(
+pub(crate) async fn download_files(
     State(st): State<Shared>,
     a: Admin,
     Path(id): Path<String>,
@@ -2954,7 +2949,7 @@ async fn download_files(
 
 /// The encrypted stream of a finished download (only this browser's key
 /// opens it).
-async fn get_download(
+pub(crate) async fn get_download(
     State(st): State<Shared>,
     _a: Admin,
     Path(id): Path<String>,

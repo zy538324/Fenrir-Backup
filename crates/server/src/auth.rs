@@ -85,7 +85,17 @@ pub struct Admin {
     pub username: String,
 }
 
-impl FromRequestParts<Shared> for Admin {
+/// Any signed-in user: an administrator, or a restore user limited to the
+/// backups of `machines` (agent IDs).
+#[derive(Debug, Clone)]
+pub struct SessionUser {
+    pub user_id: i64,
+    pub username: String,
+    pub role: String,
+    pub machines: Vec<String>,
+}
+
+impl FromRequestParts<Shared> for SessionUser {
     type Rejection = ApiError;
 
     async fn from_request_parts(
@@ -100,14 +110,15 @@ impl FromRequestParts<Shared> for Admin {
         }
         let h = sha256_hex(token.as_bytes());
         let db = state.db();
-        let row: Option<(i64, String, i64)> = db
+        let row: Option<(i64, String, i64, String, Option<String>)> = db
             .query_row(
-                "SELECT u.id, u.username, s.last_seen FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1",
+                "SELECT u.id, u.username, s.last_seen, u.role, u.machines_json FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1",
                 params![h],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        let (user_id, username, last_seen) = row.ok_or_else(ApiError::unauthorized)?;
+        let (user_id, username, last_seen, role, machines) =
+            row.ok_or_else(ApiError::unauthorized)?;
         let t = now();
         if t - last_seen > SESSION_IDLE_SECS {
             db.execute("DELETE FROM sessions WHERE token_hash = ?1", params![h])?;
@@ -119,7 +130,32 @@ impl FromRequestParts<Shared> for Admin {
                 params![t, h],
             )?;
         }
-        Ok(Admin { user_id, username })
+        Ok(SessionUser {
+            user_id,
+            username,
+            role,
+            machines: machines
+                .and_then(|m| serde_json::from_str(&m).ok())
+                .unwrap_or_default(),
+        })
+    }
+}
+
+impl FromRequestParts<Shared> for Admin {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Shared,
+    ) -> Result<Self, Self::Rejection> {
+        let u = SessionUser::from_request_parts(parts, state).await?;
+        if u.role != "admin" {
+            return Err(ApiError::forbidden("administrators only"));
+        }
+        Ok(Admin {
+            user_id: u.user_id,
+            username: u.username,
+        })
     }
 }
 
