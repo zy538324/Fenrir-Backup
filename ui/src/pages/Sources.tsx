@@ -7,11 +7,12 @@ import { seal, sealSupported, type Sealed } from "../seal";
 import { useRepos } from "./Machine";
 import { RetentionPicker } from "./Plans";
 
-type Kind = "m365" | "google" | "salesforce" | "kubernetes";
+type Kind = "m365" | "google" | "salesforce" | "quickbooks" | "kubernetes";
 const KINDS: { id: Kind; label: string; secret: string; help: string }[] = [
   { id: "m365", label: "Microsoft 365", secret: "Client secret", help: "An app registration in your Entra ID with application permissions User.Read.All, Mail.ReadWrite and Files.ReadWrite.All (admin consent)." },
   { id: "google", label: "Google Workspace", secret: "Service account key (JSON)", help: "A service account with domain-wide delegation for gmail.readonly, drive.readonly and admin.directory.user.readonly (and gmail.insert, gmail.labels, gmail.modify, drive to restore)." },
   { id: "salesforce", label: "Salesforce", secret: "Consumer secret", help: "A connected app with the client credentials flow and a run-as user that can view all data." },
+  { id: "quickbooks", label: "QuickBooks Online", secret: "Client secret", help: "Your Intuit app (Accounting scope) connected to the company once; paste its client secret and the refresh token. Intuit replaces the refresh token as it is used: the machine keeps the newest itself." },
   { id: "kubernetes", label: "Kubernetes", secret: "Service account token", help: "A service account that can read (and, to restore, create) the namespaces' objects; with volume data, also create pods, claims and volume snapshots." },
 ];
 
@@ -100,6 +101,7 @@ function ConnectDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: 
   const repoId = repo || usable[0]?.id || "";
   const [f, setF] = useState({ tenant: "", client_id: "", domain_url: "", admin: "", users: "", objects: "", mail: true, files: true, sites: false, teams: false, directory: false, name: "", api_server: "", ca_pem: "", namespaces: "", volume_image: "" });
   const [secret, setSecret] = useState("");
+  const [refresh, setRefresh] = useState("");
   const [time, setTime] = useState("01:00");
   const [retention, setRetention] = useState<Retention | null>(RETENTION_PRESETS[1].r);
   const [err, setErr] = useState<string | null>(null);
@@ -113,7 +115,8 @@ function ConnectDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: 
     setBusy(true);
     try {
       if (!sealSupported()) throw new Error("This browser cannot encrypt secrets (WebCrypto unavailable). Open the server over HTTPS in a current browser.");
-      const sealed: Sealed = await seal(agent.public_key, secret.trim());
+      const plain = kind === "quickbooks" ? JSON.stringify({ client_secret: secret.trim(), refresh_token: refresh.trim() }) : secret.trim();
+      const sealed: Sealed = await seal(agent.public_key, plain);
       let job: JobKind;
       let label: string;
       if (kind === "kubernetes") {
@@ -140,7 +143,7 @@ function ConnectDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: 
       wide
       title="Connect a service or cluster"
       onClose={onClose}
-      foot={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || !agent || !repoId || !secret.trim()} onClick={save}>Connect</button></>}
+      foot={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || !agent || !repoId || !secret.trim() || (kind === "quickbooks" && !refresh.trim())} onClick={save}>Connect</button></>}
     >
       {err && <Notice tone="bad">{err}</Notice>}
       <div className="seg" style={{ alignSelf: "flex-start" }}>
@@ -176,14 +179,15 @@ function ConnectDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: 
       ) : (
         <>
           <div className="grid cols-2">
-            <Field label={kind === "m365" ? "Tenant (directory ID or domain)" : kind === "google" ? "Domain" : "Org name"}><input className="input" value={f.tenant} onChange={set("tenant")} placeholder={kind === "m365" ? "contoso.onmicrosoft.com" : kind === "google" ? "example.com" : "acme"} /></Field>
+            <Field label={kind === "m365" ? "Tenant (directory ID or domain)" : kind === "google" ? "Domain" : kind === "quickbooks" ? "Company ID (realm ID)" : "Org name"}><input className="input" value={f.tenant} onChange={set("tenant")} placeholder={kind === "m365" ? "contoso.onmicrosoft.com" : kind === "google" ? "example.com" : kind === "quickbooks" ? "9130350000000000" : "acme"} /></Field>
             {kind === "google"
               ? <Field label="Administrator" hint="Users are listed as this account."><input className="input" value={f.admin} onChange={set("admin")} placeholder="admin@example.com" /></Field>
-              : <Field label={kind === "m365" ? "Application (client) ID" : "Consumer key"}><input className="input" value={f.client_id} onChange={set("client_id")} /></Field>}
+              : <Field label={kind === "m365" ? "Application (client) ID" : kind === "quickbooks" ? "Client ID" : "Consumer key"}><input className="input" value={f.client_id} onChange={set("client_id")} /></Field>}
           </div>
           {kind === "salesforce" && <Field label="My Domain URL"><input className="input" value={f.domain_url} onChange={set("domain_url")} placeholder="https://acme.my.salesforce.com" /></Field>}
-          {kind === "salesforce"
-            ? <Field label="Objects" hint="Empty: the standard objects and every custom object."><input className="input" value={f.objects} onChange={set("objects")} placeholder="Account Contact Opportunity" /></Field>
+          {kind === "quickbooks" && <Field label="API address" hint="Empty: QuickBooks Online. For an Intuit sandbox company: https://sandbox-quickbooks.api.intuit.com"><input className="input" value={f.domain_url} onChange={set("domain_url")} /></Field>}
+          {kind === "salesforce" || kind === "quickbooks"
+            ? <Field label={kind === "quickbooks" ? "Entities" : "Objects"} hint={kind === "quickbooks" ? "Empty: accounts, customers, vendors, employees, items and every transaction type." : "Empty: the standard objects and every custom object."}><input className="input" value={f.objects} onChange={set("objects")} placeholder={kind === "quickbooks" ? "Customer Invoice Bill" : "Account Contact Opportunity"} /></Field>
             : (
               <>
                 <Field label="Users" hint="Empty: every user."><input className="input" value={f.users} onChange={set("users")} placeholder="ann@example.com bob@example.com" /></Field>
@@ -203,6 +207,9 @@ function ConnectDialog({ agents, onClose, onDone }: { agents: Agent[]; onClose: 
       <Field label={meta.secret} hint="Encrypted in this browser for the machine above; nobody else can read it, this server included.">
         <textarea className="input mono" rows={kind === "google" ? 5 : 2} value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" spellCheck={false} />
       </Field>
+      {kind === "quickbooks" && <Field label="Refresh token" hint="From connecting your Intuit app to the company (OAuth 2.0). Encrypted like the secret.">
+        <textarea className="input mono" rows={2} value={refresh} onChange={(e) => setRefresh(e.target.value)} autoComplete="off" spellCheck={false} />
+      </Field>}
       <div className="row wrap" style={{ gap: 16 }}>
         <Field label="Back up every day at"><input className="input" type="time" value={time} onChange={(e) => setTime(e.target.value)} style={{ width: 130 }} /></Field>
       </div>
@@ -272,7 +279,7 @@ function RestoreDialog({ plan, onClose }: { plan: Plan; onClose: () => void }) {
       ) : (
         <>
           <div className="grid cols-2">
-            <Field label="Account" hint={job.type === "backup_saas" && job.tenant.service === "salesforce" ? "The org name." : "Whose items."}><input className="input" value={f.account} onChange={set("account")} placeholder={job.type === "backup_saas" && job.tenant.service === "salesforce" ? job.tenant.tenant : "ann@example.com"} /></Field>
+            <Field label="Account" hint={job.type === "backup_saas" && (job.tenant.service === "salesforce" || job.tenant.service === "quickbooks") ? "The org name or company ID." : "Whose items."}><input className="input" value={f.account} onChange={set("account")} placeholder={job.type === "backup_saas" && (job.tenant.service === "salesforce" || job.tenant.service === "quickbooks") ? job.tenant.tenant : "ann@example.com"} /></Field>
             <Field label="Into account" hint="Empty: the same account."><input className="input" value={f.to_account} onChange={set("to_account")} /></Field>
           </div>
           <div className="grid cols-2">
