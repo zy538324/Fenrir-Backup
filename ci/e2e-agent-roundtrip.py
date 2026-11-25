@@ -168,7 +168,9 @@ try:
         snapshot = (fj.get("result") or {}).get("snapshot")
         print(f"  read from: {snapshot or 'the live files'}")
         if a["os"]["family"] == "macos":
-            assert snapshot and snapshot.startswith("APFS "), f"macOS folder backups read from an APFS snapshot: {fj}"
+            # Hosted macOS runners refuse local snapshots (no Full Disk Access for tmutil); then the
+            # backup must say why it read the live files.
+            assert (snapshot and snapshot.startswith("APFS ")) or any("No APFS snapshot" in w for w in fj["warnings"]), fj
         if a["os"]["family"] == "windows":
             assert snapshot == "VSS", f"Windows folder backups read from a VSS snapshot: {fj}"
         im = [i for i in c.get("/api/images", params={"repository_id": repo_id}).json() if i["source"] == "files"][0]

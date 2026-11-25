@@ -10,16 +10,21 @@ use std::time::{Duration, Instant};
 static CACHE: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
 const EVERY: Duration = Duration::from_secs(6 * 3600);
 
+/// The last result; a refresh runs in the background when it is due, so
+/// the heartbeat never waits for it (the first heartbeat reports nothing).
 pub fn other_backup() -> Vec<String> {
     let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((t, v)) = g.as_ref() {
-        if t.elapsed() < EVERY {
-            return v.clone();
-        }
+    let due = g.as_ref().is_none_or(|(t, _)| t.elapsed() >= EVERY);
+    let current = g.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
+    if due {
+        // Marks the refresh as started, so only one runs at a time.
+        *g = Some((Instant::now(), current.clone()));
+        std::thread::spawn(|| {
+            let v = collect();
+            *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), v));
+        });
     }
-    let v = collect();
-    *g = Some((Instant::now(), v.clone()));
-    v
+    current
 }
 
 /// Whether a program or service name says it backs up or replicates.
@@ -48,12 +53,12 @@ fn tidy(mut v: Vec<String>) -> Vec<String> {
 #[cfg(windows)]
 fn collect() -> Vec<String> {
     // Installed programs (both registry views), Windows Server Backup's
-    // schedule and File History, by name only.
+    // scheduled task and File History, by name only.
     let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 $keys = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
 Get-ItemProperty $keys | Where-Object { $_.DisplayName } | ForEach-Object { $_.DisplayName }
-if ((Get-Command wbadmin -ErrorAction SilentlyContinue) -and ((wbadmin get versions 2>$null) -match 'Version identifier')) { 'Windows Server Backup' }
+if (Get-ScheduledTask -TaskPath '\Microsoft\Windows\Backup\' -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Disabled' -and $_.TaskName -match 'Microsoft-Windows-WindowsBackup' }) { 'Windows Server Backup' }
 if (Test-Path "$env:LOCALAPPDATA\Microsoft\Windows\FileHistory\Configuration") { 'File History' }
 "#;
     let out = crate::hyperv::run_ps(script).unwrap_or_default();
