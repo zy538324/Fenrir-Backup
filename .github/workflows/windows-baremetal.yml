@@ -71,7 +71,7 @@ jobs:
           path: iso
       - name: tools
         run: |
-          sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf xorriso
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf xorriso p7zip-full
           sudo chmod 666 /dev/kvm
       - name: build
         run: cargo build --release --locked -p server -p agent
@@ -80,6 +80,7 @@ jobs:
           WINDOWS_ISO_URL: ${{ vars.WINDOWS_ISO_URL }}
         run: |
           # Server 2022, then Server 2025 (evaluation, en-US ISO); the first that is really a Windows ISO is used.
+          # Windows media keep their files on UDF (the ISO 9660 part is a stub), so 7z, which reads UDF, checks it.
           for url in "$WINDOWS_ISO_URL" \
             "https://go.microsoft.com/fwlink/p/?LinkID=2195280&clcid=0x409&culture=en-us&country=US" \
             "https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us"; do
@@ -88,7 +89,7 @@ jobs:
             rm -f $WORK/windows.iso
             if sudo curl -fsSL --retry 3 --connect-timeout 30 -o $WORK/windows.iso "$url" \
                && [ "$(stat -c %s $WORK/windows.iso)" -gt 3000000000 ] \
-               && xorriso -indev $WORK/windows.iso -find /sources -name install.wim 2>/dev/null | grep -q install.wim; then
+               && 7z l -ba "$WORK/windows.iso" sources/install.wim sources/install.esd | grep -qiE 'install\.(wim|esd)'; then
               echo "using $url ($(stat -c %s $WORK/windows.iso) bytes)"
               break
             fi
