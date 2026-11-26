@@ -1,0 +1,113 @@
+name: Windows bare-metal restore (nightly)
+
+# A real Windows, restored bare-metal from a backup, must boot (BDR-03; docs/design/phase-2.md).
+#
+# Windows Server (evaluation, Server Core) is installed unattended in QEMU/KVM (ci/windows-install.py). A real
+# server and agent back the disk up; the recovery ISO, personalised by the server, boots with Secure Boot on,
+# enrols and restores the image onto a blank larger disk through the API; that disk must then boot Windows on fresh
+# firmware with no boot entries and report from its start-up task (ci/e2e-recovery.py, real-disk mode).
+#
+# Nightly at 01:00 UTC (01:00 UK time in winter, 02:00 in summer), and on demand. The evaluation ISO comes from
+# Microsoft's evaluation centre; set the repository variable WINDOWS_ISO_URL to use another copy.
+
+on:
+  schedule:
+    - cron: "0 1 * * *"  # runs from the default branch only
+  workflow_dispatch:
+  push:  # and when the test itself changes
+    paths:
+      - .github/workflows/windows-baremetal.yml
+      - ci/windows-install.py
+      - ci/e2e-recovery.py
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  recovery-iso:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools mmdebstrap squashfs-tools xorriso mtools dosfstools
+      - name: static agent and CLI
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p agent -p cli
+      - name: recovery ISO
+        run: |
+          sudo recovery-env/build.sh "$PWD/out/fenrir-recovery.iso" \
+            target/x86_64-unknown-linux-musl/release/fenrir-backup-agent target/x86_64-unknown-linux-musl/release/fenrir-backup
+          sudo chown -R "$USER" out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recovery-iso
+          path: out
+          retention-days: 2
+
+  windows-baremetal:
+    needs: recovery-iso
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - name: free disk space (the Windows disk, its backup and the restored copy)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          # Work where there is most room: the runner's scratch disk (/mnt) when it has more than the root disk.
+          root=$(df --output=avail -B1 / | tail -1); mnt=$(df --output=avail -B1 /mnt 2>/dev/null | tail -1 || echo 0)
+          if [ "${mnt:-0}" -gt "$root" ]; then d=/mnt/fenrir; else d=/home/runner/fenrir; fi
+          sudo mkdir -p "$d" && sudo chown "$USER" "$d"
+          echo "WORK=$d" >> "$GITHUB_ENV"
+          df -h / /mnt || true
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: recovery-iso
+          path: iso
+      - name: tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf xorriso
+          sudo chmod 666 /dev/kvm
+      - name: build
+        run: cargo build --release --locked -p server -p agent
+      - name: Windows Server evaluation ISO
+        env:
+          WINDOWS_ISO_URL: ${{ vars.WINDOWS_ISO_URL }}
+        run: |
+          # Server 2022, then Server 2025 (evaluation, en-US ISO); the first that is really a Windows ISO is used.
+          for url in "$WINDOWS_ISO_URL" \
+            "https://go.microsoft.com/fwlink/p/?LinkID=2195280&clcid=0x409&culture=en-us&country=US" \
+            "https://go.microsoft.com/fwlink/?linkid=2293312&clcid=0x409&culture=en-us&country=us"; do
+            [ -n "$url" ] || continue
+            echo "trying $url"
+            rm -f $WORK/windows.iso
+            if sudo curl -fsSL --retry 3 --connect-timeout 30 -o $WORK/windows.iso "$url" \
+               && [ "$(stat -c %s $WORK/windows.iso)" -gt 3000000000 ] \
+               && xorriso -indev $WORK/windows.iso -find /sources -name install.wim 2>/dev/null | grep -q install.wim; then
+              echo "using $url ($(stat -c %s $WORK/windows.iso) bytes)"
+              break
+            fi
+            sudo rm -f $WORK/windows.iso
+          done
+          test -f $WORK/windows.iso
+          sudo chown "$USER" $WORK/windows.iso
+      - name: install Windows unattended
+        run: |
+          python3 ci/windows-install.py $WORK/windows.iso $WORK/windows.raw $WORK/install 32
+          rm -f $WORK/windows.iso
+          df -h "$WORK"
+      - name: back up, restore bare-metal from the recovery ISO, boot the restored Windows
+        run: |
+          python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q httpx cryptography
+          sudo /tmp/venv/bin/python ci/e2e-recovery.py $WORK/e2e target/release/fenrir-server \
+            target/release/fenrir-backup-agent iso/fenrir-recovery.iso $WORK/windows.raw FENRIR-WINDOWS-UP
+      - name: logs
+        if: failure()
+        run: |
+          sudo sh -c 'tail -n 60 $WORK/e2e/*.log $WORK/install/*.log' || true
+          sudo sh -c 'tail -c 3000 $WORK/install/*.serial $WORK/e2e/*.serial' | tr -d '\r' || true
