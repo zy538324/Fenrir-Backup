@@ -21,6 +21,7 @@ getrandom.workspace = true
 hex.workspace = true
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "rustls", "ring", "webpki-roots"] }
 protocol.workspace = true
+core-format.workspace = true
 rcgen = "0.13"
 rusqlite = { version = "0.43", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

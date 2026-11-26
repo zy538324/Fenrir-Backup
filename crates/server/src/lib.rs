@@ -10,6 +10,7 @@ pub mod auth;
 pub mod cases;
 pub mod db;
 pub mod downloads;
+pub mod evidence;
 pub mod extras;
 pub mod gateway;
 pub mod notify;

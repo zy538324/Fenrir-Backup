@@ -253,6 +253,17 @@ const MIGRATIONS: &[&str] = &[
         closed INTEGER
     );
     "#,
+    // 16: restore evidence (BDR-03): one hashed record per finished restore.
+    r#"
+    CREATE TABLE restore_evidence (
+        job_id TEXT PRIMARY KEY,
+        image_id TEXT NOT NULL,
+        record_json TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        created INTEGER NOT NULL
+    );
+    CREATE INDEX restore_evidence_image ON restore_evidence(image_id);
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

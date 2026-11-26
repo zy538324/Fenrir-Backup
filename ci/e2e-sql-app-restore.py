@@ -127,6 +127,17 @@ try:
     assert rows == "5001" and late == "0", (rows, late)
     sql("DBCC CHECKDB (fenrirapp) WITH NO_INFOMSGS;")
     print(f"  fenrirapp has the 5001 rows from before the backup, not the later one; DBCC CHECKDB clean")
+    # The agent checked the database itself after attaching it, and the server kept the evidence (BDR-03).
+    ev = c.get(f"/api/jobs/{r.json()['id']}/evidence").json()
+    assert ev["intact"], ev
+    e = ev["evidence"]
+    check = next(x for x in e["checks"] if x["type"] == "sql-checkdb")
+    assert check["database"] == "fenrirapp" and check["result"] == "clean", check
+    assert {"name": "dbo.t", "rows": 5001} in check["tables"], check
+    assert e["outputs"] and all(len(o.get("sha256", "")) == 64 for o in e["outputs"]), e["outputs"]
+    assert e["verified"] and e["recoveryPoint"] and e["rpoSeconds"] >= 0 and e["rtoSeconds"] >= 0, e
+    print(f"  evidence: agent CHECKDB clean, dbo.t has 5001 rows, {len(e['outputs'])} restored files hashed; "
+          f"RPO {e['rpoSeconds']} s, RTO {e['rtoSeconds']} s")
     print(json.dumps({"evidence": "BDR-03 one SQL Server database", "image": im["image_id"], "component": comp,
                       "restore_seconds": round(secs, 1), "rto_measured_seconds": round(time.time() - t0, 1)}))
     print("SQL APP RESTORE OK")

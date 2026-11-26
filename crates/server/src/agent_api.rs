@@ -466,6 +466,16 @@ async fn update_job(
         ],
     )?;
 
+    // Restore evidence (BDR-03): recovery point, times, RPO/RTO and what was written.
+    if u.state.is_final()
+        && kind
+            .as_ref()
+            .and_then(crate::evidence::restore_image)
+            .is_some()
+    {
+        crate::evidence::record(&db, &id.to_string())?;
+    }
+
     // A copy reports the images it put in the destination repository.
     let images_repo = match &kind {
         // (an offline media set: the drive that was attached)

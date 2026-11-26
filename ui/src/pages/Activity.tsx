@@ -43,6 +43,7 @@ function Jobs() {
               <td className="small" style={{ maxWidth: 420 }}>
                 {j.error && <div style={{ color: "var(--bad)" }}>{j.error}</div>}
                 {j.warnings.map((w, i) => <div key={i} style={{ color: "var(--warn)" }}>{w}</div>)}
+                {RESTORES.has(String((j.kind as { type?: string }).type)) && ["succeeded", "warning", "failed"].includes(j.state) && <Evidence id={j.id} />}
                 {(j.state === "queued" || j.state === "running" || j.state === "dispatched") && (
                   <button className="btn sm ghost" onClick={async () => { await api.post(`/api/jobs/${j.id}/cancel`); toast("ok", "Cancelling"); reload(); }}><XCircle size={13} /> Cancel</button>
                 )}
@@ -51,6 +52,50 @@ function Jobs() {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+const RESTORES = new Set(["restore", "restore_files", "restore_application", "restore_kubernetes", "restore_saas"]);
+
+type EvidenceResponse = { sha256: string; intact: boolean; evidence: { verified: boolean; rpoSeconds: number | null; rtoSeconds: number | null;
+  recoveryPoint: string | null; outputs: unknown[]; verification: { mismatches?: number; chunksChecked?: number }[] } };
+
+function secs(s: number): string {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+}
+
+/** Restore evidence (BDR-03): recovery point, RPO/RTO, what was written and its hashes, downloadable as JSON. */
+function Evidence({ id }: { id: string }) {
+  const [ev, setEv] = useState<EvidenceResponse | null>(null);
+  const toast = useToast();
+  const load = async () => {
+    try {
+      const r = await api.get<EvidenceResponse>(`/api/jobs/${id}/evidence`);
+      setEv(r);
+      const blob = new Blob([JSON.stringify(r, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `restore-evidence-${id}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      toast("bad", e instanceof Error ? e.message : String(e));
+    }
+  };
+  const e = ev?.evidence;
+  const checked = e?.verification.reduce((n, v) => n + (v.chunksChecked ?? 0), 0) ?? 0;
+  return (
+    <div>
+      <button className="btn sm ghost" onClick={load}>Restore evidence</button>
+      {e && <div className="faint">
+        {e.verified ? "Verified" : "Not verified"}{checked ? ` · ${checked} chunks read back` : ` · ${e.outputs.length} output(s) hashed`}
+        {e.rpoSeconds != null && ` · RPO ${secs(e.rpoSeconds)}`}{e.rtoSeconds != null && ` · RTO ${secs(e.rtoSeconds)}`}
+        {!ev?.intact && <span style={{ color: "var(--bad)" }}> · record does not match its SHA-256</span>}
+      </div>}
     </div>
   );
 }

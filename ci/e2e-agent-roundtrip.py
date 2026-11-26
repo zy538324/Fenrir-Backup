@@ -143,10 +143,19 @@ try:
                                           "target": {"type": "disk", "device": str(target), "disk": 0,
                                                      "confirm": str(target), "grow": False}})
         assert r.status_code == 200, r.text
-        _, restore_secs = wait_job(c, r.json()["id"], "restore to a new disk file")
+        disk_job = r.json()["id"]
+        _, restore_secs = wait_job(c, disk_job, "restore to a new disk file")
         got = sha(target, SIZE)
         print(f"  source   {src}\n  restored {got}")
         assert got == src, "restored disk differs from the source"
+        # Restore evidence (BDR-03): every chunk read back from the target and matched to the backup.
+        ev = c.get(f"/api/jobs/{disk_job}/evidence").json()
+        assert ev["intact"], ev
+        e = ev["evidence"]
+        v = e["verification"][0]
+        assert v["supported"] and v["mismatches"] == 0 and v["chunksChecked"] > 0, e
+        assert e["verified"] and e["recoveryPoint"] and e["rpoSeconds"] >= 0 and e["rtoSeconds"] >= 0, e
+        print(f"  evidence: {v['chunksChecked']} chunks read back and matched; RPO {e['rpoSeconds']} s, RTO {e['rtoSeconds']} s, sha256 {ev['sha256'][:16]}…")
         evidence.append({"kind": "disk", "image": im["image_id"], "recovery_point_unix": im["created"], "bytes": SIZE,
                          "backup_seconds": round(backup_secs, 1), "restore_seconds": round(restore_secs, 1),
                          "rto_measured_seconds": round(time.time() - t0, 1), "sha256": src})
@@ -182,10 +191,19 @@ try:
                    json={"agent_id": a["id"], "disk": 1, "partition": 1, "paths": [sel], "target": str(out),
                          "keep_structure": True, "conflict": "overwrite"})
         assert r.status_code == 200, r.text
-        _, restore_secs = wait_job(c, r.json()["id"], "restore the folder")
+        files_job = r.json()["id"]
+        _, restore_secs = wait_job(c, files_job, "restore the folder")
         got = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in out.rglob("*") if p.is_file()}
         assert got == files, f"restored files differ: {sorted(set(files) ^ set(got))} {len(got)}/{len(files)}"
         print(f"  {len(files)} files restored byte-identical")
+        # Restore evidence (BDR-03): the agent's SHA-256 of each restored file matches the source.
+        ev = c.get(f"/api/jobs/{files_job}/evidence").json()
+        assert ev["intact"], ev
+        e = ev["evidence"]
+        reported = {Path(o["path"]).name: o["sha256"] for o in e["outputs"]}
+        assert reported == files, f"evidence hashes differ from the source: {reported}"
+        assert e["verified"] and e["recoveryPoint"] and e["rpoSeconds"] >= 0 and e["rtoSeconds"] >= 0, e
+        print(f"  evidence: {len(reported)} file hashes match the source; RPO {e['rpoSeconds']} s, RTO {e['rtoSeconds']} s")
         evidence.append({"kind": "files", "image": im["image_id"], "recovery_point_unix": im["created"],
                          "files": len(files), "backup_seconds": round(backup_secs, 1),
                          "restore_seconds": round(restore_secs, 1), "rto_measured_seconds": round(time.time() - t0, 1)})

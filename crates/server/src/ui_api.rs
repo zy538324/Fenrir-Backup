@@ -34,6 +34,7 @@ pub fn routes() -> Router<Shared> {
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/{id}", get(get_job))
         .route("/api/jobs/{id}/cancel", post(cancel_job))
+        .route("/api/jobs/{id}/evidence", get(job_evidence))
         .route(
             "/api/enrollment-tokens",
             get(list_tokens).post(create_token),
@@ -720,6 +721,21 @@ pub(crate) async fn get_job(
         params![id],
         job_from_row,
     )?))
+}
+
+/// Restore evidence of a finished restore job, with its SHA-256 checked again.
+async fn job_evidence(
+    State(st): State<Shared>,
+    _a: Admin,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let id = uuid_param(&id)?;
+    match crate::evidence::load(&st.db(), &id)? {
+        Some(v) => Ok(Json(v)),
+        None => Err(ApiError::not_found(
+            "this job has no restore evidence (it is not a finished restore)",
+        )),
+    }
 }
 
 async fn cancel_job(
