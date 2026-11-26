@@ -135,11 +135,18 @@ export function AppRestoreDialog({ image, onClose }: { image: Image; onClose: ()
   const [directory, setDirectory] = useState("D:\\Restores");
   const [attach, setAttach] = useState("");
   const [instance, setInstance] = useState("");
+  const [source, setSource] = useState("");
+  const [target, setTarget] = useState("");
+  const [folder, setFolder] = useState(`Restored ${new Date().toISOString().slice(0, 10)}`);
+  const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const toast = useToast();
   const app = apps.find((a) => a.component === component);
   const sql = app?.writer === "SqlServerWriter";
+  const exchange = /exchange/i.test(app?.writer ?? "");
+  const mailbox = exchange && source.trim() !== "";
+  const confirmed = !mailbox || (target.trim() !== "" && confirm.trim().toLowerCase() === target.trim().toLowerCase());
   const agent = able.find((a) => a.id === agentId) ?? able.find((a) => a.id === image.agent_id) ?? able[0];
   const go = async () => {
     if (!agent) return;
@@ -148,6 +155,7 @@ export function AppRestoreDialog({ image, onClose }: { image: Image; onClose: ()
     try {
       const r = await guardInfected((allow_infected) => api.post(`/api/images/${image.image_id}/restore-app`, {
         agent_id: agent.id, component, directory: directory.trim(), attach_as: sql && attach.trim() ? attach.trim() : null, sql_instance: instance.trim(), allow_infected,
+        mailbox: mailbox ? { source: source.trim(), target: target.trim(), folder: folder.trim(), confirm: confirm.trim() } : null,
       }));
       if (r === null) return;
       toast("ok", `Restoring ${app?.caption || component} on ${agent.name}`);
@@ -164,7 +172,7 @@ export function AppRestoreDialog({ image, onClose }: { image: Image; onClose: ()
       title="Restore one database"
       sub={`${image.vm_name ?? image.hostname}, ${when(image.created)}`}
       onClose={onClose}
-      foot={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || !agent || !component || !directory.trim()} onClick={go}><Database size={15} /> Restore</button></>}
+      foot={<><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy || !agent || !component || !directory.trim() || !confirmed} onClick={go}><Database size={15} /> {mailbox ? "Restore mailbox" : "Restore"}</button></>}
     >
       {err && <Notice tone="bad">{err}</Notice>}
       {apps.length === 0 ? <Notice tone="warn">This backup does not list its databases' files (taken by an older agent): restore the volume instead.</Notice> : (
@@ -187,6 +195,17 @@ export function AppRestoreDialog({ image, onClose }: { image: Image; onClose: ()
               <Field label="Attach as" hint="Optional: attach the files to SQL Server under this new name."><input className="input" value={attach} onChange={(e) => setAttach(e.target.value)} placeholder="sales_restored" maxLength={128} /></Field>
               <Field label="SQL Server instance" hint="Blank for the default instance."><input className="input" value={instance} onChange={(e) => setInstance(e.target.value)} placeholder={"SERVER\\INSTANCE"} /></Field>
             </div>
+          )}
+          {exchange && (
+            <>
+              <div className="muted small">Optional: restore one mailbox unattended. The agent replays the logs, mounts the files as a recovery database on this Exchange server, restores the mailbox, then removes the recovery database. The machine must be an Exchange Mailbox server and the agent's account needs the Mailbox Import Export role. Leave the mailbox blank to only restore the files and a script.</div>
+              <div className="grid cols-2">
+                <Field label="Mailbox in the backup" hint="Display name or mailbox GUID."><input className="input" value={source} onChange={(e) => setSource(e.target.value)} placeholder="Anna Smith" maxLength={256} /></Field>
+                <Field label="Restore into mailbox" hint="A live mailbox: items are added to it."><input className="input" value={target} onChange={(e) => setTarget(e.target.value)} placeholder="anna@example.com" maxLength={320} /></Field>
+                <Field label="Under the folder" hint="Blank merges items into their original folders."><input className="input" value={folder} onChange={(e) => setFolder(e.target.value)} maxLength={255} /></Field>
+                {mailbox && <Field label="Type the target mailbox to confirm"><input className="input" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder={target} /></Field>}
+              </div>
+            </>
           )}
         </>
       )}

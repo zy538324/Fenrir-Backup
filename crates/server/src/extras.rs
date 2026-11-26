@@ -579,6 +579,55 @@ struct RestoreAppReq {
     sql_instance: String,
     #[serde(default)]
     allow_infected: bool,
+    /// Exchange: restore this mailbox from a recovery database, unattended.
+    #[serde(default)]
+    mailbox: Option<MailboxReq>,
+}
+
+#[derive(Deserialize)]
+struct MailboxReq {
+    source: String,
+    target: String,
+    #[serde(default)]
+    folder: String,
+    /// The target mailbox typed again: it writes into a live mailbox.
+    #[serde(default)]
+    confirm: String,
+}
+
+/// Checks an Exchange mailbox restore request (the agent checks it again).
+fn mailbox_restore(
+    writer: &str,
+    m: Option<&MailboxReq>,
+) -> ApiResult<Option<protocol::MailboxRestore>> {
+    let Some(m) = m else { return Ok(None) };
+    if !writer.to_ascii_lowercase().contains("exchange") {
+        return Err(ApiError::bad(
+            "a mailbox can only be restored from an Exchange database",
+        ));
+    }
+    let (source, target, folder) = (m.source.trim(), m.target.trim(), m.folder.trim());
+    let line =
+        |s: &str, max: usize| !s.is_empty() && s.len() <= max && !s.chars().any(char::is_control);
+    if !line(source, 256)
+        || !line(target, 320)
+        || folder.len() > 255
+        || folder.chars().any(char::is_control)
+    {
+        return Err(ApiError::bad(
+            "give the mailbox in the backup and the mailbox to restore into, each on one line",
+        ));
+    }
+    if !m.confirm.trim().eq_ignore_ascii_case(target) {
+        return Err(ApiError::bad(
+            "type the target mailbox again to confirm: items are written into that live mailbox",
+        ));
+    }
+    Ok(Some(protocol::MailboxRestore {
+        source: source.into(),
+        target: target.into(),
+        folder: folder.into(),
+    }))
 }
 
 async fn restore_app(
@@ -629,6 +678,7 @@ async fn restore_app(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let mailbox = mailbox_restore(app["writer"].as_str().unwrap_or(""), r.mailbox.as_ref())?;
     let instance = r.sql_instance.trim().to_string();
     if let Some(n) = &attach {
         if app["writer"] != "SqlServerWriter" {
@@ -662,6 +712,7 @@ async fn restore_app(
         directory: dir.to_string(),
         attach_as: attach.clone(),
         sql_instance: instance,
+        mailbox: mailbox.clone(),
     };
     let job = queue(
         &db,
@@ -676,10 +727,13 @@ async fn restore_app(
         &a.username,
         "restore.application",
         &format!(
-            "{} {id}: {} to {dir}{}{}",
+            "{} {id}: {} to {dir}{}{}{}",
             im.what,
             r.component,
             attach.map(|n| format!(" as {n}")).unwrap_or_default(),
+            mailbox
+                .map(|m| format!(", mailbox {} into {}", m.source, m.target))
+                .unwrap_or_default(),
             if r.allow_infected {
                 " (infected files acknowledged)"
             } else {
@@ -994,4 +1048,38 @@ pub fn after_backup(
         "standby",
     )?;
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(source: &str, target: &str, confirm: &str) -> MailboxReq {
+        MailboxReq {
+            source: source.into(),
+            target: target.into(),
+            folder: "Restored".into(),
+            confirm: confirm.into(),
+        }
+    }
+
+    #[test]
+    fn mailbox_restore_needs_exchange_both_mailboxes_and_a_typed_confirmation() {
+        let w = "Microsoft Exchange Writer";
+        assert_eq!(mailbox_restore(w, None).unwrap(), None);
+        let ok = mailbox_restore(
+            w,
+            Some(&req(" Anna Smith ", "anna@example.com", "ANNA@example.com")),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (ok.source.as_str(), ok.target.as_str(), ok.folder.as_str()),
+            ("Anna Smith", "anna@example.com", "Restored")
+        );
+        assert!(mailbox_restore("SqlServerWriter", Some(&req("a", "b", "b"))).is_err());
+        assert!(mailbox_restore(w, Some(&req("a", "b", ""))).is_err());
+        assert!(mailbox_restore(w, Some(&req("", "b", "b"))).is_err());
+        assert!(mailbox_restore(w, Some(&req("a\nb", "b", "b"))).is_err());
+    }
 }

@@ -59,7 +59,14 @@ function Jobs() {
 const RESTORES = new Set(["restore", "restore_files", "restore_application", "restore_kubernetes", "restore_saas"]);
 
 type EvidenceResponse = { sha256: string; intact: boolean; evidence: { verified: boolean; rpoSeconds: number | null; rtoSeconds: number | null;
-  recoveryPoint: string | null; outputs: unknown[]; verification: { mismatches?: number; chunksChecked?: number }[] } };
+  recoveryPoint: string | null; outputs: unknown[]; verification: { mismatches?: number; chunksChecked?: number }[];
+  checks?: { type: string; result?: string; database?: string; source?: string; items?: number }[] } };
+
+function checkText(c: { type: string; result?: string; database?: string; source?: string; items?: number }): string {
+  if (c.type === "sql-checkdb") return `CHECKDB ${c.database ?? ""}: ${c.result ?? "?"}`;
+  if (c.type === "exchange-mailbox-restore") return `mailbox ${c.source ?? ""}: ${c.result ?? "?"}${c.items != null ? ` (${c.items} items)` : ""}`;
+  return `${c.type}: ${c.result ?? "?"}`;
+}
 
 function secs(s: number): string {
   if (s < 60) return `${s}s`;
@@ -93,6 +100,7 @@ function Evidence({ id }: { id: string }) {
       <button className="btn sm ghost" onClick={load}>Restore evidence</button>
       {e && <div className="faint">
         {e.verified ? "Verified" : "Not verified"}{checked ? ` · ${checked} chunks read back` : ` · ${e.outputs.length} output(s) hashed`}
+        {(e.checks ?? []).map((c) => ` · ${checkText(c)}`).join("")}
         {e.rpoSeconds != null && ` · RPO ${secs(e.rpoSeconds)}`}{e.rtoSeconds != null && ` · RTO ${secs(e.rtoSeconds)}`}
         {!ev?.intact && <span style={{ color: "var(--bad)" }}> · record does not match its SHA-256</span>}
       </div>}
