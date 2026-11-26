@@ -2,19 +2,24 @@
 
 UEFI firmware (OVMF), an AHCI disk (Windows has the driver in the box), and an answer file on a second CD. The
 answer file partitions the disk for UEFI (EFI, MSR, Windows), installs image 1 of the ISO (Server Core), and at the
-first sign-in registers a start-up task that writes FENRIR-WINDOWS-UP to the first serial port on every boot. Then
-it boots the installed disk once and checks that the marker arrives; that boot shuts Windows down by itself.
+first sign-in registers a start-up task. On every boot that task appends a line to C:\fenrir-boots.txt (and writes
+FENRIR-WINDOWS-UP to the first serial port), then shuts Windows down. The proof is read from the disk itself after
+the VM stops (losetup + ntfscat, read-only), so it does not depend on the serial port. The installed disk is booted
+once and must have recorded that boot.
 
-    python3 ci/windows-install.py <windows.iso> <disk.raw> <work dir> [disk GiB]
+    sudo python3 ci/windows-install.py <windows.iso> <disk.raw> <work dir> [disk GiB]
 
-Needs qemu-system-x86_64 with KVM, OVMF (/usr/share/OVMF), xorriso. Takes 10 to 30 minutes with KVM.
+Needs root (losetup), qemu-system-x86_64 with KVM, OVMF (/usr/share/OVMF), xorriso, ntfs-3g. 10 to 30 minutes with
+KVM. Screens are captured every 30 s into the work dir; on failure Windows Setup's own logs are copied out too.
 """
 
+import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,12 +30,10 @@ PASSWORD = "Fenrir-CI-restore-1!"  # a throw-away VM with no network
 MARKER = "FENRIR-WINDOWS-UP"
 
 UP_CMD = f"""@echo off
+echo %DATE% %TIME%>>C:\\fenrir-boots.txt
 mode COM1: BAUD=115200 PARITY=n DATA=8 STOP=1 >nul
 echo {MARKER}>COM1
-if exist C:\\fenrir-verify-once (
-  del C:\\fenrir-verify-once
-  shutdown /s /t 5 /f
-)
+shutdown /s /t 5 /f
 """
 
 COMPONENT = ('processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" '
@@ -84,7 +87,7 @@ UNATTEND = f"""<?xml version="1.0" encoding="utf-8"?>
         <SynchronousCommand wcm:action="add"><Order>2</Order>
           <CommandLine>schtasks /create /tn FenrirUp /sc onstart /ru SYSTEM /rl HIGHEST /f /tr C:\\fenrir-up.cmd</CommandLine></SynchronousCommand>
         <SynchronousCommand wcm:action="add"><Order>3</Order>
-          <CommandLine>cmd /c echo verify&gt;C:\\fenrir-verify-once</CommandLine></SynchronousCommand>
+          <CommandLine>cmd /c echo installed&gt;C:\\fenrir-installed.txt</CommandLine></SynchronousCommand>
         <SynchronousCommand wcm:action="add"><Order>4</Order>
           <CommandLine>cmd /c mode COM1: BAUD=115200 PARITY=n DATA=8 STOP=1 &amp; echo FENRIR-INSTALLED&gt;COM1</CommandLine></SynchronousCommand>
         <SynchronousCommand wcm:action="add"><Order>5</Order>
@@ -109,6 +112,64 @@ def qemu(name, *drives, vars_file, monitor=None):
     if monitor:
         cmd += ["-monitor", f"unix:{monitor},server,nowait"]
     return subprocess.Popen(cmd, stdout=open(W / f"{name}.qemu.log", "w"), stderr=subprocess.STDOUT), log
+
+
+def part_loop(disk: Path, number: int) -> str:
+    """A read-only loop device over partition `number` of a GPT disk image (offsets from sfdisk, so no partition
+    device nodes are needed)."""
+    table = json.loads(subprocess.run(["sfdisk", "--json", str(disk)], capture_output=True, text=True,
+                                      check=True).stdout)["partitiontable"]
+    sector = table.get("sectorsize", 512)
+    p = table["partitions"][number - 1]
+    return subprocess.run(["losetup", "-f", "-r", "--show", "-o", str(p["start"] * sector),
+                           "--sizelimit", str(p["size"] * sector), str(disk)],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def ntfs_files(disk: Path, paths: list[str], part: int = 3) -> dict[str, bytes | None]:
+    """Read files from the Windows partition of a raw disk image, read-only (losetup, ntfscat)."""
+    dev = part_loop(disk, part)
+    try:
+        out = {}
+        for p in paths:
+            r = subprocess.run(["ntfscat", dev, p], capture_output=True)
+            out[p] = r.stdout if r.returncode == 0 else None
+        return out
+    finally:
+        subprocess.run(["losetup", "-d", dev], check=False)
+
+
+def boots(disk: Path) -> list[str]:
+    raw = ntfs_files(disk, ["fenrir-boots.txt"])["fenrir-boots.txt"] or b""
+    return [l for l in raw.decode("ascii", "replace").splitlines() if l.strip()]
+
+
+SETUP_LOGS = ["Windows/Panther/setupact.log", "Windows/Panther/setuperr.log",
+              "Windows/Panther/UnattendGC/setupact.log", "Windows/Panther/UnattendGC/setuperr.log"]
+
+
+def keep_setup_logs(tag: str):
+    """Copy Windows Setup's logs off the disk into the work dir, for the CI artifact."""
+    try:
+        for p, data in ntfs_files(DISK, SETUP_LOGS).items():
+            if data:
+                (W / f"{tag}-{p.replace('/', '_')}").write_bytes(data)
+    except Exception as e:  # diagnostics only
+        print("  could not read Setup's logs:", e)
+
+
+def screens(sock_path: Path, stop: threading.Event):
+    """A screen every 30 s (the last 4 kept), for the CI artifact."""
+    n = 0
+    while not stop.wait(30):
+        try:
+            with socket.socket(socket.AF_UNIX) as s:
+                s.connect(str(sock_path))
+                s.sendall(f"screendump {W / f'screen-{n % 4}.ppm'}\n".encode())
+                time.sleep(1)
+            n += 1
+        except OSError:
+            pass
 
 
 def text(log: Path) -> str:
@@ -155,26 +216,41 @@ def main():
                    "-device", "ide-cd,drive=cd1,bus=ide.2",
                    vars_file=vars_file, monitor=mon)
     press_keys(mon, 60)
+    stop = threading.Event()
+    threading.Thread(target=screens, args=(mon, stop), daemon=True).start()
     try:
         vm.wait(timeout=3600)
     except subprocess.TimeoutExpired:
         vm.kill()
+        keep_setup_logs("install")
         raise SystemExit("Windows setup did not finish within an hour:\n" + text(log)[-2000:])
-    assert "FENRIR-INSTALLED" in text(log), "setup ended without running the first sign-in commands:\n" + text(log)[-2000:]
-    print(f"  Windows installed in {time.time() - t0:.0f}s")
+    finally:
+        stop.set()
+    files = ntfs_files(DISK, ["fenrir-installed.txt", "fenrir-up.cmd"])
+    if not files["fenrir-installed.txt"] or not files["fenrir-up.cmd"]:
+        keep_setup_logs("install")
+        raise SystemExit(f"Windows setup stopped before the first sign-in commands ran ({time.time() - t0:.0f}s; "
+                         f"files on C: {[k for k, v in files.items() if v]}); see the setup logs and screens")
+    print(f"  Windows installed in {time.time() - t0:.0f}s (serial: {'FENRIR-INSTALLED' in text(log)})")
 
-    # One boot from the disk alone: the start-up task reports and shuts Windows down (C:\\fenrir-verify-once).
+    # One boot from the disk alone: the start-up task records the boot and shuts Windows down.
     t0 = time.time()
-    vm, log = qemu("verify", vars_file=vars_file)
+    mon = W / "verify.monitor"
+    vm, log = qemu("verify", vars_file=vars_file, monitor=mon)
+    stop = threading.Event()
+    threading.Thread(target=screens, args=(mon, stop), daemon=True).start()
     try:
         vm.wait(timeout=900)
     except subprocess.TimeoutExpired:
         vm.kill()
-        raise SystemExit("the installed Windows did not boot and shut down:\n" + text(log)[-2000:])
-    assert MARKER in text(log), "the installed Windows did not report on the serial port:\n" + text(log)[-2000:]
+        raise SystemExit("the installed Windows did not boot and shut itself down within 15 minutes")
+    finally:
+        stop.set()
+    seen = boots(DISK)
+    assert len(seen) == 1, f"the installed Windows did not record its boot: {seen}"
     used = os.stat(DISK).st_blocks * 512
-    print(f"  the installed Windows boots and reports {MARKER} ({time.time() - t0:.0f}s); "
-          f"{used / (1 << 30):.1f} GiB of the {GIB} GiB disk in use")
+    print(f"  the installed Windows boots, runs its start-up task and shuts down ({time.time() - t0:.0f}s; "
+          f"serial: {MARKER in text(log)}); {used / (1 << 30):.1f} GiB of the {GIB} GiB disk in use")
 
 
 if __name__ == "__main__":

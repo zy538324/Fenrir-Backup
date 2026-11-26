@@ -71,7 +71,7 @@ jobs:
           path: iso
       - name: tools
         run: |
-          sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf xorriso p7zip-full
+          sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-utils ovmf xorriso p7zip-full ntfs-3g
           sudo chmod 666 /dev/kvm
       - name: build
         run: cargo build --release --locked -p server -p agent
@@ -99,8 +99,8 @@ jobs:
           sudo chown "$USER" $WORK/windows.iso
       - name: install Windows unattended
         run: |
-          python3 ci/windows-install.py $WORK/windows.iso $WORK/windows.raw $WORK/install 32
-          rm -f $WORK/windows.iso
+          sudo python3 ci/windows-install.py "$WORK/windows.iso" "$WORK/windows.raw" "$WORK/install" 32
+          rm -f "$WORK/windows.iso"
           df -h "$WORK"
       - name: back up, restore bare-metal from the recovery ISO, boot the restored Windows
         run: |
@@ -110,5 +110,15 @@ jobs:
       - name: logs
         if: failure()
         run: |
-          sudo sh -c 'tail -n 60 $WORK/e2e/*.log $WORK/install/*.log' || true
-          sudo sh -c 'tail -c 3000 $WORK/install/*.serial $WORK/e2e/*.serial' | tr -d '\r' || true
+          sudo sh -c "tail -n 60 $WORK/e2e/*.log $WORK/install/*.log" || true
+          sudo sh -c "tail -c 3000 $WORK/install/*.serial $WORK/e2e/*.serial" | tr -d '\r' || true
+          sudo sh -c "for f in $WORK/install/*setupact.log $WORK/install/*setuperr.log; do echo == \$f; tail -n 40 \$f; done" || true
+          mkdir -p diag && sudo sh -c "cp $WORK/install/*.ppm $WORK/install/*.log $WORK/install/*.serial $WORK/e2e/*.log $WORK/e2e/*.serial diag/ 2>/dev/null; chown -R $USER diag" || true
+      - name: diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-baremetal-diagnostics
+          path: diag
+          if-no-files-found: ignore
+          retention-days: 7

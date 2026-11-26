@@ -10,7 +10,9 @@ which needs the fallback loader the restore added.
 
 With SYSTEM_DISK (a raw disk image of a real installed system, e.g. Windows from ci/windows-install.py) that disk is
 backed up instead of the stand-in, restored onto a blank disk 4 GiB larger, and the restored disk must boot on an
-AHCI controller and print MARKER on the first serial port (Windows: its start-up task).
+AHCI controller: Windows' start-up task appends a line to C:\fenrir-boots.txt and shuts down, and the line is read
+from the restored disk afterwards (losetup + ntfscat, read-only; needs ntfs-3g). MARKER on the serial port is
+reported when seen.
 
 Needs root, qemu-system-x86_64, OVMF (/usr/share/OVMF), grub-efi-amd64-bin, dosfstools, mtools, fdisk
 (sfdisk), and Python with httpx and cryptography. Without KVM it is slow (about 15 minutes).
@@ -120,6 +122,28 @@ def qemu(name, *args, secure, memory=2048):
     p = subprocess.Popen(cmd, stdout=open(W / f"{name}.qemu.log", "w"), stderr=subprocess.STDOUT)
     procs.append(p)
     return p, log
+
+
+def part_loop(disk: Path, number: int) -> str:
+    """A read-only loop device over partition `number` of a GPT disk image (offsets from sfdisk, so no partition
+    device nodes are needed)."""
+    table = json.loads(subprocess.run(["sfdisk", "--json", str(disk)], capture_output=True, text=True,
+                                      check=True).stdout)["partitiontable"]
+    sector = table.get("sectorsize", 512)
+    p = table["partitions"][number - 1]
+    return subprocess.run(["losetup", "-f", "-r", "--show", "-o", str(p["start"] * sector),
+                           "--sizelimit", str(p["size"] * sector), str(disk)],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def windows_boots(disk: Path) -> list[str]:
+    """Lines of C:\\fenrir-boots.txt on the Windows partition (3) of a raw disk, read-only."""
+    dev = part_loop(disk, 3)
+    try:
+        r = subprocess.run(["ntfscat", dev, "fenrir-boots.txt"], capture_output=True)
+        return [l for l in r.stdout.decode("ascii", "replace").splitlines() if l.strip()] if r.returncode == 0 else []
+    finally:
+        subprocess.run(["losetup", "-d", dev], check=False)
 
 
 def serial(log):
@@ -266,12 +290,23 @@ try:
     else:
         pc, pc_log = qemu("restored", "-drive", f"file={target},if=virtio,format=raw", "-nic", "none", secure=False)
     t0 = time.time()
-    for _ in range(1200 if REAL else 300):
-        if MARKER in serial(pc_log) or pc.poll() is not None:
-            break
-        time.sleep(1)
-    assert MARKER in serial(pc_log), "restored disk did not boot:\n" + serial(pc_log)[-2000:]
-    print(f"  restored disk boots and reports {MARKER} after {time.time() - t0:.0f}s")
+    if REAL:
+        before = windows_boots(disk)
+        try:
+            pc.wait(timeout=1200)  # the start-up task shuts Windows down
+        except subprocess.TimeoutExpired:
+            raise SystemExit("the restored Windows did not boot and shut itself down within 20 minutes")
+        after = windows_boots(target)
+        assert len(after) == len(before) + 1, f"the restored Windows did not record a boot: before {before}, after {after}"
+        print(f"  the restored Windows booted, ran its start-up task ({after[-1]}) and shut down in "
+              f"{time.time() - t0:.0f}s (serial: {MARKER in serial(pc_log)})")
+    else:
+        for _ in range(300):
+            if MARKER in serial(pc_log) or pc.poll() is not None:
+                break
+            time.sleep(1)
+        assert MARKER in serial(pc_log), "restored disk did not boot:\n" + serial(pc_log)[-2000:]
+        print(f"  restored disk boots and reports {MARKER} after {time.time() - t0:.0f}s")
     print("  restored disk boots")
     print("E2E OK")
 finally:
