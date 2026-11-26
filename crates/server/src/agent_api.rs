@@ -1026,8 +1026,8 @@ fn record_boot_check(
     };
     let clip = |s: &str, n: usize| s.chars().take(n).collect::<String>();
     db.execute(
-        "INSERT INTO boot_checks (image_id, repository_id, agent_id, job_id, at, outcome, method, seconds, firmware, accel, message, screenshot)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO boot_checks (image_id, repository_id, agent_id, job_id, at, outcome, method, seconds, firmware, accel, message, screenshot, restore_test_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             b.image_id.to_string(),
             repo_id,
@@ -1040,7 +1040,10 @@ fn record_boot_check(
             clip(&b.firmware, 10),
             clip(&b.accel, 10),
             clip(&b.message, 1000),
-            shot
+            shot,
+            b.restore_test
+                .as_ref()
+                .and_then(|t| serde_json::to_string(t).ok())
         ],
     )?;
     Ok(())

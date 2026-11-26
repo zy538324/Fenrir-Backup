@@ -317,13 +317,16 @@ pub fn check_storage(state: &Shared) -> rusqlite::Result<usize> {
 pub fn run_boot_checks(state: &Shared) -> rusqlite::Result<usize> {
     let t = now();
     let db = state.db();
-    let due: Vec<(String, String, String)> = db
+    // 0 = Monday, as the weekday setting counts (1970-01-01 was a Thursday).
+    let weekday = (t.div_euclid(86400) + 3) % 7;
+    let due: Vec<(String, String, String, bool)> = db
         .prepare(
-            "SELECT r.id, r.boot_agent_id, i.image_id FROM repositories r
+            "SELECT r.id, r.boot_agent_id, i.image_id, r.boot_full_restore FROM repositories r
              JOIN agents a ON a.id = r.boot_agent_id AND a.revoked = 0
              JOIN repo_access x ON x.repository_id = r.id AND x.agent_id = a.id
              JOIN images i ON i.repository_id = r.id
              WHERE r.status = 'ready' AND r.boot_every_days > 0
+               AND (r.boot_weekday < 0 OR r.boot_weekday = ?2)
                AND i.created = (SELECT MAX(created) FROM images j WHERE j.repository_id = r.id AND j.machine_id = i.machine_id)
                AND NOT EXISTS (SELECT 1 FROM boot_checks b WHERE b.repository_id = r.id AND b.image_id IN
                     (SELECT image_id FROM images k WHERE k.repository_id = r.id AND k.machine_id = i.machine_id)
@@ -335,10 +338,12 @@ pub fn run_boot_checks(state: &Shared) -> rusqlite::Result<usize> {
                     AND j.kind_json LIKE '%' || i.image_id || '%' AND j.created > ?1 - 86400)
              ORDER BY i.created",
         )?
-        .query_map(params![t], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .query_map(params![t, weekday], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0))
+        })?
         .collect::<Result<_, _>>()?;
     let mut queued = std::collections::BTreeSet::new();
-    for (repo, agent, image) in &due {
+    for (repo, agent, image, full_restore) in &due {
         if !queued.insert(repo.clone()) {
             continue;
         }
@@ -347,6 +352,7 @@ pub fn run_boot_checks(state: &Shared) -> rusqlite::Result<usize> {
         };
         let kind = serde_json::to_string(&protocol::JobKind::BootCheck {
             image_id,
+            full_restore: *full_restore,
             keep_running: false,
             memory_mb: None,
             cpus: None,

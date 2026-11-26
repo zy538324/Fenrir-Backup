@@ -163,6 +163,7 @@ export function BootResultDialog({ image, onClose }: { image: Image; onClose: ()
           ) : (
             <div className="muted small row"><Camera size={14} /> No screenshot was taken.</div>
           )}
+          {c.restore_test && <RestoreTestFacts t={c.restore_test} />}
           {c.outcome === "screen" && (
             <Notice tone="warn">The VM reached a steady screen but nothing inside it answered. Look at the screenshot: a login screen means it booted; an error or a blue screen means it did not.</Notice>
           )}
@@ -229,15 +230,38 @@ export function RunningVmsCard({ agent, vms, images }: { agent: Agent; vms: Runn
   );
 }
 
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function gib(n: number): string {
+  return n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GiB` : `${Math.round(n / (1 << 20))} MiB`;
+}
+
+/** What a restore test did around the boot: the full restore, its read-back, and the deletion of the VM. */
+function RestoreTestFacts({ t }: { t: NonNullable<BootCheck["restore_test"]> }) {
+  return (
+    <div className="small">
+      <div>
+        Restore test: {gib(t.bytes_restored)} restored as {t.format.toUpperCase()} in {t.restore_seconds}s
+        {t.chunks_checked ? `, ${t.chunks_checked} chunks read back${t.mismatches ? `, ${t.mismatches} did not match` : " and matched"}` : " (this format is not read back; the data was authenticated as it was read from the backup)"}.
+      </div>
+      {t.vm_removed
+        ? <div className="faint">The test VM and its restored disks were deleted {when(t.removed_unix)}.</div>
+        : <Notice tone="warn">The test VM or its restored disks could not be deleted: {t.removal_error || "unknown error"}. Remove them on the host.</Notice>}
+    </div>
+  );
+}
+
 /** Repository setting: test-boot the newest image of each machine regularly. */
 export function BootVerification({ repo, agents, onSaved }: { repo: Repository; agents: Agent[]; onSaved: () => void }) {
   const hosts = agents.filter((a) => canBoot(a) && repo.agents.some((x) => x.id === a.id));
   const [agentId, setAgentId] = useState(repo.boot_agent_id ?? "");
   const [days, setDays] = useState(repo.boot_every_days || 7);
+  const [full, setFull] = useState(!!repo.boot_full_restore);
+  const [weekday, setWeekday] = useState<number | null>(repo.boot_weekday ?? null);
   const toast = useToast();
-  const save = async (id: string, d: number) => {
+  const save = async (id: string, d: number, f = full, w = weekday) => {
     try {
-      await api.post(`/api/repositories/${repo.id}/boot-verification`, { agent_id: id || null, every_days: d });
+      await api.post(`/api/repositories/${repo.id}/boot-verification`, { agent_id: id || null, every_days: d, full_restore: f, weekday: w });
       toast("ok", id ? "Boot verification saved" : "Boot verification turned off");
       onSaved();
     } catch (e) {
@@ -262,6 +286,16 @@ export function BootVerification({ repo, agents, onSaved }: { repo: Repository; 
             <select className="input" style={{ width: "auto" }} value={days} onChange={(e) => { const d = Number(e.target.value); setDays(d); save(agentId, d); }}>
               {[1, 7, 14, 30].map((d) => <option key={d} value={d}>{d === 1 ? "daily" : d === 7 ? "weekly" : `every ${d} days`}</option>)}
             </select>
+          )}
+          {agentId && (
+            <select className="input" style={{ width: "auto" }} value={weekday ?? ""} onChange={(e) => { const w = e.target.value === "" ? null : Number(e.target.value); setWeekday(w); save(agentId, days, full, w); }}>
+              <option value="">any day</option>
+              {WEEKDAYS.map((n, i) => <option key={n} value={i}>on {n}s (UTC)</option>)}
+            </select>
+          )}
+          {agentId && (
+            <label className="check small"><input type="checkbox" checked={full} onChange={(e) => { setFull(e.target.checked); save(agentId, days, e.target.checked); }} />
+              <span>Full restore test<div className="faint small">Restore each image completely, boot the VM from the restored disks and screenshot it, then delete the VM and its disks. Needs free space on the host for the largest machine.</div></span></label>
           )}
         </div>
       )}

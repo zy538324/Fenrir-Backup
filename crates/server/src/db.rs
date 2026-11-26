@@ -264,6 +264,13 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX restore_evidence_image ON restore_evidence(image_id);
     "#,
+    // 17: scheduled restore tests (docs/design/restore-tests.md): each scheduled
+    // boot check restores the image fully, and may be held to one weekday.
+    r#"
+    ALTER TABLE repositories ADD COLUMN boot_full_restore INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE repositories ADD COLUMN boot_weekday INTEGER NOT NULL DEFAULT -1;
+    ALTER TABLE boot_checks ADD COLUMN restore_test_json TEXT;
+    "#,
 ];
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {

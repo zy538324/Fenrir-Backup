@@ -109,6 +109,19 @@ export interface BootCheck {
   message: string;
   has_screenshot: boolean;
   agent_name?: string | null;
+  restore_test?: RestoreTest | null;
+}
+
+/** A restore test: the image fully restored before the boot, the VM deleted after it. */
+export interface RestoreTest {
+  format: string;
+  bytes_restored: number;
+  restore_seconds: number;
+  chunks_checked: number;
+  mismatches: number;
+  vm_removed: boolean;
+  removed_unix: number;
+  removal_error?: string;
 }
 
 export interface Retention { keep_last?: number; keep_hourly?: number; keep_daily?: number; keep_weekly?: number; keep_monthly?: number; keep_yearly?: number }
@@ -196,6 +209,8 @@ export interface Repository {
   anomalies: number;
   boot_agent_id: string | null;
   boot_every_days: number;
+  boot_full_restore?: boolean;
+  boot_weekday?: number | null;
   last_verified_boot: number | null;
   share_auth: "none" | "machine" | "password";
   share_user: string | null;

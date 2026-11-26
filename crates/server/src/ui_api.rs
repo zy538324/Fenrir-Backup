@@ -1235,7 +1235,8 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
             (SELECT COUNT(*) FROM images i WHERE i.repository_id = r.id AND i.anomaly IS NOT NULL),
             r.boot_agent_id, r.boot_every_days,
             (SELECT MAX(at) FROM boot_checks b WHERE b.repository_id = r.id AND b.outcome = 'verified'),
-            r.share_auth, r.share_user, r.s3_json, r.storage_checked_at, r.storage_error, r.media_set
+            r.share_auth, r.share_user, r.s3_json, r.storage_checked_at, r.storage_error, r.media_set,
+            r.boot_full_restore, r.boot_weekday
          FROM repositories r ORDER BY r.created",
     )?;
     let mut repos: Vec<Value> = s
@@ -1254,6 +1255,8 @@ async fn list_repos(State(st): State<Shared>, _a: Admin) -> ApiResult<Json<Vec<V
                 "s3": r.get::<_, Option<String>>(22)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
                 "storage_checked_at": r.get::<_, Option<i64>>(23)?, "storage_error": r.get::<_, Option<String>>(24)?,
                 "media_set": r.get::<_, Option<String>>(25)?,
+                "boot_full_restore": r.get::<_, i64>(26)? != 0,
+                "boot_weekday": Some(r.get::<_, i64>(27)?).filter(|d| *d >= 0),
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -2458,6 +2461,9 @@ struct BootCheckReq {
     /// Hyper-V: folder on the host for the VM's disks.
     #[serde(default)]
     directory: Option<String>,
+    /// A restore test: restore fully, boot from the restored disks, delete.
+    #[serde(default)]
+    full_restore: bool,
 }
 
 async fn create_boot_check(
@@ -2519,8 +2525,14 @@ async fn create_boot_check(
         }
         repo
     };
+    if r.full_restore && r.keep_running {
+        return Err(ApiError::bad(
+            "a restore test deletes its VM afterwards: it cannot also keep it running",
+        ));
+    }
     let kind = JobKind::BootCheck {
         image_id,
+        full_restore: r.full_restore,
         keep_running: r.keep_running,
         memory_mb: r.memory_mb,
         cpus: r.cpus,
@@ -2548,7 +2560,7 @@ async fn list_boot_checks(
     let db = st.db();
     let mut s = db.prepare(
         "SELECT b.id, b.at, b.outcome, b.method, b.seconds, b.firmware, b.accel, b.message, b.screenshot IS NOT NULL,
-                b.agent_id, COALESCE(a.display_name, a.hostname), b.job_id
+                b.agent_id, COALESCE(a.display_name, a.hostname), b.job_id, b.restore_test_json
          FROM boot_checks b LEFT JOIN agents a ON a.id = b.agent_id WHERE b.image_id = ?1 ORDER BY b.at DESC, b.id DESC LIMIT 50",
     )?;
     let v = s
@@ -2558,6 +2570,7 @@ async fn list_boot_checks(
                 "method": r.get::<_, String>(3)?, "seconds": r.get::<_, i64>(4)?, "firmware": r.get::<_, String>(5)?,
                 "accel": r.get::<_, String>(6)?, "message": r.get::<_, String>(7)?, "has_screenshot": r.get::<_, bool>(8)?,
                 "agent_id": r.get::<_, String>(9)?, "agent_name": r.get::<_, Option<String>>(10)?, "job_id": r.get::<_, Option<String>>(11)?,
+                "restore_test": r.get::<_, Option<String>>(12)?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
             }))
         })?
         .collect::<Result<_, _>>()?;
@@ -2625,6 +2638,13 @@ struct BootVerificationReq {
     agent_id: Option<String>,
     #[serde(default)]
     every_days: u32,
+    /// Restore each image fully, boot from the restored disks, then delete
+    /// the VM (a restore test) instead of booting from the backup.
+    #[serde(default)]
+    full_restore: bool,
+    /// Only on this weekday (0 = Monday .. 6 = Sunday, UTC); null: any day.
+    #[serde(default)]
+    weekday: Option<u8>,
 }
 
 async fn set_boot_verification(
@@ -2655,9 +2675,18 @@ async fn set_boot_verification(
             ));
         }
     }
+    if r.weekday.is_some_and(|d| d > 6) {
+        return Err(ApiError::bad("the weekday is 0 (Monday) to 6 (Sunday)"));
+    }
     let n = db.execute(
-        "UPDATE repositories SET boot_agent_id = ?1, boot_every_days = ?2 WHERE id = ?3",
-        params![agent, if agent.is_some() { r.every_days } else { 0 }, id],
+        "UPDATE repositories SET boot_agent_id = ?1, boot_every_days = ?2, boot_full_restore = ?3, boot_weekday = ?4 WHERE id = ?5",
+        params![
+            agent,
+            if agent.is_some() { r.every_days } else { 0 },
+            r.full_restore,
+            r.weekday.map_or(-1, i64::from),
+            id
+        ],
     )?;
     if n == 0 {
         return Err(ApiError::not_found("no such repository"));

@@ -1240,6 +1240,85 @@ async fn boot_checks_results_and_schedule() {
     let (_, repos) = t.get("/api/repositories").await;
     assert_eq!(repos[0]["boot_every_days"], 7);
     assert!(repos[0]["last_verified_boot"].as_i64().is_some());
+
+    // Weekly restore tests: on one weekday only, each a full restore whose VM is deleted.
+    heartbeat(&mut t, &token, &caps, None).await;
+    let today = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        / 86400
+        + 3)
+        % 7;
+    let (s, _) = t
+        .post(
+            &format!("/api/repositories/{repo}/boot-verification"),
+            json!({ "agent_id": agent_id, "every_days": 7, "full_restore": true, "weekday": 7 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v) = t
+        .post(
+            &format!("/api/repositories/{repo}/boot-verification"),
+            json!({ "agent_id": agent_id, "every_days": 7, "full_restore": true, "weekday": (today + 1) % 7 }),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // Earlier checks are old, and so is the scheduler's last attempt (one a day per image).
+    t.st.db()
+        .execute_batch("UPDATE boot_checks SET at = 0; UPDATE jobs SET created = 0;")
+        .unwrap();
+    assert_eq!(
+        server::schedule::run_boot_checks(&t.st).unwrap(),
+        0,
+        "not on this weekday"
+    );
+    t.post(
+        &format!("/api/repositories/{repo}/boot-verification"),
+        json!({ "agent_id": agent_id, "every_days": 7, "full_restore": true, "weekday": today }),
+    )
+    .await;
+    assert_eq!(server::schedule::run_boot_checks(&t.st).unwrap(), 1);
+    let (_, repos) = t.get("/api/repositories").await;
+    assert_eq!(repos[0]["boot_full_restore"], true);
+    assert_eq!(repos[0]["boot_weekday"], today);
+    let tested = json!({ "image_id": img, "outcome": "verified", "method": "SSH", "seconds": 50, "firmware": "uefi", "accel": "kvm",
+        "message": "the guest's SSH service answered",
+        "restore_test": { "format": "raw", "bytes_restored": 1048576, "restore_seconds": 3, "chunks_checked": 4, "mismatches": 0,
+                          "vm_removed": true, "removed_unix": 1_800_000_000i64 } });
+    let j = complete_next(
+        &mut t,
+        &token,
+        json!({ "state": "succeeded", "boot_check": tested }),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        j.kind,
+        JobKind::BootCheck {
+            full_restore: true,
+            keep_running: false,
+            ..
+        }
+    ));
+    let (_, hist) = t.get(&format!("/api/images/{img}/boot-checks")).await;
+    let rt = &hist[0]["restore_test"];
+    assert_eq!(
+        (rt["chunks_checked"].as_u64(), rt["vm_removed"].as_bool()),
+        (Some(4), Some(true))
+    );
+    // A manual restore test cannot keep its VM.
+    heartbeat(&mut t, &token, &caps, None).await;
+    let (s, v) = t
+        .post(
+            &format!("/api/images/{img}/boot-check"),
+            json!({ "agent_id": agent_id, "keep_running": true, "full_restore": true }),
+        )
+        .await;
+    assert!(
+        s == StatusCode::BAD_REQUEST && v["error"].as_str().unwrap().contains("deletes its VM"),
+        "{v}"
+    );
 }
 
 #[tokio::test]
@@ -1559,7 +1638,8 @@ async fn hyperv_boot_test_keeps_the_vm_in_a_chosen_folder() {
             keep_running: true,
             memory_mb: None,
             cpus: None,
-            directory: Some("D:\\Fenrir checks".into())
+            directory: Some("D:\\Fenrir checks".into()),
+            full_restore: false,
         }
     );
 }
