@@ -156,12 +156,18 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// 32 random bytes as URL-safe base64 (no padding).
+/// 32 random bytes as URL-safe base64 (no padding), never starting with '-'
+/// (a token pasted after `--token` would otherwise read as an option).
 pub fn random_token() -> String {
     use base64::Engine;
-    let mut b = [0u8; 32];
-    getrandom::getrandom(&mut b).expect("OS random source");
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
+    loop {
+        let mut b = [0u8; 32];
+        getrandom::getrandom(&mut b).expect("OS random source");
+        let t = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        if !t.starts_with('-') {
+            return t;
+        }
+    }
 }
 
 pub fn sha256_hex(s: &[u8]) -> String {
@@ -203,4 +209,16 @@ pub fn router(state: Shared) -> Router {
     .layer(SetResponseHeaderLayer::overriding(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer")))
     .layer(SetResponseHeaderLayer::overriding(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY")))
     .with_state(state)
+}
+
+#[cfg(test)]
+mod token_tests {
+    #[test]
+    fn tokens_never_start_with_a_hyphen() {
+        // 1 in 64 raw tokens would; 5000 draws make a miss vanishingly unlikely to go unseen.
+        for _ in 0..5000 {
+            let t = super::random_token();
+            assert!(!t.starts_with('-') && t.len() == 43, "{t}");
+        }
+    }
 }
