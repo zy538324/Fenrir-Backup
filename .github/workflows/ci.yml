@@ -393,6 +393,48 @@ jobs:
         shell: bash
         run: tail -n 80 "$RUNNER_TEMP"/roundtrip/*.log || true
 
+  # A scheduled full restore test through the server with a real agent: the server's scheduler queues it,
+  # the agent restores CirrOS in full, boots it, screenshots it and deletes the VM (docs/design/restore-tests.md).
+  restore-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx cryptography
+      - name: QEMU, OVMF and a CirrOS image
+        run: |
+          sudo apt-get update && sudo apt-get install -y qemu-utils qemu-system-x86 ovmf
+          sudo chmod 666 /dev/kvm || true
+          for url in \
+            https://github.com/cirros-dev/cirros/releases/download/0.6.2/cirros-0.6.2-x86_64-disk.img \
+            https://download.cirros-cloud.net/0.6.2/cirros-0.6.2-x86_64-disk.img; do
+            if curl -fsSL --retry 3 --connect-timeout 20 -o /tmp/cirros.img "$url" \
+               && echo "${CIRROS_SHA256}  /tmp/cirros.img" | sha256sum -c; then
+              qemu-img convert -O raw /tmp/cirros.img /tmp/cirros.raw
+              break
+            fi
+          done
+          test -f /tmp/cirros.raw
+        env:
+          CIRROS_SHA256: 07e44a73e54c94d988028515403c1ed762055e01b83a767edf3c2b387f78ce00
+      - name: build
+        run: cargo build --release --locked -p server -p agent
+      - name: run
+        run: python ci/e2e-restore-test.py "$RUNNER_TEMP/restore-test" target/release/fenrir-server target/release/fenrir-backup-agent /tmp/cirros.raw
+      - name: the test VM's screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-test-screenshot
+          path: ${{ runner.temp }}/restore-test/restore-test-screen.png
+          if-no-files-found: ignore
+      - name: logs
+        if: failure()
+        run: tail -n 80 "$RUNNER_TEMP"/restore-test/*.log || true
+
   # Live image of a running Linux system: real LVM on a loop disk, mounted
   # and written to during the backup (docs/design/phase-6.md).
   live-linux:
