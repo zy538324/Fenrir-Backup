@@ -242,15 +242,17 @@ jobs:
           export AZURITE=/tmp/azurite/node_modules/.bin/azurite-blob
           export FENRIR_TEST_AZURE="$PWD/ci/azurite-start.sh"
           cargo test --locked -p azstore -- --nocapture
-      - name: server and agent with Object Lock, end to end
+      - name: server and agent with Object Lock, then cloud VM restores to AWS (S3) and Azure (Azurite), end to end
         run: |
+          sudo apt-get update -q && sudo apt-get install -y -q qemu-utils
           cargo build --locked -p server -p agent
           ./ci/s3-start.sh 19000 > /tmp/s3.log 2>&1 &
-          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:19000/ && break; sleep 1; done
-          /tmp/venv/bin/python ci/e2e-s3.py /tmp/e2e-s3 target/debug/fenrir-server target/debug/fenrir-backup-agent http://127.0.0.1:19000 "$FENRIR_TEST_S3_KEY" "$FENRIR_TEST_S3_SECRET"
+          AZURITE=/tmp/azurite/node_modules/.bin/azurite-blob ./ci/azurite-start.sh 19010 > /tmp/azurite.log 2>&1 &
+          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:19000/ && curl -s -o /dev/null http://127.0.0.1:19010/ && break; sleep 1; done
+          /tmp/venv/bin/python ci/e2e-s3.py /tmp/e2e-s3 target/debug/fenrir-server target/debug/fenrir-backup-agent http://127.0.0.1:19000 "$FENRIR_TEST_S3_KEY" "$FENRIR_TEST_S3_SECRET" http://127.0.0.1:19010/devstoreaccount1
       - name: logs
         if: failure()
-        run: tail -n 60 /tmp/e2e-s3/*.log /tmp/s3.log || true
+        run: tail -n 60 /tmp/e2e-s3/*.log /tmp/s3.log /tmp/azurite.log || true
 
   # Windows PE recovery media, built the way a user builds it: the Windows
   # ADK and its Windows PE add-on installed on a Windows machine, then

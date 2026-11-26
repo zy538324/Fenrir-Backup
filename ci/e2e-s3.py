@@ -4,13 +4,22 @@ A real fenrir-server and agent: the repository is created on S3-compatible stora
 sealed to the agent, a disk is backed up, and boto3 (independently of our code) checks that every object carries a
 compliance lock and that deleting one is refused. Maintenance then extends the locks, and a full verify passes.
 
-    python3 ci/e2e-s3.py WORK fenrir-server fenrir-backup-agent ENDPOINT ACCESS_KEY SECRET
+Cloud VM restore (BDR-03, docs/design/cloud-restore.md), as far as emulators allow: the backup is restored for AWS
+VM Import (a VHDX uploaded to the S3 server) and, given an Azurite endpoint, for Azure (a fixed VHD page blob). Each
+result is downloaded independently of Fenrir and its disk content compared with the source disk byte for byte
+(qemu-img reads the VHDX); the restore evidence must be verified and its hashes must match what was downloaded.
+Creating the managed disk and VM needs a real cloud account and is not covered.
 
-ENDPOINT is an S3-compatible server (MinIO in CI, moto locally). Needs httpx, cryptography and boto3.
+    python3 ci/e2e-s3.py WORK fenrir-server fenrir-backup-agent ENDPOINT ACCESS_KEY SECRET [AZURITE_URL]
+
+ENDPOINT is an S3-compatible server (moto). AZURITE_URL is Azurite's blob endpoint with the account,
+e.g. http://127.0.0.1:10000/devstoreaccount1. Needs httpx, cryptography, boto3 and qemu-img.
 """
 
 import base64
 import datetime
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -31,6 +40,9 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 W, SERVER, AGENT, ENDPOINT, KEY, SECRET = Path(sys.argv[1]), *sys.argv[2:7]
+AZURITE = sys.argv[7] if len(sys.argv) > 7 else ""
+AZ_ACCOUNT = "devstoreaccount1"
+AZ_KEY = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="  # Azurite's public dev key
 shutil.rmtree(W, ignore_errors=True)
 W.mkdir(parents=True)
 PORT = 18445
@@ -64,6 +76,28 @@ def wait_job(c, jid, what, seconds=600):
             return j
         time.sleep(1)
     raise SystemExit(f"{what} did not finish")
+
+
+def azure(method, path, query=None, headers=None, body=b""):
+    """A Blob service request to Azurite signed with Shared Key, written here so the check does not use Fenrir's client."""
+    query = query or {}
+    h = {"x-ms-date": datetime.datetime.now(datetime.timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT"),
+         "x-ms-version": "2021-08-06", **(headers or {})}
+    canon_h = "".join(f"{k}:{v}\n" for k, v in sorted((k.lower(), v) for k, v in h.items() if k.lower().startswith("x-ms-")))
+    canon_r = f"/{AZ_ACCOUNT}/{AZ_ACCOUNT}{path}" + "".join(f"\n{k}:{v}" for k, v in sorted(query.items()))
+    to_sign = "\n".join([method, "", "", str(len(body)) if body else "", "", "", "", "", "", "", "", ""]) + "\n" + canon_h + canon_r
+    sig = b64(hmac.new(base64.b64decode(AZ_KEY), to_sign.encode(), hashlib.sha256).digest())
+    return httpx.request(method, f"{AZURITE}{path}", params=query, content=body,
+                         headers={**h, "Authorization": f"SharedKey {AZ_ACCOUNT}:{sig}"}, timeout=120)
+
+
+def check_evidence(c, jid, what):
+    ev = c.get(f"/api/jobs/{jid}/evidence").json()
+    assert ev["intact"] and ev["evidence"]["verified"], ev
+    e = ev["evidence"]
+    assert e["recoveryPoint"] and e["rpoSeconds"] is not None and e["rtoSeconds"] is not None, e
+    print(f"  {what} evidence: verified, RPO {e['rpoSeconds']} s, RTO {e['rtoSeconds']} s, sha256 {ev['sha256'][:16]}…")
+    return e
 
 
 s3 = boto3.client("s3", endpoint_url=ENDPOINT, aws_access_key_id=KEY, aws_secret_access_key=SECRET,
@@ -152,6 +186,64 @@ try:
     assert res["locks_extended"] >= len(chunks) and res["chunks_deleted"] == 0
     j = c.post(f"/api/agents/{aid}/jobs", json={"kind": {"type": "verify", "level": "full"}, "repository_id": repo_id}).json()
     wait_job(c, j["id"], "full verify from S3")
+
+    # ---- Cloud VM restore: AWS (VHDX for VM Import, uploaded to the S3 server).
+    source = disk.read_bytes()
+    im = c.get("/api/images", params={"repository_id": repo_id}).json()[0]
+    dr = f"fenrir-dr-{uuid.uuid4().hex[:8]}"
+    s3.create_bucket(Bucket=dr)
+    staging = W / "staging"
+    staging.mkdir()
+    r = c.post("/api/restores", json={"image_id": im["image_id"], "agent_id": aid, "disks": [], "target": {
+        "type": "aws", "location": f"s3://{dr}/import", "endpoint": ENDPOINT, "region": "us-east-1", "name": "e2e-vm",
+        "staging": str(staging), "sealed": seal(a["public_key"], keys)}})
+    assert r.status_code == 200, r.text
+    j = wait_job(c, r.json()["id"], "restore to AWS (VHDX on S3)")
+    assert j["result"]["objects"] == [f"s3://{dr}/import/e2e-vm-disk0.vhdx"], j["result"]
+    assert "aws ec2 import-image" in j["result"]["commands"]
+    assert not any(staging.iterdir()), "the staging copy is removed after upload"
+    vhdx = W / "aws.vhdx"
+    s3.download_file(dr, "import/e2e-vm-disk0.vhdx", str(vhdx))
+    e = check_evidence(c, r.json()["id"], "AWS")
+    assert e["outputs"][0]["sha256"] == hashlib.sha256(vhdx.read_bytes()).hexdigest(), "uploaded VHDX matches the evidence hash"
+    raw = W / "aws.raw"
+    subprocess.run(["qemu-img", "convert", "-f", "vhdx", "-O", "raw", str(vhdx), str(raw)], check=True)
+    assert raw.read_bytes()[:len(source)] == source, "the VHDX on S3 holds the source disk"
+    print(f"  AWS: {vhdx.stat().st_size} byte VHDX downloaded; its disk equals the source ({len(source)} bytes)")
+
+    # ---- Cloud VM restore: Azure (fixed VHD page blob), on Azurite.
+    if AZURITE:
+        assert azure("PUT", "/restores", {"restype": "container"}).status_code in (201, 409)
+        az_keys = json.dumps({"domain": "", "username": AZ_ACCOUNT, "password": AZ_KEY}).encode()
+        r = c.post("/api/restores", json={"image_id": im["image_id"], "agent_id": aid, "disks": [], "target": {
+            "type": "azure", "location": f"azure://restores/{dr}", "endpoint": AZURITE, "name": "e2e-vm",
+            "sealed": seal(a["public_key"], az_keys)}})
+        assert r.status_code == 200, r.text
+        j = wait_job(c, r.json()["id"], "restore to Azure (page blob)")
+        assert j["state"] == "succeeded", "a plain disk backup (no OS recorded) gets no Windows warning"
+        assert j["result"]["blobs"][0].endswith(f"/restores/{dr}/e2e-vm-disk0.vhd"), j["result"]
+        e = check_evidence(c, r.json()["id"], "Azure")
+        checked = sum(v.get("chunksChecked", 0) for v in e["verification"])
+        assert checked > 0 and all(v.get("mismatches", 0) == 0 for v in e["verification"]), e["verification"]
+        blob = azure("GET", f"/restores/{dr}/e2e-vm-disk0.vhd")
+        assert blob.status_code == 200, blob.text
+        data = blob.content
+        assert data[-512:].startswith(b"conectix"), "a fixed VHD footer ends the blob"
+        assert len(data) % 512 == 0 and (len(data) - 512) % (1 << 20) == 0, "Azure needs a whole number of MiB"
+        assert data[:len(source)] == source and not any(data[len(source):-512]), "the page blob holds the source disk"
+        again = c.post("/api/restores", json={"image_id": im["image_id"], "agent_id": aid, "disks": [], "target": {
+            "type": "azure", "location": f"azure://restores/{dr}", "endpoint": AZURITE, "name": "e2e-vm",
+            "sealed": seal(a["public_key"], az_keys)}}).json()
+        for _ in range(120):
+            jj = c.get(f"/api/jobs/{again['id']}").json()
+            if jj["state"] in ("succeeded", "warning", "failed"):
+                break
+            time.sleep(1)
+        assert jj["state"] == "failed" and "already exists" in jj["error"], jj
+        assert azure("GET", f"/restores/{dr}/e2e-vm-disk0.vhd").content == data, "an existing blob is never overwritten"
+        print(f"  Azure: {checked} chunks read back from the page blob by the agent; the blob downloaded equals the source")
+    else:
+        print("  Azure: no Azurite endpoint given, skipped")
     print("E2E S3 OK")
 finally:
     for p in procs:
